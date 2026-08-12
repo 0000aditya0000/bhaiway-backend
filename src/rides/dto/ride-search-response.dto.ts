@@ -1,0 +1,116 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+import { VehicleType } from '../../vehicles/enums/vehicle-type.enum';
+import { RideType } from '../enums/ride.enums';
+
+export class RideSearchPreferencesDto {
+  @ApiProperty()
+  maxTwoInBackSeat!: boolean;
+
+  @ApiProperty()
+  noSmoking!: boolean;
+
+  @ApiProperty()
+  noPets!: boolean;
+
+  @ApiProperty()
+  luggageAllowed!: boolean;
+}
+
+export class RideSearchDriverDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Null when the driver has no display name / profile yet',
+  })
+  displayName!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  profilePhoto!: string | null;
+}
+
+export class RideSearchVehicleDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiProperty({ enum: VehicleType, enumName: 'VehicleType' })
+  vehicleType!: VehicleType;
+
+  @ApiProperty()
+  make!: string;
+
+  @ApiProperty()
+  model!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  variant!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  color!: string | null;
+
+  @ApiProperty()
+  seatingCapacity!: number;
+}
+
+export class RideSearchItemDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiProperty({ enum: RideType, enumName: 'RideType' })
+  rideType!: RideType;
+
+  @ApiProperty()
+  source!: string;
+
+  @ApiProperty()
+  destination!: string;
+
+  @ApiProperty({ example: '2026-08-20' })
+  departureDate!: string;
+
+  @ApiProperty({ example: '09:00:00' })
+  departureTime!: string;
+
+  @ApiProperty()
+  availableSeats!: number;
+
+  @ApiProperty()
+  totalSeats!: number;
+
+  @ApiProperty({
+    description: 'Integer points per seat as string (1 point = ₹1)',
+    example: '250',
+  })
+  pricePerSeat!: string;
+
+  @ApiProperty({ type: RideSearchPreferencesDto })
+  preferences!: RideSearchPreferencesDto;
+
+  @ApiPropertyOptional({ nullable: true })
+  notes!: string | null;
+
+  @ApiProperty({ type: RideSearchDriverDto })
+  driver!: RideSearchDriverDto;
+
+  @ApiProperty({ type: RideSearchVehicleDto })
+  vehicle!: RideSearchVehicleDto;
+}
+
+export class RideSearchPageDto {
+  @ApiProperty({ type: RideSearchItemDto, isArray: true })
+  items!: RideSearchItemDto[];
+
+  @ApiProperty({ example: 1 })
+  page!: number;
+
+  @ApiProperty({ example: 20 })
+  limit!: number;
+
+  @ApiProperty({ example: 42 })
+  total!: number;
+
+  @ApiProperty({ example: 3 })
+  totalPages!: number;
+}

@@ -1,0 +1,912 @@
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'crypto';
+import {
+  DataSource,
+  EntityManager,
+  In,
+  QueryFailedError,
+  Repository,
+} from 'typeorm';
+
+import { AssuredLifecycleService } from '../assured/assured-lifecycle.service';
+import {
+  AssuredBookingLifecycleResponseDto,
+} from '../assured/dto/assured-lifecycle-response.dto';
+import {
+  ASSURED_BOOKING_RIDER_DEPOSIT_REF,
+  calculateRiderAssuredDeposit,
+} from '../assured/assured-deposit.math';
+import {
+  UserCoupon,
+  UserCouponStatus,
+  UserCouponType,
+} from '../coupons/entities/user-coupon.entity';
+import { Ride } from '../rides/entities/ride.entity';
+import {
+  RegularSeatsPolicy,
+  RideStatus,
+  RideType,
+} from '../rides/enums/ride.enums';
+import { SettingsService } from '../settings/settings.service';
+import { User } from '../users/entities/user.entity';
+import { UserProfile } from '../users/entities/user-profile.entity';
+import { VerificationService } from '../verification/verification.service';
+import {
+  InsufficientWalletBalanceError,
+  PlatformWalletForbiddenError,
+  WalletBalanceNotFoundError,
+  WalletNotFoundError,
+  WalletOperationConflictError,
+} from '../wallet/errors/wallet.errors';
+import { WalletHoldType } from '../wallet/entities/wallet-hold.entity';
+import { Wallet, WalletStatus } from '../wallet/entities/wallet.entity';
+import { WalletService } from '../wallet/wallet.service';
+import { CreateBookingDto } from './dto/create-booking.dto';
+import { BookingResponseDto } from './dto/booking-response.dto';
+import { DriverBookingsQueryDto } from './dto/driver-bookings-query.dto';
+import {
+  DriverBookingItemDto,
+  DriverBookingPageDto,
+} from './dto/driver-booking-response.dto';
+import { Booking } from './entities/booking.entity';
+import {
+  BookingMode,
+  BookingPaymentMethod,
+  BookingPaymentStatus,
+  BookingStatus,
+} from './enums/booking.enums';
+
+export interface CreateBookingOptions {
+  idempotencyKey?: string | null;
+}
+
+@Injectable()
+export class BookingsService {
+  constructor(
+    private readonly dataSource: DataSource,
+    @InjectRepository(Booking)
+    private readonly bookingRepository: Repository<Booking>,
+    @InjectRepository(Ride)
+    private readonly rideRepository: Repository<Ride>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+    @InjectRepository(UserProfile)
+    private readonly userProfileRepository: Repository<UserProfile>,
+    @InjectRepository(Wallet)
+    private readonly walletRepository: Repository<Wallet>,
+    @InjectRepository(UserCoupon)
+    private readonly userCouponRepository: Repository<UserCoupon>,
+    private readonly verificationService: VerificationService,
+    private readonly walletService: WalletService,
+    private readonly settingsService: SettingsService,
+    private readonly assuredLifecycleService: AssuredLifecycleService,
+  ) {}
+
+  async cancelByPassenger(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<AssuredBookingLifecycleResponseDto> {
+    return this.assuredLifecycleService.cancelBookingByRider(
+      passengerId,
+      bookingId,
+    );
+  }
+
+  async reportRiderNoShow(
+    driverId: string,
+    bookingId: string,
+  ): Promise<AssuredBookingLifecycleResponseDto> {
+    return this.assuredLifecycleService.reportRiderNoShow(driverId, bookingId);
+  }
+
+  async create(
+    passengerId: string,
+    dto: CreateBookingDto,
+    options: CreateBookingOptions = {},
+  ): Promise<BookingResponseDto> {
+    await this.assertPassengerCanBook(passengerId);
+
+    const ridePreview = await this.rideRepository.findOne({
+      where: { id: dto.rideId },
+      select: { id: true, rideType: true },
+    });
+
+    if (ridePreview?.rideType === RideType.ASSURED) {
+      if (dto.paymentMethod === BookingPaymentMethod.ASSURED_DEPOSIT) {
+        return this.createAssuredDepositBooking(
+          passengerId,
+          dto,
+          options.idempotencyKey,
+        );
+      }
+      if (
+        dto.paymentMethod === BookingPaymentMethod.PAY_NOW ||
+        dto.paymentMethod === BookingPaymentMethod.PAY_LATER
+      ) {
+        // Regular passenger booking on an Assured ride after half-time ALLOW.
+        if (dto.paymentMethod === BookingPaymentMethod.PAY_NOW) {
+          return this.createPayNow(passengerId, dto, options.idempotencyKey, {
+            requireAssuredRegularOpen: true,
+          });
+        }
+        return this.createPayLater(passengerId, dto, {
+          requireAssuredRegularOpen: true,
+        });
+      }
+      throw new BadRequestException('Invalid payment method');
+    }
+
+    if (dto.paymentMethod === BookingPaymentMethod.ASSURED_DEPOSIT) {
+      throw new BadRequestException(
+        'ASSURED_DEPOSIT is only valid for Assured rides',
+      );
+    }
+
+    if (dto.paymentMethod === BookingPaymentMethod.PAY_NOW) {
+      return this.createPayNow(passengerId, dto, options.idempotencyKey);
+    }
+
+    if (dto.paymentMethod === BookingPaymentMethod.PAY_LATER) {
+      return this.createPayLater(passengerId, dto);
+    }
+
+    throw new BadRequestException('Invalid payment method');
+  }
+
+  private async createPayLater(
+    passengerId: string,
+    dto: CreateBookingDto,
+    options: { requireAssuredRegularOpen?: boolean } = {},
+  ): Promise<BookingResponseDto> {
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const ride = await this.lockRideForUpdate(manager, dto.rideId);
+        this.assertRideBookable(ride, passengerId);
+        this.assertRegularBookingAllowedOnRide(
+          ride,
+          options.requireAssuredRegularOpen === true,
+        );
+        this.assertEnoughSeats(ride, dto.seats);
+        await this.assertNoActiveBooking(manager, passengerId, ride.id);
+
+        const pricePerSeatSnapshot = ride.pricePerSeat;
+        const totalAmount = this.multiplyPoints(
+          pricePerSeatSnapshot,
+          dto.seats,
+        );
+
+        ride.availableSeats -= dto.seats;
+        await manager.getRepository(Ride).save(ride);
+
+        const booking = manager.getRepository(Booking).create({
+          rideId: ride.id,
+          passengerId,
+          seats: dto.seats,
+          status: BookingStatus.CONFIRMED,
+          paymentMethod: BookingPaymentMethod.PAY_LATER,
+          paymentStatus: BookingPaymentStatus.UNPAID,
+          pricePerSeatSnapshot,
+          totalAmount,
+          idempotencyKey: null,
+          walletTransactionId: null,
+          assuredDepositPercentage: null,
+          assuredDepositAmount: null,
+          walletHoldId: null,
+          bookingMode: BookingMode.REGULAR,
+          depositCouponId: null,
+        });
+
+        const saved = await manager.getRepository(Booking).save(booking);
+        return this.toResponse(saved, ride);
+      });
+    } catch (error) {
+      this.rethrowDuplicateActiveBooking(error);
+      throw error;
+    }
+  }
+
+  private async createPayNow(
+    passengerId: string,
+    dto: CreateBookingDto,
+    idempotencyKey: string | null | undefined,
+    options: { requireAssuredRegularOpen?: boolean } = {},
+  ): Promise<BookingResponseDto> {
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException(
+        'Idempotency-Key header is required for PAY_NOW bookings',
+      );
+    }
+
+    const key = idempotencyKey.trim();
+
+    const existing = await this.bookingRepository.findOne({
+      where: { idempotencyKey: key },
+    });
+    if (existing) {
+      this.assertIdempotentRequestMatches(existing, passengerId, dto);
+      const ride = await this.rideRepository.findOne({
+        where: { id: existing.rideId },
+      });
+      return this.toResponse(existing, ride ?? undefined);
+    }
+
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        // Lock order: Ride → Wallet → WalletBalance → PointLots
+        const ride = await this.lockRideForUpdate(manager, dto.rideId);
+        this.assertRideBookable(ride, passengerId);
+        this.assertRegularBookingAllowedOnRide(
+          ride,
+          options.requireAssuredRegularOpen === true,
+        );
+        this.assertEnoughSeats(ride, dto.seats);
+        await this.assertNoActiveBooking(manager, passengerId, ride.id);
+
+        const existingAfterRideLock = await manager
+          .getRepository(Booking)
+          .findOne({ where: { idempotencyKey: key } });
+        if (existingAfterRideLock) {
+          this.assertIdempotentRequestMatches(
+            existingAfterRideLock,
+            passengerId,
+            dto,
+          );
+          return this.toResponse(existingAfterRideLock, ride);
+        }
+
+        const wallet = await this.lockWalletForUpdate(manager, passengerId);
+        this.assertWalletAllowsPayment(wallet);
+
+        const pricePerSeatSnapshot = ride.pricePerSeat;
+        const totalAmount = this.multiplyPoints(
+          pricePerSeatSnapshot,
+          dto.seats,
+        );
+        const amount = BigInt(totalAmount);
+        const bookingId = randomUUID();
+
+        let walletTransactionId: string | null = null;
+        if (amount > 0n) {
+          const debit = await this.walletService.debitPointsInTransaction(
+            manager,
+            {
+              walletId: wallet.id,
+              userId: passengerId,
+              amount,
+              referenceType: 'BOOKING',
+              referenceId: bookingId,
+              idempotencyKey: key,
+            },
+          );
+          walletTransactionId = debit.transaction.id;
+        }
+
+        ride.availableSeats -= dto.seats;
+        await manager.getRepository(Ride).save(ride);
+
+        const booking = manager.getRepository(Booking).create({
+          id: bookingId,
+          rideId: ride.id,
+          passengerId,
+          seats: dto.seats,
+          status: BookingStatus.CONFIRMED,
+          paymentMethod: BookingPaymentMethod.PAY_NOW,
+          paymentStatus: BookingPaymentStatus.PAID,
+          pricePerSeatSnapshot,
+          totalAmount,
+          idempotencyKey: key,
+          walletTransactionId,
+          assuredDepositPercentage: null,
+          assuredDepositAmount: null,
+          walletHoldId: null,
+          bookingMode: BookingMode.REGULAR,
+          depositCouponId: null,
+        });
+
+        const saved = await manager.getRepository(Booking).save(booking);
+        return this.toResponse(saved, ride);
+      });
+    } catch (error) {
+      if (this.walletService.isIdempotencyKeyConflict(error)) {
+        const recovered = await this.bookingRepository.findOne({
+          where: { idempotencyKey: key },
+        });
+        if (recovered) {
+          this.assertIdempotentRequestMatches(recovered, passengerId, dto);
+          const ride = await this.rideRepository.findOne({
+            where: { id: recovered.rideId },
+          });
+          return this.toResponse(recovered, ride ?? undefined);
+        }
+        throw new WalletOperationConflictError(
+          'Idempotency conflict could not be resolved; existing booking not found',
+        );
+      }
+
+      if (this.isBookingIdempotencyUniqueViolation(error)) {
+        const recovered = await this.bookingRepository.findOne({
+          where: { idempotencyKey: key },
+        });
+        if (recovered) {
+          this.assertIdempotentRequestMatches(recovered, passengerId, dto);
+          const ride = await this.rideRepository.findOne({
+            where: { id: recovered.rideId },
+          });
+          return this.toResponse(recovered, ride ?? undefined);
+        }
+      }
+
+      this.rethrowDuplicateActiveBooking(error);
+      this.rethrowWalletHttpErrors(error);
+      throw error;
+    }
+  }
+
+  /**
+   * Assured rider deposit: Ride → Wallet → Balance → Lots → Booking.
+   * Fare remains UNPAID; security deposit is a separate ACTIVE hold.
+   */
+  private async createAssuredDepositBooking(
+    passengerId: string,
+    dto: CreateBookingDto,
+    idempotencyKey: string | null | undefined,
+  ): Promise<BookingResponseDto> {
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException(
+        'Idempotency-Key header is required for Assured bookings',
+      );
+    }
+
+    const key = idempotencyKey.trim();
+
+    const existing = await this.bookingRepository.findOne({
+      where: { idempotencyKey: key },
+    });
+    if (existing) {
+      this.assertIdempotentRequestMatches(existing, passengerId, dto);
+      const ride = await this.rideRepository.findOne({
+        where: { id: existing.rideId },
+      });
+      return this.toResponse(existing, ride ?? undefined);
+    }
+
+    const percentage =
+      await this.settingsService.getAssuredRideDepositPercentage();
+
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const ride = await this.lockRideForUpdate(manager, dto.rideId);
+        if (ride.rideType !== RideType.ASSURED) {
+          throw new BadRequestException('Ride is not an Assured ride');
+        }
+        this.assertRideBookable(ride, passengerId);
+        this.assertEnoughSeats(ride, dto.seats);
+        await this.assertNoActiveBooking(manager, passengerId, ride.id);
+
+        const existingAfterRideLock = await manager
+          .getRepository(Booking)
+          .findOne({ where: { idempotencyKey: key } });
+        if (existingAfterRideLock) {
+          this.assertIdempotentRequestMatches(
+            existingAfterRideLock,
+            passengerId,
+            dto,
+          );
+          return this.toResponse(existingAfterRideLock, ride);
+        }
+
+        const wallet = await this.lockWalletForUpdate(manager, passengerId);
+        this.assertWalletAllowsPayment(wallet);
+
+        const pricePerSeatSnapshot = ride.pricePerSeat;
+        const totalAmount = this.multiplyPoints(
+          pricePerSeatSnapshot,
+          dto.seats,
+        );
+        const bookingId = randomUUID();
+
+        const coupon = await this.lockUnusedDepositCoupon(
+          manager,
+          passengerId,
+        );
+        let depositAmount = calculateRiderAssuredDeposit(
+          dto.seats,
+          BigInt(pricePerSeatSnapshot),
+          percentage,
+        );
+        let depositCouponId: string | null = null;
+        if (coupon) {
+          depositAmount = 0n;
+          depositCouponId = coupon.id;
+          coupon.status = UserCouponStatus.USED;
+          coupon.usedAt = new Date();
+          coupon.usedBookingId = bookingId;
+          await manager.getRepository(UserCoupon).save(coupon);
+        }
+
+        let walletHoldId: string | null = null;
+        let walletTransactionId: string | null = null;
+        if (depositAmount > 0n) {
+          const holdResult = await this.walletService.createHoldInTransaction(
+            manager,
+            {
+              walletId: wallet.id,
+              amount: depositAmount,
+              holdType: WalletHoldType.ASSURED_DEPOSIT,
+              referenceType: ASSURED_BOOKING_RIDER_DEPOSIT_REF,
+              referenceId: bookingId,
+              idempotencyKey: key,
+            },
+          );
+          walletHoldId = holdResult.hold!.id;
+          walletTransactionId = holdResult.transaction.id;
+        }
+
+        ride.availableSeats -= dto.seats;
+        await manager.getRepository(Ride).save(ride);
+
+        const booking = manager.getRepository(Booking).create({
+          id: bookingId,
+          rideId: ride.id,
+          passengerId,
+          seats: dto.seats,
+          status: BookingStatus.CONFIRMED,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+          paymentStatus: BookingPaymentStatus.UNPAID,
+          pricePerSeatSnapshot,
+          totalAmount,
+          idempotencyKey: key,
+          walletTransactionId,
+          assuredDepositPercentage: percentage,
+          assuredDepositAmount: depositAmount.toString(),
+          walletHoldId,
+          bookingMode: BookingMode.ASSURED,
+          depositCouponId,
+        });
+
+        const saved = await manager.getRepository(Booking).save(booking);
+        return this.toResponse(saved, ride);
+      });
+    } catch (error) {
+      if (this.walletService.isIdempotencyKeyConflict(error)) {
+        const recovered = await this.bookingRepository.findOne({
+          where: { idempotencyKey: key },
+        });
+        if (recovered) {
+          this.assertIdempotentRequestMatches(recovered, passengerId, dto);
+          const ride = await this.rideRepository.findOne({
+            where: { id: recovered.rideId },
+          });
+          return this.toResponse(recovered, ride ?? undefined);
+        }
+        throw new WalletOperationConflictError(
+          'Idempotency conflict could not be resolved; existing booking not found',
+        );
+      }
+
+      if (this.isBookingIdempotencyUniqueViolation(error)) {
+        const recovered = await this.bookingRepository.findOne({
+          where: { idempotencyKey: key },
+        });
+        if (recovered) {
+          this.assertIdempotentRequestMatches(recovered, passengerId, dto);
+          const ride = await this.rideRepository.findOne({
+            where: { id: recovered.rideId },
+          });
+          return this.toResponse(recovered, ride ?? undefined);
+        }
+      }
+
+      this.rethrowDuplicateActiveBooking(error);
+      this.rethrowWalletHttpErrors(error);
+      throw error;
+    }
+  }
+
+  private async lockUnusedDepositCoupon(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<UserCoupon | null> {
+    return manager
+      .getRepository(UserCoupon)
+      .createQueryBuilder('coupon')
+      .setLock('pessimistic_write')
+      .where('coupon.user_id = :userId', { userId })
+      .andWhere('coupon.coupon_type = :type', {
+        type: UserCouponType.NEXT_ASSURED_DEPOSIT_FREE,
+      })
+      .andWhere('coupon.status = :status', { status: UserCouponStatus.UNUSED })
+      .orderBy('coupon.created_at', 'ASC')
+      .addOrderBy('coupon.id', 'ASC')
+      .getOne();
+  }
+
+  private assertRegularBookingAllowedOnRide(
+    ride: Ride,
+    requireAssuredRegularOpen: boolean,
+  ): void {
+    if (!requireAssuredRegularOpen) {
+      if (ride.rideType === RideType.ASSURED) {
+        throw new ConflictException(
+          'Regular payment methods are not allowed on Assured rides unless the driver opens remaining seats',
+        );
+      }
+      return;
+    }
+
+    if (ride.rideType !== RideType.ASSURED) {
+      throw new BadRequestException('Ride is not an Assured ride');
+    }
+
+    if (
+      ride.regularSeatsPolicy !== RegularSeatsPolicy.ALLOW_REGULAR_RIDERS
+    ) {
+      throw new ConflictException(
+        'Regular riders cannot book this Assured ride until the driver chooses ALLOW_REGULAR_RIDERS',
+      );
+    }
+  }
+
+  async findMine(passengerId: string): Promise<BookingResponseDto[]> {
+    const bookings = await this.bookingRepository.find({
+      where: { passengerId },
+      order: { createdAt: 'DESC' },
+    });
+
+    if (bookings.length === 0) {
+      return [];
+    }
+
+    const rideIds = [...new Set(bookings.map((booking) => booking.rideId))];
+    const rides = await this.rideRepository.find({
+      where: { id: In(rideIds) },
+    });
+    const rideById = new Map(rides.map((ride) => [ride.id, ride] as const));
+
+    return bookings.map((booking) =>
+      this.toResponse(booking, rideById.get(booking.rideId)),
+    );
+  }
+
+  async findOne(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<BookingResponseDto> {
+    const booking = await this.bookingRepository.findOne({
+      where: { id: bookingId, passengerId },
+    });
+    if (!booking) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    const ride = await this.rideRepository.findOne({
+      where: { id: booking.rideId },
+    });
+
+    return this.toResponse(booking, ride ?? undefined);
+  }
+
+  /**
+   * Driver-facing booking list for rides owned by the authenticated driver.
+   * Authorization is JWT-only (driverId never accepted from the client).
+   * Read-only: no wallet, hold, seat, or booking mutations.
+   */
+  async findForDriverRides(
+    driverId: string,
+    query: DriverBookingsQueryDto,
+  ): Promise<DriverBookingPageDto> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+
+    if (query.rideId) {
+      const ownedRide = await this.rideRepository.findOne({
+        where: { id: query.rideId, driverId },
+      });
+      if (!ownedRide) {
+        throw new NotFoundException('Ride not found');
+      }
+    }
+
+    const qb = this.bookingRepository
+      .createQueryBuilder('booking')
+      .innerJoinAndSelect('booking.ride', 'ride')
+      .where('ride.driver_id = :driverId', { driverId });
+
+    if (query.rideId) {
+      qb.andWhere('booking.ride_id = :rideId', { rideId: query.rideId });
+    }
+
+    if (query.status) {
+      qb.andWhere('booking.status = :status', { status: query.status });
+    }
+
+    qb.orderBy('booking.created_at', 'DESC').addOrderBy('booking.id', 'DESC');
+
+    const [bookings, total] = await qb
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+
+    const passengerIds = [
+      ...new Set(bookings.map((booking) => booking.passengerId)),
+    ];
+    const profiles =
+      passengerIds.length === 0
+        ? []
+        : await this.userProfileRepository.find({
+            where: { userId: In(passengerIds) },
+          });
+    const profileByUserId = new Map(
+      profiles.map((profile) => [profile.userId, profile] as const),
+    );
+
+    const items: DriverBookingItemDto[] = bookings.map((booking) =>
+      this.toDriverBookingItem(
+        booking,
+        booking.ride,
+        profileByUserId.get(booking.passengerId) ?? null,
+      ),
+    );
+
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: total === 0 ? 0 : Math.ceil(total / limit),
+    };
+  }
+
+  private async assertPassengerCanBook(passengerId: string): Promise<void> {
+    const user = await this.userRepository.findOne({
+      where: { id: passengerId },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const eligibility = await this.verificationService.canBookRide(passengerId);
+    if (!eligibility.allowed) {
+      throw new ForbiddenException(
+        'Identity verification is required before booking a ride',
+      );
+    }
+  }
+
+  private async lockRideForUpdate(
+    manager: EntityManager,
+    rideId: string,
+  ): Promise<Ride> {
+    const ride = await manager
+      .getRepository(Ride)
+      .createQueryBuilder('ride')
+      .setLock('pessimistic_write')
+      .where('ride.id = :rideId', { rideId })
+      .getOne();
+
+    if (!ride) {
+      throw new NotFoundException('Ride not found');
+    }
+
+    return ride;
+  }
+
+  private async lockWalletForUpdate(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<Wallet> {
+    const wallet = await manager
+      .getRepository(Wallet)
+      .createQueryBuilder('wallet')
+      .setLock('pessimistic_write')
+      .where('wallet.user_id = :userId', { userId })
+      .getOne();
+
+    if (!wallet) {
+      throw new WalletNotFoundError();
+    }
+
+    return wallet;
+  }
+
+  private assertWalletAllowsPayment(wallet: Wallet): void {
+    if (wallet.status === WalletStatus.SUSPENDED) {
+      throw new ForbiddenException('Wallet is suspended');
+    }
+    if (wallet.status === WalletStatus.LOCKED) {
+      throw new ForbiddenException('Wallet is locked');
+    }
+  }
+
+  private assertRideBookable(ride: Ride, passengerId: string): void {
+    if (ride.status !== RideStatus.PUBLISHED) {
+      throw new BadRequestException('Only published rides can be booked');
+    }
+
+    if (ride.driverId === passengerId) {
+      throw new ForbiddenException('Drivers cannot book their own ride');
+    }
+  }
+
+  private assertEnoughSeats(ride: Ride, seats: number): void {
+    if (ride.availableSeats < seats) {
+      throw new ConflictException('Insufficient available seats');
+    }
+  }
+
+  private async assertNoActiveBooking(
+    manager: EntityManager,
+    passengerId: string,
+    rideId: string,
+  ): Promise<void> {
+    const existingActive = await manager.getRepository(Booking).findOne({
+      where: {
+        passengerId,
+        rideId,
+        status: In([BookingStatus.PENDING, BookingStatus.CONFIRMED]),
+      },
+    });
+    if (existingActive) {
+      throw new ConflictException(
+        'An active booking already exists for this ride',
+      );
+    }
+  }
+
+  private assertIdempotentRequestMatches(
+    existing: Booking,
+    passengerId: string,
+    dto: CreateBookingDto,
+  ): void {
+    if (
+      existing.passengerId !== passengerId ||
+      existing.rideId !== dto.rideId ||
+      existing.seats !== dto.seats ||
+      existing.paymentMethod !== dto.paymentMethod
+    ) {
+      throw new ConflictException(
+        'Idempotency key was reused for a different booking request',
+      );
+    }
+  }
+
+  private multiplyPoints(pricePerSeat: string, seats: number): string {
+    return (BigInt(pricePerSeat) * BigInt(seats)).toString();
+  }
+
+  private toResponse(booking: Booking, ride?: Ride): BookingResponseDto {
+    return {
+      id: booking.id,
+      rideId: booking.rideId,
+      passengerId: booking.passengerId,
+      seats: booking.seats,
+      status: booking.status,
+      paymentMethod: booking.paymentMethod,
+      paymentStatus: booking.paymentStatus,
+      pricePerSeatSnapshot: booking.pricePerSeatSnapshot,
+      totalAmount: booking.totalAmount,
+      securityDepositAmount: booking.assuredDepositAmount,
+      securityDepositPercentage: booking.assuredDepositPercentage,
+      bookingMode: booking.bookingMode,
+      ride: ride
+        ? {
+            id: ride.id,
+            rideType: ride.rideType,
+            status: ride.status,
+            source: ride.source,
+            destination: ride.destination,
+            departureDate: ride.departureDate,
+            departureTime:
+              ride.departureTime.length >= 8
+                ? ride.departureTime.slice(0, 8)
+                : ride.departureTime,
+          }
+        : undefined,
+      createdAt: booking.createdAt.toISOString(),
+      updatedAt: booking.updatedAt.toISOString(),
+    };
+  }
+
+  private toDriverBookingItem(
+    booking: Booking,
+    ride: Ride,
+    profile: UserProfile | null,
+  ): DriverBookingItemDto {
+    return {
+      id: booking.id,
+      rideId: booking.rideId,
+      passenger: {
+        id: booking.passengerId,
+        firstName: profile?.firstName ?? null,
+        lastName: profile?.lastName ?? null,
+        displayName: profile?.displayName ?? null,
+        profilePhoto: profile?.profilePhoto ?? null,
+      },
+      seats: booking.seats,
+      status: booking.status,
+      bookingMode: booking.bookingMode,
+      paymentMethod: booking.paymentMethod,
+      paymentStatus: booking.paymentStatus,
+      pricePerSeatSnapshot: booking.pricePerSeatSnapshot,
+      totalAmount: booking.totalAmount,
+      ride: {
+        id: ride.id,
+        source: ride.source,
+        destination: ride.destination,
+        departureDate: ride.departureDate,
+        departureTime:
+          ride.departureTime.length >= 8
+            ? ride.departureTime.slice(0, 8)
+            : ride.departureTime,
+        rideType: ride.rideType,
+        status: ride.status,
+      },
+      createdAt: booking.createdAt.toISOString(),
+      updatedAt: booking.updatedAt.toISOString(),
+    };
+  }
+
+  private rethrowDuplicateActiveBooking(error: unknown): void {
+    if (
+      error instanceof QueryFailedError &&
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: string }).code === '23505'
+    ) {
+      const constraint =
+        (error as { constraint?: string }).constraint ??
+        (
+          error as { driverError?: { constraint?: string } }
+        ).driverError?.constraint;
+      if (
+        constraint === 'UQ_bookings_active_passenger_ride' ||
+        constraint?.includes('active_passenger_ride')
+      ) {
+        throw new ConflictException(
+          'An active booking already exists for this ride',
+        );
+      }
+    }
+  }
+
+  private isBookingIdempotencyUniqueViolation(error: unknown): boolean {
+    if (!(error instanceof QueryFailedError)) {
+      return false;
+    }
+    const code =
+      (error as { code?: string }).code ??
+      (error.driverError as { code?: string } | undefined)?.code;
+    const constraint =
+      (error as { constraint?: string }).constraint ??
+      (error.driverError as { constraint?: string } | undefined)?.constraint;
+    return (
+      code === '23505' &&
+      (constraint === 'UQ_bookings_idempotency_key' ||
+        Boolean(constraint?.includes('idempotency_key')))
+    );
+  }
+
+  private rethrowWalletHttpErrors(error: unknown): void {
+    if (
+      error instanceof InsufficientWalletBalanceError ||
+      error instanceof WalletNotFoundError ||
+      error instanceof WalletBalanceNotFoundError ||
+      error instanceof WalletOperationConflictError ||
+      error instanceof PlatformWalletForbiddenError ||
+      error instanceof ForbiddenException ||
+      error instanceof BadRequestException ||
+      error instanceof ConflictException ||
+      error instanceof NotFoundException
+    ) {
+      throw error;
+    }
+  }
+}
