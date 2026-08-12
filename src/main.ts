@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 
 import { AppModule } from './app.module';
+import { HttpRequestLoggingInterceptor } from './common/logging/http-request-logging.interceptor';
 import { setupSwagger } from './swagger';
 
 async function bootstrap() {
@@ -14,6 +15,8 @@ async function bootstrap() {
       transform: true,
     }),
   );
+
+  app.useGlobalInterceptors(new HttpRequestLoggingInterceptor());
 
   setupSwagger(app);
 
