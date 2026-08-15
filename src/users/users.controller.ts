@@ -42,7 +42,9 @@ export class UsersController {
   @ApiOperation({ summary: 'Create user profile' })
   @ApiCreatedResponse({ type: ProfileResponseDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
-  @ApiConflictResponse({ description: 'Profile already exists' })
+  @ApiConflictResponse({
+    description: 'Profile already exists or email is already in use',
+  })
   @ApiNotFoundResponse({ description: 'User not found' })
   createProfile(
     @CurrentUser() currentUser: AuthenticatedUser,

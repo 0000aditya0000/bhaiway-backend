@@ -1,5 +1,7 @@
+import { Transform } from 'class-transformer';
 import {
   IsDateString,
+  IsEmail,
   IsEnum,
   IsNotEmpty,
   IsOptional,
@@ -50,4 +52,18 @@ export class CreateProfileDto {
   @IsOptional()
   @IsString()
   profilePhoto?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional contact email stored on the user account. Normalized to lowercase. Not treated as verified.',
+    example: 'aditya@example.com',
+    maxLength: 255,
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsEmail()
+  @MaxLength(255)
+  email?: string;
 }

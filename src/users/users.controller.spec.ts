@@ -11,6 +11,7 @@ import { AuthService } from '../auth/auth.service';
 import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
+import { WalletTransaction } from '../wallet/entities/wallet-transaction.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { WalletModule } from '../wallet/wallet.module';
 import {
@@ -19,6 +20,7 @@ import {
   TestWalletContext,
 } from '../wallet/test/wallet-test.helpers';
 import { Gender } from './entities/user-profile.entity';
+import { User } from './entities/user.entity';
 import { UsersModule } from './users.module';
 
 describe('UsersController (integration)', () => {
@@ -479,6 +481,185 @@ describe('UsersController (integration)', () => {
 
     expect(after.body.profileCompleted).toBe(true);
     expect(after.body.profile.firstName).toBe('Complete');
+  });
+
+  it('creates profile with email, normalizes it, and leaves emailVerified false', async () => {
+    const login = await createAuthenticatedUser();
+    const trackedWallet = tracked[tracked.length - 1];
+    const balanceBefore = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: trackedWallet.walletId });
+    const txCountBefore = await dataSource
+      .getRepository(WalletTransaction)
+      .count({ where: { userId: login.user.id } });
+
+    const created = await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        firstName: 'Aditya',
+        lastName: 'Gangwar',
+        email: 'Aditya@Example.com',
+        gender: Gender.MALE,
+      })
+      .expect(201);
+
+    expect(created.body).toMatchObject({
+      firstName: 'Aditya',
+      lastName: 'Gangwar',
+      gender: Gender.MALE,
+    });
+    expect(created.body).not.toHaveProperty('email');
+    expect(created.body).not.toHaveProperty('walletId');
+
+    const user = await dataSource.getRepository(User).findOneByOrFail({
+      id: login.user.id,
+    });
+    expect(user.email).toBe('aditya@example.com');
+    expect(user.emailVerified).toBe(false);
+
+    const me = await request(app.getHttpServer())
+      .get('/users/me')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(me.body.profileCompleted).toBe(true);
+    expect(me.body.user.email).toBe('aditya@example.com');
+    expect(me.body.user.emailVerified).toBe(false);
+    expect(me.body.profile.firstName).toBe('Aditya');
+
+    const balanceAfter = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: trackedWallet.walletId });
+    const txCountAfter = await dataSource
+      .getRepository(WalletTransaction)
+      .count({ where: { userId: login.user.id } });
+    expect(balanceAfter.purchasedAvailable).toBe(balanceBefore.purchasedAvailable);
+    expect(txCountAfter).toBe(txCountBefore);
+  });
+
+  it('creates profile without email when omitted', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ firstName: 'Ada', lastName: 'Lovelace' })
+      .expect(201);
+
+    const me = await request(app.getHttpServer())
+      .get('/users/me')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(me.body.user.email).toBeNull();
+    expect(me.body.user.emailVerified).toBe(false);
+    expect(me.body.profileCompleted).toBe(true);
+  });
+
+  it('rejects invalid email with 400', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        firstName: 'Ada',
+        email: 'not-an-email',
+      })
+      .expect(400);
+  });
+
+  it('normalizes email with surrounding spaces', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        firstName: 'Ada',
+        email: '  Ada@Example.com  ',
+      })
+      .expect(201);
+
+    const me = await request(app.getHttpServer())
+      .get('/users/me')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(me.body.user.email).toBe('ada@example.com');
+    expect(me.body.user.emailVerified).toBe(false);
+  });
+
+  it('duplicate email belonging to another user returns 409', async () => {
+    const first = await createAuthenticatedUser();
+    const second = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${first.accessToken}`)
+      .send({ firstName: 'First', email: 'shared@example.com' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${second.accessToken}`)
+      .send({ firstName: 'Second', email: 'Shared@Example.com' })
+      .expect(409);
+
+    const secondUser = await dataSource.getRepository(User).findOneByOrFail({
+      id: second.user.id,
+    });
+    expect(secondUser.email).toBeNull();
+  });
+
+  it('same user may create profile using their existing email', async () => {
+    const login = await createAuthenticatedUser();
+    await dataSource.getRepository(User).update(
+      { id: login.user.id },
+      { email: 'already@example.com', emailVerified: false },
+    );
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        firstName: 'Ada',
+        email: 'Already@Example.com',
+      })
+      .expect(201);
+
+    const me = await request(app.getHttpServer())
+      .get('/users/me')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(me.body.user.email).toBe('already@example.com');
+    expect(me.body.user.emailVerified).toBe(false);
+    expect(me.body.profileCompleted).toBe(true);
+  });
+
+  it('rejects unknown email-related extra fields', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        firstName: 'Ada',
+        email: 'ada@example.com',
+        emailVerified: true,
+      })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        firstName: 'Ada',
+        emailAddress: 'ada@example.com',
+      })
+      .expect(400);
   });
 
   it('JWT payload used by guard contains only sub as identity claim', async () => {
