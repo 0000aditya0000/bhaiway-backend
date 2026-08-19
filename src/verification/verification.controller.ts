@@ -43,7 +43,7 @@ export class VerificationController {
   @ApiOperation({
     summary: 'Submit identity verification',
     description:
-      'Creates a PENDING identity verification submission. Clients cannot set VERIFIED status.',
+      'Creates an identity verification submission. Outcome is determined by the verification provider. Clients cannot set VERIFIED status.',
   })
   @ApiCreatedResponse({ type: VerificationStatusViewDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
@@ -64,7 +64,7 @@ export class VerificationController {
   @ApiOperation({
     summary: 'Submit driving license verification',
     description:
-      'Creates a PENDING driving license verification submission. Clients cannot set VERIFIED status.',
+      'Creates a driving license verification submission. Outcome is determined by the verification provider. Clients cannot set VERIFIED status.',
   })
   @ApiCreatedResponse({ type: VerificationStatusViewDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
@@ -85,7 +85,7 @@ export class VerificationController {
   @ApiOperation({
     summary: 'Submit vehicle verification',
     description:
-      'Creates a PENDING vehicle verification submission. Clients cannot set VERIFIED status.',
+      'Creates a vehicle verification submission. Outcome is determined by the verification provider. Clients cannot set VERIFIED status.',
   })
   @ApiCreatedResponse({ type: VerificationStatusViewDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })

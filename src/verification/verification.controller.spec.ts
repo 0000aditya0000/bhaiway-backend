@@ -32,6 +32,11 @@ describe('VerificationModule (integration)', () => {
   let authService: AuthService;
   let verificationService: VerificationService;
   const tracked: TestWalletContext[] = [];
+  const otpProvider = {
+    verifyAccessToken: jest
+      .fn()
+      .mockRejectedValue(new Msg91ResponseFormatError()),
+  };
 
   beforeAll(async () => {
     assertSafeTestDatabaseUrl(process.env.DATABASE_URL);
@@ -55,11 +60,7 @@ describe('VerificationModule (integration)', () => {
       ],
     })
       .overrideProvider(OTP_PROVIDER)
-      .useValue({
-        verifyAccessToken: jest
-          .fn()
-          .mockRejectedValue(new Msg91ResponseFormatError()),
-      })
+      .useValue(otpProvider)
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -78,6 +79,7 @@ describe('VerificationModule (integration)', () => {
   });
 
   afterEach(async () => {
+    otpProvider.verifyAccessToken.mockClear();
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
@@ -182,7 +184,7 @@ describe('VerificationModule (integration)', () => {
     expect(me.vehicle.status).toBe(VerificationStatus.PENDING);
   });
 
-  it('submits identity verification as PENDING', async () => {
+  it('submits identity verification as VERIFIED via stub provider', async () => {
     const login = await createAuthenticatedUser();
 
     const response = await request(app.getHttpServer())
@@ -195,17 +197,37 @@ describe('VerificationModule (integration)', () => {
       })
       .expect(201);
 
-    expect(response.body.status).toBe(VerificationStatus.PENDING);
+    expect(response.body.status).toBe(VerificationStatus.VERIFIED);
     expect(response.body.submittedAt).toBeTruthy();
-    expect(response.body.verifiedAt).toBeNull();
+    expect(response.body.verifiedAt).toBeTruthy();
+    expect(response.body.rejectedAt).toBeNull();
+    expect(response.body.rejectionReason).toBeNull();
+    expect(response.body.expiresAt).toBeNull();
 
     const record = await currentRecord(
       login.user.id,
       VerificationType.IDENTITY,
     );
-    expect(record.status).toBe(VerificationStatus.PENDING);
+    expect(record.status).toBe(VerificationStatus.VERIFIED);
     expect(record.provider).toBe('stub');
+    expect(record.verifiedAt).toBeTruthy();
+    expect(record.rejectedAt).toBeNull();
+    expect(record.rejectionReason).toBeNull();
     expect(record.documentUrl).toBe('https://cdn.example.com/id.pdf');
+
+    const me = await request(app.getHttpServer())
+      .get('/verification/me')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(me.body.identity).toMatchObject({
+      status: VerificationStatus.VERIFIED,
+      rejectedAt: null,
+      rejectionReason: null,
+      expiresAt: null,
+    });
+    expect(me.body.identity.submittedAt).toBeTruthy();
+    expect(me.body.identity.verifiedAt).toBeTruthy();
   });
 
   it('submits driving license verification', async () => {
@@ -217,7 +239,7 @@ describe('VerificationModule (integration)', () => {
       .send({ documentType: 'DL_SCAN' })
       .expect(201);
 
-    expect(response.body.status).toBe(VerificationStatus.PENDING);
+    expect(response.body.status).toBe(VerificationStatus.VERIFIED);
 
     const record = await currentRecord(
       login.user.id,
@@ -235,7 +257,7 @@ describe('VerificationModule (integration)', () => {
       .send({ documentType: 'RC_SCAN' })
       .expect(201);
 
-    expect(response.body.status).toBe(VerificationStatus.PENDING);
+    expect(response.body.status).toBe(VerificationStatus.VERIFIED);
 
     const record = await currentRecord(
       login.user.id,
@@ -318,7 +340,7 @@ describe('VerificationModule (integration)', () => {
       VerificationType.IDENTITY,
     );
     expect(current.id).not.toBe(first.id);
-    expect(current.status).toBe(VerificationStatus.PENDING);
+    expect(current.status).toBe(VerificationStatus.VERIFIED);
     expect(current.documentReference).toBe('second');
 
     const historical = await dataSource
@@ -350,7 +372,20 @@ describe('VerificationModule (integration)', () => {
       login.user.id,
       VerificationType.IDENTITY,
     );
-    expect(record.status).toBe(VerificationStatus.PENDING);
+    expect(record.status).toBe(VerificationStatus.VERIFIED);
+  });
+
+  it('client cannot send verified=true to control status', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        documentType: 'IDENTITY_SCAN',
+        verified: true,
+      })
+      .expect(400);
   });
 
   it('client cannot set status', async () => {
@@ -462,12 +497,6 @@ describe('VerificationModule (integration)', () => {
   it('canBookRide() false when identity is not VERIFIED', async () => {
     const login = await createAuthenticatedUser();
 
-    await request(app.getHttpServer())
-      .post('/verification/identity')
-      .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({ documentType: 'IDENTITY_SCAN' })
-      .expect(201);
-
     const result = await verificationService.canBookRide(login.user.id);
     expect(result.allowed).toBe(false);
     expect(result.missing).toEqual([VerificationType.IDENTITY]);
@@ -483,17 +512,60 @@ describe('VerificationModule (integration)', () => {
       .send({ documentType: 'IDENTITY_SCAN' })
       .expect(201);
 
-    const record = await currentRecord(
-      login.user.id,
-      VerificationType.IDENTITY,
-    );
-    await verificationService.applyTrustedVerificationDecision(record.id, {
-      status: VerificationStatus.VERIFIED,
-    });
-
     const result = await verificationService.canBookRide(login.user.id);
     expect(result.allowed).toBe(true);
     expect(result.missing).toEqual([]);
     expect(result.vehicleEligible).toBeNull();
+  });
+
+  it('does not call MSG91 when submitting identity verification', async () => {
+    const login = await createAuthenticatedUser();
+    otpProvider.verifyAccessToken.mockClear();
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
+
+    expect(otpProvider.verifyAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('trusted decision still supports REJECTED, IN_REVIEW, and EXPIRED', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
+
+    const record = await currentRecord(
+      login.user.id,
+      VerificationType.IDENTITY,
+    );
+
+    const inReview = await verificationService.applyTrustedVerificationDecision(
+      record.id,
+      { status: VerificationStatus.IN_REVIEW },
+    );
+    expect(inReview.status).toBe(VerificationStatus.IN_REVIEW);
+
+    const rejected = await verificationService.applyTrustedVerificationDecision(
+      record.id,
+      {
+        status: VerificationStatus.REJECTED,
+        rejectionReason: 'Mismatch',
+      },
+    );
+    expect(rejected.status).toBe(VerificationStatus.REJECTED);
+    expect(rejected.rejectedAt).toBeTruthy();
+    expect(rejected.rejectionReason).toBe('Mismatch');
+
+    const expired = await verificationService.applyTrustedVerificationDecision(
+      record.id,
+      { status: VerificationStatus.EXPIRED },
+    );
+    expect(expired.status).toBe(VerificationStatus.EXPIRED);
   });
 });

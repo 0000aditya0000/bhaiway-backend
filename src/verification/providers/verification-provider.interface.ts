@@ -1,4 +1,4 @@
-import { VerificationType } from '../enums/verification.enums';
+import { VerificationStatus, VerificationType } from '../enums/verification.enums';
 
 export const VERIFICATION_PROVIDER = Symbol('VERIFICATION_PROVIDER');
 
@@ -14,11 +14,16 @@ export interface VerificationProviderSubmitResult {
   /** Logical provider name (e.g. stub, digilocker) — never a secret. */
   provider: string;
   providerReference: string;
+  /**
+   * Provider-authoritative outcome. When omitted, the service defaults to PENDING.
+   * Clients never supply this.
+   */
+  status?: VerificationStatus;
 }
 
 /**
  * Abstraction for future external KYC / DL / RC providers.
- * No real provider is wired in this phase.
+ * The provider determines the verification outcome; clients cannot set status.
  */
 export interface VerificationProvider {
   submitIdentity(

@@ -18,6 +18,7 @@ import {
 import {
   VERIFICATION_PROVIDER,
   type VerificationProvider,
+  type VerificationProviderSubmitResult,
 } from './providers/verification-provider.interface';
 import type {
   MyVerificationsResponse,
@@ -85,8 +86,7 @@ export class VerificationService {
       userId,
       VerificationType.IDENTITY,
       dto,
-      providerResult.provider,
-      providerResult.providerReference,
+      providerResult,
     );
   }
 
@@ -107,8 +107,7 @@ export class VerificationService {
       userId,
       VerificationType.DRIVING_LICENSE,
       dto,
-      providerResult.provider,
-      providerResult.providerReference,
+      providerResult,
     );
   }
 
@@ -128,8 +127,7 @@ export class VerificationService {
       userId,
       VerificationType.VEHICLE,
       dto,
-      providerResult.provider,
-      providerResult.providerReference,
+      providerResult,
     );
   }
 
@@ -260,8 +258,7 @@ export class VerificationService {
     userId: string,
     verificationType: VerificationType,
     dto: SubmitVerificationDto,
-    provider: string,
-    providerReference: string,
+    providerResult: VerificationProviderSubmitResult,
   ): Promise<VerificationStatusView> {
     await this.requireUser(userId);
 
@@ -283,19 +280,24 @@ export class VerificationService {
         await repo.save(current);
       }
 
+      const now = new Date();
+      const status = providerResult.status ?? VerificationStatus.PENDING;
+      const verified = status === VerificationStatus.VERIFIED;
+      const rejected = status === VerificationStatus.REJECTED;
+
       const created = repo.create({
         userId,
         verificationType,
-        status: VerificationStatus.PENDING,
-        provider,
-        providerReference,
+        status,
+        provider: providerResult.provider,
+        providerReference: providerResult.providerReference,
         documentUrl: dto.documentUrl ?? null,
         documentType: dto.documentType ?? null,
         documentReference: dto.documentReference ?? null,
         isCurrent: true,
-        submittedAt: new Date(),
-        verifiedAt: null,
-        rejectedAt: null,
+        submittedAt: now,
+        verifiedAt: verified ? now : null,
+        rejectedAt: rejected ? now : null,
         rejectionReason: null,
         expiresAt: null,
       });

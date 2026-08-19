@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 
+import { VerificationStatus } from '../enums/verification.enums';
 import type {
   VerificationProvider,
   VerificationProviderSubmitInput,
@@ -8,8 +9,9 @@ import type {
 } from './verification-provider.interface';
 
 /**
- * Stub provider — records a synthetic reference only.
- * Does not contact any external KYC / Digilocker / RC API.
+ * Development stub — simulates a successful KYC outcome immediately.
+ * Does not contact any external KYC / Digilocker / RC / MSG91 API.
+ * A real provider will later return PENDING / IN_REVIEW / VERIFIED / REJECTED.
  */
 @Injectable()
 export class StubVerificationProvider implements VerificationProvider {
@@ -38,6 +40,7 @@ export class StubVerificationProvider implements VerificationProvider {
     return {
       provider: 'stub',
       providerReference: `stub-${kind}-${input.userId}-${randomUUID()}`,
+      status: VerificationStatus.VERIFIED,
     };
   }
 }
