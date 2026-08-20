@@ -9,9 +9,14 @@ import type {
 } from './verification-provider.interface';
 
 /**
- * Development stub — simulates a successful KYC outcome immediately.
+ * Development/staging stub — simulates a successful KYC outcome immediately
+ * for identity, driving license, and vehicle submissions.
  * Does not contact any external KYC / Digilocker / RC / MSG91 API.
  * A real provider will later return PENDING / IN_REVIEW / VERIFIED / REJECTED.
+ *
+ * When this provider is active, VerificationService may auto-submit missing
+ * DL / vehicle verifications after identity verification or vehicle creation
+ * so publisher flows can be tested end-to-end without client-supplied status.
  */
 @Injectable()
 export class StubVerificationProvider implements VerificationProvider {

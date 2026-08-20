@@ -32,6 +32,7 @@ import {
 } from '../verification/enums/verification.enums';
 import { VerificationModule } from '../verification/verification.module';
 import { VerificationService } from '../verification/verification.service';
+import { markVerificationVerified } from '../verification/test/verification-test.helpers';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { VehicleType } from '../vehicles/enums/vehicle-type.enum';
 import { VehiclesModule } from '../vehicles/vehicles.module';
@@ -216,29 +217,12 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
   }
 
   async function markVerified(userId: string, type: VerificationType) {
-    if (type === VerificationType.IDENTITY) {
-      await verificationService.submitIdentityVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    } else if (type === VerificationType.DRIVING_LICENSE) {
-      await verificationService.submitDrivingLicenseVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    } else {
-      await verificationService.submitVehicleVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    }
-    const record = await dataSource
-      .getRepository(UserVerification)
-      .findOneByOrFail({
-        userId,
-        verificationType: type,
-        isCurrent: true,
-      });
-    await verificationService.applyTrustedVerificationDecision(record.id, {
-      status: VerificationStatus.VERIFIED,
-    });
+    await markVerificationVerified(
+      verificationService,
+      dataSource,
+      userId,
+      type,
+    );
   }
 
   async function fundedDriver(credit = 10000n) {

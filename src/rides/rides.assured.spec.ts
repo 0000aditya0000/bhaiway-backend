@@ -20,6 +20,7 @@ import {
 } from '../verification/enums/verification.enums';
 import { VerificationModule } from '../verification/verification.module';
 import { VerificationService } from '../verification/verification.service';
+import { markVerificationVerified, rejectVerification } from '../verification/test/verification-test.helpers';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { VehicleType } from '../vehicles/enums/vehicle-type.enum';
 import { VehiclesModule } from '../vehicles/vehicles.module';
@@ -176,31 +177,12 @@ describe('Assured Ride Phase 1 (integration)', () => {
   }
 
   async function markVerified(userId: string, type: VerificationType) {
-    if (type === VerificationType.IDENTITY) {
-      await verificationService.submitIdentityVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    } else if (type === VerificationType.DRIVING_LICENSE) {
-      await verificationService.submitDrivingLicenseVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    } else {
-      await verificationService.submitVehicleVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    }
-
-    const record = await dataSource
-      .getRepository(UserVerification)
-      .findOneByOrFail({
-        userId,
-        verificationType: type,
-        isCurrent: true,
-      });
-
-    await verificationService.applyTrustedVerificationDecision(record.id, {
-      status: VerificationStatus.VERIFIED,
-    });
+    await markVerificationVerified(
+      verificationService,
+      dataSource,
+      userId,
+      type,
+    );
   }
 
   async function createVehicle(userId: string) {
@@ -334,20 +316,28 @@ describe('Assured Ride Phase 1 (integration)', () => {
       const noDl = await createAuthenticatedUser();
       const vehicleC = await createVehicle(noDl.login.user.id);
       await markVerified(noDl.login.user.id, VerificationType.IDENTITY);
-      await markVerified(noDl.login.user.id, VerificationType.VEHICLE);
+      await rejectVerification(
+        verificationService,
+        dataSource,
+        noDl.login.user.id,
+        VerificationType.DRIVING_LICENSE,
+      );
+
+      const noVehicle = await createAuthenticatedUser();
+      const vehicleD = await createVehicle(noVehicle.login.user.id);
+      await markVerified(noVehicle.login.user.id, VerificationType.IDENTITY);
+      await rejectVerification(
+        verificationService,
+        dataSource,
+        noVehicle.login.user.id,
+        VerificationType.VEHICLE,
+      );
       await request(app.getHttpServer())
         .post('/rides')
         .set('Authorization', `Bearer ${noDl.login.accessToken}`)
         .send(assuredPayload(vehicleC.id))
         .expect(403);
 
-      const noVehicle = await createAuthenticatedUser();
-      const vehicleD = await createVehicle(noVehicle.login.user.id);
-      await markVerified(noVehicle.login.user.id, VerificationType.IDENTITY);
-      await markVerified(
-        noVehicle.login.user.id,
-        VerificationType.DRIVING_LICENSE,
-      );
       await request(app.getHttpServer())
         .post('/rides')
         .set('Authorization', `Bearer ${noVehicle.login.accessToken}`)

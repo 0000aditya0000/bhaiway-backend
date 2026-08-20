@@ -70,6 +70,10 @@ export class VehiclesService {
       });
 
       const saved = await this.vehicleRepository.save(vehicle);
+      await this.verificationService.associateStubVehicleVerification(
+        userId,
+        saved.id,
+      );
       return this.toResponse(saved);
     } catch (error) {
       this.rethrowDuplicateRegistration(error);

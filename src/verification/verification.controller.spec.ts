@@ -230,7 +230,7 @@ describe('VerificationModule (integration)', () => {
     expect(me.body.identity.verifiedAt).toBeTruthy();
   });
 
-  it('submits driving license verification', async () => {
+  it('submits driving license verification as VERIFIED via stub provider', async () => {
     const login = await createAuthenticatedUser();
 
     const response = await request(app.getHttpServer())
@@ -240,15 +240,18 @@ describe('VerificationModule (integration)', () => {
       .expect(201);
 
     expect(response.body.status).toBe(VerificationStatus.VERIFIED);
+    expect(response.body.verifiedAt).toBeTruthy();
 
     const record = await currentRecord(
       login.user.id,
       VerificationType.DRIVING_LICENSE,
     );
     expect(record.verificationType).toBe(VerificationType.DRIVING_LICENSE);
+    expect(record.status).toBe(VerificationStatus.VERIFIED);
+    expect(record.provider).toBe('stub');
   });
 
-  it('submits vehicle verification', async () => {
+  it('submits vehicle verification as VERIFIED via stub provider', async () => {
     const login = await createAuthenticatedUser();
 
     const response = await request(app.getHttpServer())
@@ -258,12 +261,101 @@ describe('VerificationModule (integration)', () => {
       .expect(201);
 
     expect(response.body.status).toBe(VerificationStatus.VERIFIED);
+    expect(response.body.verifiedAt).toBeTruthy();
 
     const record = await currentRecord(
       login.user.id,
       VerificationType.VEHICLE,
     );
     expect(record.verificationType).toBe(VerificationType.VEHICLE);
+    expect(record.status).toBe(VerificationStatus.VERIFIED);
+    expect(record.provider).toBe('stub');
+  });
+
+  it('stub bootstrap after identity submit verifies DL and vehicle in GET /verification/me', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
+
+    const me = await request(app.getHttpServer())
+      .get('/verification/me')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(me.body.identity.status).toBe(VerificationStatus.VERIFIED);
+    expect(me.body.drivingLicense.status).toBe(VerificationStatus.VERIFIED);
+    expect(me.body.vehicle.status).toBe(VerificationStatus.VERIFIED);
+    expect(me.body.drivingLicense.verifiedAt).toBeTruthy();
+    expect(me.body.vehicle.verifiedAt).toBeTruthy();
+  });
+
+  it('stub bootstrap on GET /verification/me when identity already verified', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
+
+    await dataSource.getRepository(UserVerification).delete({
+      userId: login.user.id,
+      verificationType: VerificationType.DRIVING_LICENSE,
+    });
+    await dataSource.getRepository(UserVerification).delete({
+      userId: login.user.id,
+      verificationType: VerificationType.VEHICLE,
+    });
+
+    const me = await request(app.getHttpServer())
+      .get('/verification/me')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(me.body.identity.status).toBe(VerificationStatus.VERIFIED);
+    expect(me.body.drivingLicense.status).toBe(VerificationStatus.VERIFIED);
+    expect(me.body.vehicle.status).toBe(VerificationStatus.VERIFIED);
+  });
+
+  it('canPublishRide() true after stub bootstrap from identity submit only', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
+
+    const result = await verificationService.canPublishRide(login.user.id);
+    expect(result.allowed).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
+
+  it('canPublishRide() still fails when a required verification is not VERIFIED', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
+
+    const dlRecord = await currentRecord(
+      login.user.id,
+      VerificationType.DRIVING_LICENSE,
+    );
+    await verificationService.applyTrustedVerificationDecision(dlRecord.id, {
+      status: VerificationStatus.REJECTED,
+      rejectionReason: 'Manual test rejection',
+    });
+
+    const result = await verificationService.canPublishRide(login.user.id);
+    expect(result.allowed).toBe(false);
+    expect(result.missing).toContain(VerificationType.DRIVING_LICENSE);
   });
 
   it('cannot submit using another userId from the body', async () => {
@@ -464,29 +556,11 @@ describe('VerificationModule (integration)', () => {
   it('canPublishRide() true only when required verification states are VERIFIED', async () => {
     const login = await createAuthenticatedUser();
 
-    for (const type of [
-      VerificationType.IDENTITY,
-      VerificationType.DRIVING_LICENSE,
-      VerificationType.VEHICLE,
-    ]) {
-      const endpoint =
-        type === VerificationType.IDENTITY
-          ? 'identity'
-          : type === VerificationType.DRIVING_LICENSE
-            ? 'driving-license'
-            : 'vehicle';
-
-      await request(app.getHttpServer())
-        .post(`/verification/${endpoint}`)
-        .set('Authorization', `Bearer ${login.accessToken}`)
-        .send({ documentType: `${type}_SCAN` })
-        .expect(201);
-
-      const record = await currentRecord(login.user.id, type);
-      await verificationService.applyTrustedVerificationDecision(record.id, {
-        status: VerificationStatus.VERIFIED,
-      });
-    }
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
 
     const result = await verificationService.canPublishRide(login.user.id);
     expect(result.allowed).toBe(true);

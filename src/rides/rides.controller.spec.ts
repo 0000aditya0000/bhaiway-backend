@@ -16,6 +16,10 @@ import {
 } from '../verification/enums/verification.enums';
 import { VerificationModule } from '../verification/verification.module';
 import { VerificationService } from '../verification/verification.service';
+import {
+  markVerificationVerified,
+  rejectVerification,
+} from '../verification/test/verification-test.helpers';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { VehicleType } from '../vehicles/enums/vehicle-type.enum';
 import { VehiclesModule } from '../vehicles/vehicles.module';
@@ -134,31 +138,12 @@ describe('RidesController (integration)', () => {
   }
 
   async function markVerified(userId: string, type: VerificationType) {
-    if (type === VerificationType.IDENTITY) {
-      await verificationService.submitIdentityVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    } else if (type === VerificationType.DRIVING_LICENSE) {
-      await verificationService.submitDrivingLicenseVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    } else {
-      await verificationService.submitVehicleVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    }
-
-    const record = await dataSource
-      .getRepository(UserVerification)
-      .findOneByOrFail({
-        userId,
-        verificationType: type,
-        isCurrent: true,
-      });
-
-    await verificationService.applyTrustedVerificationDecision(record.id, {
-      status: VerificationStatus.VERIFIED,
-    });
+    await markVerificationVerified(
+      verificationService,
+      dataSource,
+      userId,
+      type,
+    );
   }
 
   async function createVehicleForUser(userId: string) {
@@ -226,7 +211,12 @@ describe('RidesController (integration)', () => {
     const login = await createAuthenticatedUser();
     const vehicle = await createVehicleForUser(login.user.id);
     await markVerified(login.user.id, VerificationType.IDENTITY);
-    await markVerified(login.user.id, VerificationType.VEHICLE);
+    await rejectVerification(
+      verificationService,
+      dataSource,
+      login.user.id,
+      VerificationType.DRIVING_LICENSE,
+    );
 
     await request(app.getHttpServer())
       .post('/rides')
@@ -239,7 +229,12 @@ describe('RidesController (integration)', () => {
     const login = await createAuthenticatedUser();
     const vehicle = await createVehicleForUser(login.user.id);
     await markVerified(login.user.id, VerificationType.IDENTITY);
-    await markVerified(login.user.id, VerificationType.DRIVING_LICENSE);
+    await rejectVerification(
+      verificationService,
+      dataSource,
+      login.user.id,
+      VerificationType.VEHICLE,
+    );
 
     await request(app.getHttpServer())
       .post('/rides')
@@ -287,14 +282,35 @@ describe('RidesController (integration)', () => {
     const login = await createAuthenticatedUser();
     const vehicle = await createVehicleForUser(login.user.id);
     await markVerified(login.user.id, VerificationType.IDENTITY);
-    await markVerified(login.user.id, VerificationType.DRIVING_LICENSE);
-    // vehicle verification intentionally missing
+    await rejectVerification(
+      verificationService,
+      dataSource,
+      login.user.id,
+      VerificationType.VEHICLE,
+    );
 
     await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
       .send(ridePayload(vehicle.id))
       .expect(403);
+  });
+
+  it('stub identity verification bootstrap allows publishing without separate DL/vehicle submit', async () => {
+    const login = await createAuthenticatedUser();
+    const vehicle = await createVehicleForUser(login.user.id);
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/rides')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send(ridePayload(vehicle.id))
+      .expect(201);
   });
 
   it('successful ride creation', async () => {

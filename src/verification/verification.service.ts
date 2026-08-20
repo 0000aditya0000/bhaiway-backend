@@ -15,6 +15,7 @@ import {
   VerificationStatus,
   VerificationType,
 } from './enums/verification.enums';
+import { StubVerificationProvider } from './providers/stub-verification.provider';
 import {
   VERIFICATION_PROVIDER,
   type VerificationProvider,
@@ -53,6 +54,22 @@ export class VerificationService {
   async getMyVerifications(userId: string): Promise<MyVerificationsResponse> {
     await this.requireUser(userId);
 
+    if (this.verificationProvider instanceof StubVerificationProvider) {
+      const identityVerified = await this.isCurrentlyVerified(
+        userId,
+        VerificationType.IDENTITY,
+      );
+      if (identityVerified) {
+        const activeVehicle = await this.vehicleRepository.findOne({
+          where: { userId, deletedAt: IsNull(), isActive: true },
+        });
+        await this.bootstrapStubPublisherVerifications(
+          userId,
+          activeVehicle?.id,
+        );
+      }
+    }
+
     const current = await this.verificationRepository.find({
       where: { userId, isCurrent: true },
     });
@@ -82,12 +99,18 @@ export class VerificationService {
       documentReference: dto.documentReference ?? null,
     });
 
-    return this.submitVerification(
+    const view = await this.submitVerification(
       userId,
       VerificationType.IDENTITY,
       dto,
       providerResult,
     );
+
+    if (providerResult.provider === 'stub') {
+      await this.bootstrapStubPublisherVerifications(userId);
+    }
+
+    return view;
   }
 
   async submitDrivingLicenseVerification(
@@ -252,6 +275,77 @@ export class VerificationService {
 
     const saved = await this.verificationRepository.save(record);
     return this.toStatusView(saved);
+  }
+
+  /**
+   * Staging stub only — submits missing publisher prerequisites through the
+   * normal verification flow. Real providers are unaffected.
+   */
+  async bootstrapStubPublisherVerifications(
+    userId: string,
+    vehicleId?: string,
+  ): Promise<void> {
+    if (!(this.verificationProvider instanceof StubVerificationProvider)) {
+      return;
+    }
+
+    if (
+      await this.needsStubBootstrap(userId, VerificationType.DRIVING_LICENSE)
+    ) {
+      await this.submitDrivingLicenseVerification(userId, {
+        documentType: 'STUB_DL',
+      });
+    }
+
+    if (await this.needsStubBootstrap(userId, VerificationType.VEHICLE)) {
+      await this.submitVehicleVerification(userId, {
+        documentType: 'STUB_RC',
+        documentReference: vehicleId,
+      });
+    }
+  }
+
+  /**
+   * Staging stub only — links an existing vehicle verification to the user's
+   * vehicle without bypassing VerificationService submit rules.
+   */
+  async associateStubVehicleVerification(
+    userId: string,
+    vehicleId: string,
+  ): Promise<void> {
+    if (!(this.verificationProvider instanceof StubVerificationProvider)) {
+      return;
+    }
+
+    const current = await this.verificationRepository.findOne({
+      where: {
+        userId,
+        verificationType: VerificationType.VEHICLE,
+        isCurrent: true,
+      },
+    });
+
+    if (!current) {
+      return;
+    }
+
+    if (
+      current.status === VerificationStatus.VERIFIED &&
+      current.documentReference !== vehicleId
+    ) {
+      current.documentReference = vehicleId;
+      await this.verificationRepository.save(current);
+    }
+  }
+
+  private async needsStubBootstrap(
+    userId: string,
+    verificationType: VerificationType,
+  ): Promise<boolean> {
+    const current = await this.verificationRepository.findOne({
+      where: { userId, verificationType, isCurrent: true },
+    });
+    return !current;
   }
 
   private async submitVerification(

@@ -16,6 +16,7 @@ import {
 } from '../verification/enums/verification.enums';
 import { VerificationModule } from '../verification/verification.module';
 import { VerificationService } from '../verification/verification.service';
+import { markVerificationVerified } from '../verification/test/verification-test.helpers';
 import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { WalletModule } from '../wallet/wallet.module';
@@ -154,31 +155,12 @@ describe('VehiclesController (integration)', () => {
   }
 
   async function markVerified(userId: string, type: VerificationType) {
-    if (type === VerificationType.IDENTITY) {
-      await verificationService.submitIdentityVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    } else if (type === VerificationType.DRIVING_LICENSE) {
-      await verificationService.submitDrivingLicenseVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    } else {
-      await verificationService.submitVehicleVerification(userId, {
-        documentType: `${type}_SCAN`,
-      });
-    }
-
-    const record = await dataSource
-      .getRepository(UserVerification)
-      .findOneByOrFail({
-        userId,
-        verificationType: type,
-        isCurrent: true,
-      });
-
-    await verificationService.applyTrustedVerificationDecision(record.id, {
-      status: VerificationStatus.VERIFIED,
-    });
+    await markVerificationVerified(
+      verificationService,
+      dataSource,
+      userId,
+      type,
+    );
   }
 
   it('POST /vehicles requires JWT', async () => {
@@ -506,8 +488,41 @@ describe('VehiclesController (integration)', () => {
     expect(row!.isActive).toBe(false);
   });
 
+  it('stub bootstrap on vehicle create associates vehicle verification with the vehicle', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
+
+    const created = await request(app.getHttpServer())
+      .post('/vehicles')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send(await createVehiclePayload())
+      .expect(201);
+
+    const record = await dataSource.getRepository(UserVerification).findOneBy({
+      userId: login.user.id,
+      verificationType: VerificationType.VEHICLE,
+      isCurrent: true,
+    });
+
+    expect(record).toBeTruthy();
+    expect(record!.status).toBe(VerificationStatus.VERIFIED);
+    expect(record!.documentReference).toBe(created.body.id);
+  });
+
   it('vehicle verification remains controlled by UserVerification', async () => {
     const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
+
     const created = await request(app.getHttpServer())
       .post('/vehicles')
       .set('Authorization', `Bearer ${login.accessToken}`)
@@ -516,8 +531,6 @@ describe('VehiclesController (integration)', () => {
 
     expect(created.body.isVerified).toBeUndefined();
     expect(created.body.verificationStatus).toBeUndefined();
-
-    await markVerified(login.user.id, VerificationType.VEHICLE);
 
     const me = await verificationService.getMyVerifications(login.user.id);
     expect(me.vehicle.status).toBe(VerificationStatus.VERIFIED);
