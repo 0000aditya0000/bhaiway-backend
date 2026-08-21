@@ -49,7 +49,10 @@ import { WalletHoldType } from '../wallet/entities/wallet-hold.entity';
 import { Wallet, WalletStatus } from '../wallet/entities/wallet.entity';
 import { WalletService } from '../wallet/wallet.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
-import { BookingResponseDto } from './dto/booking-response.dto';
+import {
+  BookingDriverDto,
+  BookingResponseDto,
+} from './dto/booking-response.dto';
 import { DriverBookingsQueryDto } from './dto/driver-bookings-query.dto';
 import {
   DriverBookingItemDto,
@@ -62,6 +65,11 @@ import {
   BookingPaymentStatus,
   BookingStatus,
 } from './enums/booking.enums';
+import { UserVerification } from '../verification/entities/user-verification.entity';
+import {
+  VerificationStatus,
+  VerificationType,
+} from '../verification/enums/verification.enums';
 
 export interface CreateBookingOptions {
   idempotencyKey?: string | null;
@@ -79,6 +87,8 @@ export class BookingsService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(UserProfile)
     private readonly userProfileRepository: Repository<UserProfile>,
+    @InjectRepository(UserVerification)
+    private readonly verificationRepository: Repository<UserVerification>,
     @InjectRepository(Wallet)
     private readonly walletRepository: Repository<Wallet>,
     @InjectRepository(UserCoupon)
@@ -166,7 +176,7 @@ export class BookingsService {
     options: { requireAssuredRegularOpen?: boolean } = {},
   ): Promise<BookingResponseDto> {
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      const result = await this.dataSource.transaction(async (manager) => {
         const ride = await this.lockRideForUpdate(manager, dto.rideId);
         this.assertRideBookable(ride, passengerId);
         this.assertRegularBookingAllowedOnRide(
@@ -204,8 +214,9 @@ export class BookingsService {
         });
 
         const saved = await manager.getRepository(Booking).save(booking);
-        return this.toResponse(saved, ride);
+        return { booking: saved, ride };
       });
+      return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       this.rethrowDuplicateActiveBooking(error);
       throw error;
@@ -234,11 +245,11 @@ export class BookingsService {
       const ride = await this.rideRepository.findOne({
         where: { id: existing.rideId },
       });
-      return this.toResponse(existing, ride ?? undefined);
+      return this.toResponseWithDriver(existing, ride ?? undefined);
     }
 
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      const result = await this.dataSource.transaction(async (manager) => {
         // Lock order: Ride → Wallet → WalletBalance → PointLots
         const ride = await this.lockRideForUpdate(manager, dto.rideId);
         this.assertRideBookable(ride, passengerId);
@@ -258,7 +269,7 @@ export class BookingsService {
             passengerId,
             dto,
           );
-          return this.toResponse(existingAfterRideLock, ride);
+          return { booking: existingAfterRideLock, ride };
         }
 
         const wallet = await this.lockWalletForUpdate(manager, passengerId);
@@ -311,8 +322,9 @@ export class BookingsService {
         });
 
         const saved = await manager.getRepository(Booking).save(booking);
-        return this.toResponse(saved, ride);
+        return { booking: saved, ride };
       });
+      return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
         const recovered = await this.bookingRepository.findOne({
@@ -323,7 +335,7 @@ export class BookingsService {
           const ride = await this.rideRepository.findOne({
             where: { id: recovered.rideId },
           });
-          return this.toResponse(recovered, ride ?? undefined);
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
           'Idempotency conflict could not be resolved; existing booking not found',
@@ -339,7 +351,7 @@ export class BookingsService {
           const ride = await this.rideRepository.findOne({
             where: { id: recovered.rideId },
           });
-          return this.toResponse(recovered, ride ?? undefined);
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }
 
@@ -374,14 +386,14 @@ export class BookingsService {
       const ride = await this.rideRepository.findOne({
         where: { id: existing.rideId },
       });
-      return this.toResponse(existing, ride ?? undefined);
+      return this.toResponseWithDriver(existing, ride ?? undefined);
     }
 
     const percentage =
       await this.settingsService.getAssuredRideDepositPercentage();
 
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      const result = await this.dataSource.transaction(async (manager) => {
         const ride = await this.lockRideForUpdate(manager, dto.rideId);
         if (ride.rideType !== RideType.ASSURED) {
           throw new BadRequestException('Ride is not an Assured ride');
@@ -399,7 +411,7 @@ export class BookingsService {
             passengerId,
             dto,
           );
-          return this.toResponse(existingAfterRideLock, ride);
+          return { booking: existingAfterRideLock, ride };
         }
 
         const wallet = await this.lockWalletForUpdate(manager, passengerId);
@@ -472,8 +484,9 @@ export class BookingsService {
         });
 
         const saved = await manager.getRepository(Booking).save(booking);
-        return this.toResponse(saved, ride);
+        return { booking: saved, ride };
       });
+      return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
         const recovered = await this.bookingRepository.findOne({
@@ -484,7 +497,7 @@ export class BookingsService {
           const ride = await this.rideRepository.findOne({
             where: { id: recovered.rideId },
           });
-          return this.toResponse(recovered, ride ?? undefined);
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
           'Idempotency conflict could not be resolved; existing booking not found',
@@ -500,7 +513,7 @@ export class BookingsService {
           const ride = await this.rideRepository.findOne({
             where: { id: recovered.rideId },
           });
-          return this.toResponse(recovered, ride ?? undefined);
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }
 
@@ -569,10 +582,18 @@ export class BookingsService {
       where: { id: In(rideIds) },
     });
     const rideById = new Map(rides.map((ride) => [ride.id, ride] as const));
-
-    return bookings.map((booking) =>
-      this.toResponse(booking, rideById.get(booking.rideId)),
+    const driverById = await this.resolveDrivers(
+      rides.map((ride) => ride.driverId),
     );
+
+    return bookings.map((booking) => {
+      const ride = rideById.get(booking.rideId);
+      return this.toResponse(
+        booking,
+        ride,
+        ride ? driverById.get(ride.driverId) : undefined,
+      );
+    });
   }
 
   async findOne(
@@ -590,7 +611,12 @@ export class BookingsService {
       where: { id: booking.rideId },
     });
 
-    return this.toResponse(booking, ride ?? undefined);
+    const driver =
+      ride != null
+        ? (await this.resolveDrivers([ride.driverId])).get(ride.driverId)
+        : undefined;
+
+    return this.toResponse(booking, ride ?? undefined, driver);
   }
 
   /**
@@ -781,7 +807,78 @@ export class BookingsService {
     return (BigInt(pricePerSeat) * BigInt(seats)).toString();
   }
 
-  private toResponse(booking: Booking, ride?: Ride): BookingResponseDto {
+  private async toResponseWithDriver(
+    booking: Booking,
+    ride?: Ride,
+  ): Promise<BookingResponseDto> {
+    const driver =
+      ride != null
+        ? (await this.resolveDrivers([ride.driverId])).get(ride.driverId)
+        : undefined;
+    return this.toResponse(booking, ride, driver);
+  }
+
+  private async resolveDrivers(
+    driverIds: string[],
+  ): Promise<Map<string, BookingDriverDto>> {
+    const uniqueIds = [...new Set(driverIds.filter(Boolean))];
+    const result = new Map<string, BookingDriverDto>();
+
+    if (uniqueIds.length === 0) {
+      return result;
+    }
+
+    const [profiles, identityRows] = await Promise.all([
+      this.userProfileRepository.find({
+        where: { userId: In(uniqueIds) },
+      }),
+      this.verificationRepository.find({
+        where: {
+          userId: In(uniqueIds),
+          verificationType: VerificationType.IDENTITY,
+          isCurrent: true,
+        },
+      }),
+    ]);
+
+    const profileByUserId = new Map(
+      profiles.map((profile) => [profile.userId, profile] as const),
+    );
+    const identityByUserId = new Map(
+      identityRows.map((row) => [row.userId, row] as const),
+    );
+
+    for (const driverId of uniqueIds) {
+      const profile = profileByUserId.get(driverId);
+      const identity = identityByUserId.get(driverId);
+      result.set(driverId, {
+        id: driverId,
+        displayName: profile?.displayName ?? profile?.firstName ?? null,
+        profilePhoto: profile?.profilePhoto ?? null,
+        isVerified: this.isIdentityCurrentlyVerified(identity),
+      });
+    }
+
+    return result;
+  }
+
+  private isIdentityCurrentlyVerified(
+    record: UserVerification | undefined,
+  ): boolean {
+    if (!record || record.status !== VerificationStatus.VERIFIED) {
+      return false;
+    }
+    if (record.expiresAt && record.expiresAt.getTime() <= Date.now()) {
+      return false;
+    }
+    return true;
+  }
+
+  private toResponse(
+    booking: Booking,
+    ride?: Ride,
+    driver?: BookingDriverDto,
+  ): BookingResponseDto {
     return {
       id: booking.id,
       rideId: booking.rideId,
@@ -809,6 +906,7 @@ export class BookingsService {
                 : ride.departureTime,
           }
         : undefined,
+      driver,
       createdAt: booking.createdAt.toISOString(),
       updatedAt: booking.updatedAt.toISOString(),
     };

@@ -8,6 +8,7 @@ import { Ride } from '../rides/entities/ride.entity';
 import { SettingsModule } from '../settings/settings.module';
 import { User } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
+import { UserVerification } from '../verification/entities/user-verification.entity';
 import { VerificationModule } from '../verification/verification.module';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { WalletModule } from '../wallet/wallet.module';
@@ -22,6 +23,7 @@ import { Booking } from './entities/booking.entity';
       Ride,
       User,
       UserProfile,
+      UserVerification,
       Wallet,
       UserCoupon,
     ]),

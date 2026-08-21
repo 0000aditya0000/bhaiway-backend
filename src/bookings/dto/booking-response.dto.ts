@@ -7,6 +7,28 @@ import {
   BookingStatus,
 } from '../enums/booking.enums';
 
+/** Safe passenger-facing driver fields. Never includes phone, email, wallet, or documents. */
+export class BookingDriverDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Profile displayName when set; otherwise firstName; null when no profile exists',
+  })
+  displayName!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  profilePhoto!: string | null;
+
+  @ApiProperty({
+    description:
+      'True when the driver currently has a non-expired IDENTITY verification with status VERIFIED',
+  })
+  isVerified!: boolean;
+}
+
 export class BookingRideSummaryDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
@@ -92,6 +114,13 @@ export class BookingResponseDto {
 
   @ApiPropertyOptional({ type: BookingRideSummaryDto })
   ride?: BookingRideSummaryDto;
+
+  @ApiPropertyOptional({
+    type: BookingDriverDto,
+    description:
+      'Safe driver summary from the ride owner. Derived from UserProfile + IDENTITY verification.',
+  })
+  driver?: BookingDriverDto;
 
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;

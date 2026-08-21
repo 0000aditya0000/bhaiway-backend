@@ -32,6 +32,7 @@ import {
   cleanupTestWallet,
   TestWalletContext,
 } from '../wallet/test/wallet-test.helpers';
+import { UserProfile } from '../users/entities/user-profile.entity';
 import { BookingsModule } from './bookings.module';
 import { BookingsService } from './bookings.service';
 import { Booking } from './entities/booking.entity';
@@ -111,6 +112,9 @@ describe('BookingsController (integration)', () => {
         }
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
         await dataSource.getRepository(Vehicle).delete({ userId: ctx.userId });
+        await dataSource.getRepository(UserProfile).delete({
+          userId: ctx.userId,
+        });
         await dataSource.getRepository(UserVerification).delete({
           userId: ctx.userId,
         });
@@ -159,8 +163,36 @@ describe('BookingsController (integration)', () => {
     );
   }
 
-  async function publishableDriver(totalSeats = 3) {
+  async function publishableDriver(
+    totalSeats = 3,
+    options: {
+      displayName?: string | null;
+      profilePhoto?: string | null;
+      withProfile?: boolean;
+    } = {},
+  ) {
     const login = await createAuthenticatedUser();
+
+    if (options.withProfile !== false) {
+      await dataSource.getRepository(UserProfile).save(
+        dataSource.getRepository(UserProfile).create({
+          userId: login.user.id,
+          firstName: 'Booking',
+          lastName: 'Driver',
+          displayName:
+            options.displayName === undefined
+              ? 'Booking Driver'
+              : options.displayName,
+          gender: null,
+          dateOfBirth: null,
+          profilePhoto:
+            options.profilePhoto === undefined
+              ? 'https://cdn.example.com/booking-driver.jpg'
+              : options.profilePhoto,
+        }),
+      );
+    }
+
     const vehicle = await vehiclesService.create(login.user.id, {
       vehicleType: VehicleType.CAR,
       make: 'Honda',
@@ -224,7 +256,7 @@ describe('BookingsController (integration)', () => {
   });
 
   it('verified passenger can book successfully', async () => {
-    const { ride } = await publishableDriver();
+    const { ride, login: driver } = await publishableDriver();
     const passenger = await verifiedPassenger();
 
     const response = await request(app.getHttpServer())
@@ -242,7 +274,91 @@ describe('BookingsController (integration)', () => {
       paymentStatus: 'UNPAID',
       pricePerSeatSnapshot: '250',
       totalAmount: '500',
+      driver: {
+        id: driver.user.id,
+        displayName: 'Booking Driver',
+        profilePhoto: 'https://cdn.example.com/booking-driver.jpg',
+        isVerified: true,
+      },
     });
+  });
+
+  it('booking responses include safe driver summary consistently', async () => {
+    const { ride, login: driver } = await publishableDriver();
+    const passenger = await verifiedPassenger();
+
+    const created = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .send({ rideId: ride.id, seats: 1, paymentMethod: 'PAY_LATER' })
+      .expect(201);
+
+    expect(created.body.driver).toEqual({
+      id: driver.user.id,
+      displayName: 'Booking Driver',
+      profilePhoto: 'https://cdn.example.com/booking-driver.jpg',
+      isVerified: true,
+    });
+    expect(created.body.driver.phone).toBeUndefined();
+    expect(created.body.driver.email).toBeUndefined();
+    expect(created.body.driver.walletId).toBeUndefined();
+    expect(created.body.driver.aadhaarNumber).toBeUndefined();
+    expect(created.body.driver.drivingLicenseNumber).toBeUndefined();
+    expect(created.body).not.toHaveProperty('driverId');
+
+    const mine = await request(app.getHttpServer())
+      .get('/bookings/my')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .expect(200);
+
+    expect(mine.body).toHaveLength(1);
+    expect(mine.body[0].driver).toEqual(created.body.driver);
+
+    const one = await request(app.getHttpServer())
+      .get(`/bookings/${created.body.id}`)
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .expect(200);
+
+    expect(one.body.driver).toEqual(created.body.driver);
+  });
+
+  it('driver.profilePhoto is null when missing; isVerified reflects IDENTITY state', async () => {
+    const { ride, login: driver } = await publishableDriver(3, {
+      profilePhoto: null,
+    });
+    const passenger = await verifiedPassenger();
+
+    const created = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .send({ rideId: ride.id, seats: 1, paymentMethod: 'PAY_LATER' })
+      .expect(201);
+
+    expect(created.body.driver).toMatchObject({
+      id: driver.user.id,
+      displayName: 'Booking Driver',
+      profilePhoto: null,
+      isVerified: true,
+    });
+
+    const identity = await dataSource
+      .getRepository(UserVerification)
+      .findOneByOrFail({
+        userId: driver.user.id,
+        verificationType: VerificationType.IDENTITY,
+        isCurrent: true,
+      });
+    await verificationService.applyTrustedVerificationDecision(identity.id, {
+      status: VerificationStatus.REJECTED,
+      rejectionReason: 'Test revoke',
+    });
+
+    const mine = await request(app.getHttpServer())
+      .get('/bookings/my')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .expect(200);
+
+    expect(mine.body[0].driver.isVerified).toBe(false);
   });
 
   it('nonexistent ride rejected', async () => {
