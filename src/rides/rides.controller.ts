@@ -131,9 +131,9 @@ export class RidesController {
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Cancel an Assured ride before departure (owning driver only)',
+    summary: 'Cancel a published ride (owning driver only)',
     description:
-      'Assured only. Before scheduled departure: consumes driver ASSURED_DEPOSIT (ACTIVE→CONSUMED), releases affected rider deposits, distributes 60% of driver deposit equally among Assured riders (100% to platform if none), credits 40% (or 100%) to the platform wallet, cancels active bookings and the ride. Idempotent. Not available after departure (use no-show). Regular rides: not supported via this Assured lifecycle path. Status cannot be set via PATCH.',
+      'REGULAR: cancels the ride and all active passenger bookings (RIDE_CANCELLED). No wallet deposit/refund processing. ASSURED: before scheduled departure consumes driver ASSURED_DEPOSIT, releases affected rider deposits, distributes 60/40 compensation, cancels bookings. Idempotent when already cancelled with the same reason. Status cannot be set via PATCH.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: AssuredRideLifecycleResponseDto })
@@ -142,6 +142,9 @@ export class RidesController {
   })
   @ApiConflictResponse({
     description: 'Invalid timing/state (after departure, completed, etc.)',
+  })
+  @ApiBadRequestResponse({
+    description: 'Assured-only timing/rules violations for Assured rides',
   })
   cancel(
     @CurrentUser() currentUser: AuthenticatedUser,

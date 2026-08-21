@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -18,7 +19,10 @@ import {
   HalfTimeDecisionResponseDto,
 } from '../assured/dto/assured-lifecycle-response.dto';
 import { Booking } from '../bookings/entities/booking.entity';
-import { BookingStatus } from '../bookings/enums/booking.enums';
+import {
+  BookingCancellationReason,
+  BookingStatus,
+} from '../bookings/enums/booking.enums';
 import { SettingsService } from '../settings/settings.service';
 import { User, UserStatus } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
@@ -50,6 +54,7 @@ import { SearchRidesDto } from './dto/search-rides.dto';
 import { Ride } from './entities/ride.entity';
 import {
   RegularSeatsPolicy,
+  RideCancellationReason,
   RideStatus,
   RideType,
 } from './enums/ride.enums';
@@ -82,7 +87,124 @@ export class RidesService {
     driverId: string,
     rideId: string,
   ): Promise<AssuredRideLifecycleResponseDto> {
-    return this.assuredLifecycleService.cancelRideByDriver(driverId, rideId);
+    const ride = await this.rideRepository.findOne({
+      where: { id: rideId },
+      select: { id: true, driverId: true, rideType: true },
+    });
+
+    if (!ride || ride.driverId !== driverId) {
+      throw new NotFoundException('Ride not found');
+    }
+
+    if (ride.rideType === RideType.REGULAR) {
+      return this.cancelRegularRideByDriver(driverId, rideId);
+    }
+
+    if (ride.rideType === RideType.ASSURED) {
+      return this.assuredLifecycleService.cancelRideByDriver(driverId, rideId);
+    }
+
+    throw new BadRequestException(`Unsupported ride type: ${ride.rideType}`);
+  }
+
+  /**
+   * Regular ride driver cancellation: cancel the ride and all active bookings.
+   * No Assured deposit / wallet lifecycle. PAY_NOW wallet debits are not refunded
+   * (no booking-refund mechanism exists in the current payment architecture).
+   */
+  private async cancelRegularRideByDriver(
+    driverId: string,
+    rideId: string,
+  ): Promise<AssuredRideLifecycleResponseDto> {
+    return this.dataSource.transaction(async (manager) => {
+      const ride = await manager
+        .getRepository(Ride)
+        .createQueryBuilder('ride')
+        .setLock('pessimistic_write')
+        .where('ride.id = :rideId', { rideId })
+        .getOne();
+
+      if (!ride || ride.driverId !== driverId) {
+        throw new NotFoundException('Ride not found');
+      }
+
+      if (ride.rideType !== RideType.REGULAR) {
+        throw new BadRequestException('Ride is not a Regular ride');
+      }
+
+      if (ride.status === RideStatus.COMPLETED) {
+        throw new ConflictException('Completed rides cannot be cancelled');
+      }
+
+      if (ride.status === RideStatus.CANCELLED) {
+        if (
+          ride.cancellationReason === RideCancellationReason.DRIVER_CANCELLED
+        ) {
+          const cancelledBookingCount = await manager
+            .getRepository(Booking)
+            .count({
+              where: {
+                rideId: ride.id,
+                status: BookingStatus.CANCELLED,
+                cancellationReason: BookingCancellationReason.RIDE_CANCELLED,
+              },
+            });
+          return {
+            rideId: ride.id,
+            status: ride.status,
+            cancellationReason: ride.cancellationReason,
+            cancelledBookingCount,
+            driverDepositForfeited: null,
+            riderCompensationTotal: '0',
+            platformForfeiture: '0',
+            alreadyApplied: true,
+          };
+        }
+        throw new ConflictException(
+          `Ride is already cancelled (${ride.cancellationReason})`,
+        );
+      }
+
+      if (ride.status !== RideStatus.PUBLISHED) {
+        throw new ConflictException(
+          `Ride cannot be cancelled from status ${ride.status}`,
+        );
+      }
+
+      const now = new Date();
+      const activeBookings = await manager.getRepository(Booking).find({
+        where: {
+          rideId: ride.id,
+          status: In([BookingStatus.PENDING, BookingStatus.CONFIRMED]),
+        },
+        order: { createdAt: 'ASC', id: 'ASC' },
+      });
+
+      for (const booking of activeBookings) {
+        booking.status = BookingStatus.CANCELLED;
+        booking.cancellationReason = BookingCancellationReason.RIDE_CANCELLED;
+        booking.cancelledAt = now;
+        await manager.getRepository(Booking).save(booking);
+      }
+
+      // Do not restore availableSeats — the ride is cancelled and unbookable.
+      ride.status = RideStatus.CANCELLED;
+      ride.cancellationReason = RideCancellationReason.DRIVER_CANCELLED;
+      ride.cancelledByUserId = driverId;
+      ride.cancelledAt = now;
+      await manager.getRepository(Ride).save(ride);
+
+      return {
+        rideId: ride.id,
+        status: ride.status,
+        cancellationReason: ride.cancellationReason,
+        cancelledBookingCount: activeBookings.length,
+        driverDepositForfeited: null,
+        riderCompensationTotal: '0',
+        platformForfeiture: '0',
+        alreadyApplied: false,
+      };
+    });
   }
 
   async reportDriverNoShow(
