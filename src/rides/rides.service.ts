@@ -21,8 +21,10 @@ import {
 import { Booking } from '../bookings/entities/booking.entity';
 import {
   BookingCancellationReason,
+  BookingPickupStatus,
   BookingStatus,
 } from '../bookings/enums/booking.enums';
+import { BookingsService } from '../bookings/bookings.service';
 import { SettingsService } from '../settings/settings.service';
 import { User, UserStatus } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
@@ -81,6 +83,7 @@ export class RidesService {
     private readonly walletService: WalletService,
     private readonly settingsService: SettingsService,
     private readonly assuredLifecycleService: AssuredLifecycleService,
+    private readonly bookingsService: BookingsService,
   ) {}
 
   async cancelByDriver(
@@ -105,6 +108,59 @@ export class RidesService {
     }
 
     throw new BadRequestException(`Unsupported ride type: ${ride.rideType}`);
+  }
+
+  /**
+   * Start a Regular ride: PUBLISHED → IN_PROGRESS.
+   * Zero confirmed passengers is allowed (same as empty completion historically).
+   * Assured rides are not started via this endpoint.
+   */
+  async startByDriver(
+    driverId: string,
+    rideId: string,
+  ): Promise<RideResponseDto> {
+    return this.dataSource.transaction(async (manager) => {
+      const ride = await manager
+        .getRepository(Ride)
+        .createQueryBuilder('ride')
+        .setLock('pessimistic_write')
+        .where('ride.id = :rideId', { rideId })
+        .getOne();
+
+      if (!ride || ride.driverId !== driverId) {
+        throw new NotFoundException('Ride not found');
+      }
+
+      if (ride.rideType !== RideType.REGULAR) {
+        throw new BadRequestException(
+          'Only Regular rides can be started via this endpoint',
+        );
+      }
+
+      if (ride.status === RideStatus.CANCELLED) {
+        throw new ConflictException('Cancelled rides cannot be started');
+      }
+
+      if (ride.status === RideStatus.COMPLETED) {
+        throw new ConflictException('Completed rides cannot be started');
+      }
+
+      if (ride.status === RideStatus.IN_PROGRESS) {
+        throw new ConflictException('Ride is already in progress');
+      }
+
+      if (ride.status !== RideStatus.PUBLISHED) {
+        throw new ConflictException(
+          `Ride cannot be started from status ${ride.status}`,
+        );
+      }
+
+      await this.bookingsService.ensurePickupOtpsForRideStart(manager, ride);
+
+      ride.status = RideStatus.IN_PROGRESS;
+      const saved = await manager.getRepository(Ride).save(ride);
+      return this.toResponse(saved);
+    });
   }
 
   /**
@@ -529,6 +585,53 @@ export class RidesService {
 
         if (ride.status === RideStatus.DRAFT) {
           throw new ConflictException('Draft rides cannot be completed');
+        }
+
+        if (ride.rideType === RideType.REGULAR) {
+          if (ride.status !== RideStatus.IN_PROGRESS) {
+            throw new ConflictException(
+              'Regular rides must be started (IN_PROGRESS) before completion',
+            );
+          }
+
+          const unpicked = await manager
+            .getRepository(Booking)
+            .createQueryBuilder('booking')
+            .where('booking.ride_id = :rideId', { rideId: ride.id })
+            .andWhere('booking.status IN (:...statuses)', {
+              statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+            })
+            .andWhere(
+              '(booking.pickup_status IS NULL OR booking.pickup_status = :waiting)',
+              { waiting: BookingPickupStatus.WAITING_FOR_PICKUP },
+            )
+            .getCount();
+          if (unpicked > 0) {
+            throw new ConflictException(
+              'All confirmed passengers must be picked up before completing the ride',
+            );
+          }
+
+          await manager
+            .getRepository(Booking)
+            .createQueryBuilder()
+            .update(Booking)
+            .set({ status: BookingStatus.COMPLETED })
+            .where('ride_id = :rideId', { rideId: ride.id })
+            .andWhere('status IN (:...statuses)', {
+              statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+            })
+            .execute();
+
+          ride.status = RideStatus.COMPLETED;
+          await manager.getRepository(Ride).save(ride);
+
+          return {
+            rideId: ride.id,
+            status: RideStatus.COMPLETED,
+            rideType: ride.rideType,
+            alreadyCompleted: false,
+          };
         }
 
         if (ride.status !== RideStatus.PUBLISHED) {

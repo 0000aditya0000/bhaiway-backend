@@ -238,6 +238,16 @@ describe('Ride completion Phase 3 (integration)', () => {
       })
       .expect(201);
 
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.body.id}/complete`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(409);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.body.id}/start`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+
     const response = await request(app.getHttpServer())
       .post(`/rides/${ride.body.id}/complete`)
       .set('Authorization', `Bearer ${driver.login.accessToken}`)

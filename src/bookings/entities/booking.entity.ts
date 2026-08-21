@@ -20,6 +20,7 @@ import {
   BookingMode,
   BookingPaymentMethod,
   BookingPaymentStatus,
+  BookingPickupStatus,
   BookingStatus,
 } from '../enums/booking.enums';
 
@@ -191,6 +192,64 @@ export class Booking {
     nullable: true,
   })
   depositCouponId!: string | null;
+
+  /**
+   * HMAC-SHA256 of pickup OTP (Regular rides). Never expose to clients.
+   */
+  @Column({
+    name: 'pickup_otp_hash',
+    type: 'varchar',
+    length: 128,
+    nullable: true,
+  })
+  pickupOtpHash!: string | null;
+
+  /**
+   * AES-GCM ciphertext of the rider-display OTP. Decrypt only for booking owner.
+   */
+  @Column({
+    name: 'pickup_otp_ciphertext',
+    type: 'text',
+    nullable: true,
+  })
+  pickupOtpCiphertext!: string | null;
+
+  @Column({
+    name: 'pickup_status',
+    type: 'enum',
+    enum: BookingPickupStatus,
+    nullable: true,
+  })
+  pickupStatus!: BookingPickupStatus | null;
+
+  @Column({
+    name: 'pickup_verified_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  pickupVerifiedAt!: Date | null;
+
+  @Column({
+    name: 'pickup_otp_failed_attempts',
+    type: 'int',
+    default: 0,
+  })
+  pickupOtpFailedAttempts!: number;
+
+  @Column({
+    name: 'pickup_otp_expires_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  pickupOtpExpiresAt!: Date | null;
+
+  /** Deterministic boarding order within a Regular ride (1-based). */
+  @Column({
+    name: 'pickup_order',
+    type: 'int',
+    nullable: true,
+  })
+  pickupOrder!: number | null;
 
   @CreateDateColumn({
     name: 'created_at',

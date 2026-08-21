@@ -6,6 +6,7 @@ export enum RideType {
 export enum RideStatus {
   DRAFT = 'DRAFT',
   PUBLISHED = 'PUBLISHED',
+  IN_PROGRESS = 'IN_PROGRESS',
   CANCELLED = 'CANCELLED',
   COMPLETED = 'COMPLETED',
 }

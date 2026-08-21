@@ -109,9 +109,9 @@ export class RidesController {
   @Post(':id/complete')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Complete a published ride (owning driver only)',
+    summary: 'Complete a ride (owning driver only)',
     description:
-      'Transitions PUBLISHED → COMPLETED. For ASSURED rides, releases ACTIVE driver and eligible rider ASSURED_DEPOSIT holds (HOLD_RELEASE / CREDIT) atomically and marks eligible bookings COMPLETED. May pay platform-funded partial-fill compensation when KEEP_ASSURED_ONLY leaves empty seats. Regular rides complete without deposit release. Safe to retry when already COMPLETED. Cancelled/draft rides return 409. Status cannot be set via PATCH.',
+      'REGULAR: requires IN_PROGRESS and all active passengers PICKED_UP, then COMPLETED. ASSURED: PUBLISHED → COMPLETED with deposit release. Safe to retry when already COMPLETED. Cancelled/draft rides return 409. Status cannot be set via PATCH.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: CompleteRideResponseDto })
@@ -119,13 +119,39 @@ export class RidesController {
     description: 'Ride not found or not owned by the authenticated driver',
   })
   @ApiConflictResponse({
-    description: 'Ride is DRAFT/CANCELLED or a deposit hold cannot be released',
+    description:
+      'Invalid state (not started Regular ride, passengers waiting, cancelled, draft, or Assured hold issue)',
   })
   complete(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.ridesService.complete(currentUser.userId, id);
+  }
+
+  @Post(':id/start')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Start a Regular ride (owning driver only)',
+    description:
+      'PUBLISHED → IN_PROGRESS for REGULAR rides only. Ensures pickup OTPs exist for confirmed passengers. Zero passengers is allowed. Assured rides cannot use this endpoint. Status cannot be set via PATCH.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOkResponse({ type: RideResponseDto })
+  @ApiNotFoundResponse({
+    description: 'Ride not found or not owned by the authenticated driver',
+  })
+  @ApiBadRequestResponse({
+    description: 'Ride is not Regular',
+  })
+  @ApiConflictResponse({
+    description: 'Already in progress, cancelled, completed, or invalid status',
+  })
+  start(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.ridesService.startByDriver(currentUser.userId, id);
   }
 
   @Post(':id/cancel')

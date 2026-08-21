@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import {
@@ -58,13 +59,25 @@ import {
   DriverBookingItemDto,
   DriverBookingPageDto,
 } from './dto/driver-booking-response.dto';
+import { VerifyPickupResponseDto } from './dto/verify-pickup-response.dto';
 import { Booking } from './entities/booking.entity';
 import {
   BookingMode,
   BookingPaymentMethod,
   BookingPaymentStatus,
+  BookingPickupStatus,
   BookingStatus,
 } from './enums/booking.enums';
+import {
+  decryptPickupOtp,
+  encryptPickupOtp,
+  generatePickupOtp,
+  hashPickupOtp,
+  isValidPickupOtpFormat,
+  PICKUP_OTP_MAX_ATTEMPTS,
+  PICKUP_OTP_TTL_MS,
+  pickupOtpHashesMatch,
+} from './pickup-otp.util';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import {
   VerificationStatus,
@@ -97,6 +110,7 @@ export class BookingsService {
     private readonly walletService: WalletService,
     private readonly settingsService: SettingsService,
     private readonly assuredLifecycleService: AssuredLifecycleService,
+    private readonly configService: ConfigService,
   ) {}
 
   async cancelByPassenger(
@@ -114,6 +128,125 @@ export class BookingsService {
     bookingId: string,
   ): Promise<AssuredBookingLifecycleResponseDto> {
     return this.assuredLifecycleService.reportRiderNoShow(driverId, bookingId);
+  }
+
+  /**
+   * Driver verifies passenger pickup OTP for a Regular ride booking.
+   * Requires ride IN_PROGRESS and booking CONFIRMED + WAITING_FOR_PICKUP.
+   */
+  async verifyPickup(
+    driverId: string,
+    bookingId: string,
+    dto: { otp: string },
+  ): Promise<VerifyPickupResponseDto> {
+    const otp = dto.otp?.trim() ?? '';
+    if (!isValidPickupOtpFormat(otp)) {
+      throw new BadRequestException('otp must be exactly 4 digits');
+    }
+
+    return this.dataSource.transaction(async (manager) => {
+      const booking = await manager
+        .getRepository(Booking)
+        .createQueryBuilder('booking')
+        .setLock('pessimistic_write')
+        .where('booking.id = :bookingId', { bookingId })
+        .getOne();
+
+      if (!booking) {
+        throw new NotFoundException('Booking not found');
+      }
+
+      const ride = await manager
+        .getRepository(Ride)
+        .createQueryBuilder('ride')
+        .setLock('pessimistic_write')
+        .where('ride.id = :rideId', { rideId: booking.rideId })
+        .getOne();
+
+      if (!ride || ride.driverId !== driverId) {
+        throw new NotFoundException('Booking not found');
+      }
+
+      if (ride.rideType !== RideType.REGULAR) {
+        throw new BadRequestException(
+          'Pickup OTP verification applies only to Regular rides',
+        );
+      }
+
+      if (ride.status !== RideStatus.IN_PROGRESS) {
+        throw new ConflictException(
+          'Pickup can only be verified while the ride is in progress',
+        );
+      }
+
+      if (booking.status === BookingStatus.CANCELLED) {
+        throw new ConflictException('Cancelled bookings cannot be picked up');
+      }
+
+      if (booking.status !== BookingStatus.CONFIRMED) {
+        throw new ConflictException(
+          `Booking cannot be picked up from status ${booking.status}`,
+        );
+      }
+
+      if (booking.pickupStatus === BookingPickupStatus.PICKED_UP) {
+        return {
+          bookingId: booking.id,
+          rideId: booking.rideId,
+          status: booking.status,
+          pickupStatus: BookingPickupStatus.PICKED_UP,
+          pickupVerifiedAt: booking.pickupVerifiedAt?.toISOString() ?? null,
+          pickupOrder: booking.pickupOrder,
+          alreadyVerified: true,
+        };
+      }
+
+      await this.ensurePickupOtpMaterial(manager, booking, ride);
+
+      if (
+        booking.pickupOtpFailedAttempts >= PICKUP_OTP_MAX_ATTEMPTS
+      ) {
+        throw new ConflictException(
+          'Pickup OTP locked after too many failed attempts',
+        );
+      }
+
+      if (
+        booking.pickupOtpExpiresAt &&
+        booking.pickupOtpExpiresAt.getTime() <= Date.now()
+      ) {
+        throw new ConflictException('Pickup OTP has expired');
+      }
+
+      if (!booking.pickupOtpHash) {
+        throw new ConflictException('Pickup OTP is not available for this booking');
+      }
+
+      const pepper = this.pickupOtpPepper();
+      const candidate = hashPickupOtp(otp, booking.id, pepper);
+      if (!pickupOtpHashesMatch(booking.pickupOtpHash, candidate)) {
+        booking.pickupOtpFailedAttempts += 1;
+        await manager.getRepository(Booking).save(booking);
+        throw new BadRequestException('Invalid pickup OTP');
+      }
+
+      const now = new Date();
+      booking.pickupStatus = BookingPickupStatus.PICKED_UP;
+      booking.pickupVerifiedAt = now;
+      booking.pickupOtpCiphertext = null;
+      booking.pickupOtpFailedAttempts = 0;
+      await manager.getRepository(Booking).save(booking);
+
+      return {
+        bookingId: booking.id,
+        rideId: booking.rideId,
+        status: booking.status,
+        pickupStatus: BookingPickupStatus.PICKED_UP,
+        pickupVerifiedAt: now.toISOString(),
+        pickupOrder: booking.pickupOrder,
+        alreadyVerified: false,
+      };
+    });
   }
 
   async create(
@@ -195,7 +328,15 @@ export class BookingsService {
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
 
+        const bookingId = randomUUID();
+        const pickupFields = this.buildRegularPickupFields(
+          ride,
+          bookingId,
+          manager,
+        );
+
         const booking = manager.getRepository(Booking).create({
+          id: bookingId,
           rideId: ride.id,
           passengerId,
           seats: dto.seats,
@@ -211,6 +352,7 @@ export class BookingsService {
           walletHoldId: null,
           bookingMode: BookingMode.REGULAR,
           depositCouponId: null,
+          ...(await pickupFields),
         });
 
         const saved = await manager.getRepository(Booking).save(booking);
@@ -302,6 +444,12 @@ export class BookingsService {
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
 
+        const pickupFields = await this.buildRegularPickupFields(
+          ride,
+          bookingId,
+          manager,
+        );
+
         const booking = manager.getRepository(Booking).create({
           id: bookingId,
           rideId: ride.id,
@@ -319,6 +467,7 @@ export class BookingsService {
           walletHoldId: null,
           bookingMode: BookingMode.REGULAR,
           depositCouponId: null,
+          ...pickupFields,
         });
 
         const saved = await manager.getRepository(Booking).save(booking);
@@ -586,7 +735,18 @@ export class BookingsService {
       rides.map((ride) => ride.driverId),
     );
 
-    return bookings.map((booking) => {
+    const hydrated: Booking[] = [];
+    for (const booking of bookings) {
+      const ride = rideById.get(booking.rideId);
+      if (ride) {
+        await this.dataSource.transaction((manager) =>
+          this.ensurePickupOtpMaterial(manager, booking, ride),
+        );
+      }
+      hydrated.push(booking);
+    }
+
+    return hydrated.map((booking) => {
       const ride = rideById.get(booking.rideId);
       return this.toResponse(
         booking,
@@ -610,6 +770,12 @@ export class BookingsService {
     const ride = await this.rideRepository.findOne({
       where: { id: booking.rideId },
     });
+
+    if (ride) {
+      await this.dataSource.transaction((manager) =>
+        this.ensurePickupOtpMaterial(manager, booking, ride),
+      );
+    }
 
     const driver =
       ride != null
@@ -653,7 +819,14 @@ export class BookingsService {
       qb.andWhere('booking.status = :status', { status: query.status });
     }
 
-    qb.orderBy('booking.created_at', 'DESC').addOrderBy('booking.id', 'DESC');
+    if (query.rideId) {
+      // Sequential pickup queue: earliest confirmed first.
+      qb.orderBy('booking.pickup_order', 'ASC', 'NULLS LAST')
+        .addOrderBy('booking.created_at', 'ASC')
+        .addOrderBy('booking.id', 'ASC');
+    } else {
+      qb.orderBy('booking.created_at', 'DESC').addOrderBy('booking.id', 'DESC');
+    }
 
     const [bookings, total] = await qb
       .skip((page - 1) * limit)
@@ -879,6 +1052,10 @@ export class BookingsService {
     ride?: Ride,
     driver?: BookingDriverDto,
   ): BookingResponseDto {
+    const includeOtp =
+      booking.pickupStatus === BookingPickupStatus.WAITING_FOR_PICKUP &&
+      Boolean(booking.pickupOtpCiphertext);
+
     return {
       id: booking.id,
       rideId: booking.rideId,
@@ -892,6 +1069,12 @@ export class BookingsService {
       securityDepositAmount: booking.assuredDepositAmount,
       securityDepositPercentage: booking.assuredDepositPercentage,
       bookingMode: booking.bookingMode,
+      pickupStatus: booking.pickupStatus,
+      pickupOtp: includeOtp
+        ? decryptPickupOtp(booking.pickupOtpCiphertext!, this.pickupOtpPepper())
+        : null,
+      pickupVerifiedAt: booking.pickupVerifiedAt?.toISOString() ?? null,
+      pickupOrder: booking.pickupOrder,
       ride: ride
         ? {
             id: ride.id,
@@ -929,6 +1112,9 @@ export class BookingsService {
       },
       seats: booking.seats,
       status: booking.status,
+      pickupStatus: booking.pickupStatus,
+      pickupVerifiedAt: booking.pickupVerifiedAt?.toISOString() ?? null,
+      pickupOrder: booking.pickupOrder,
       bookingMode: booking.bookingMode,
       paymentMethod: booking.paymentMethod,
       paymentStatus: booking.paymentStatus,
@@ -949,6 +1135,130 @@ export class BookingsService {
       createdAt: booking.createdAt.toISOString(),
       updatedAt: booking.updatedAt.toISOString(),
     };
+  }
+
+  private pickupOtpPepper(): string {
+    const secret =
+      this.configService.get<string>('JWT_ACCESS_SECRET') ??
+      this.configService.get<string>('PICKUP_OTP_SECRET');
+    if (!secret || secret.trim().length < 8) {
+      throw new Error('JWT_ACCESS_SECRET is required for pickup OTP');
+    }
+    return secret.trim();
+  }
+
+  private async buildRegularPickupFields(
+    ride: Ride,
+    bookingId: string,
+    manager: EntityManager,
+  ): Promise<
+    Partial<
+      Pick<
+        Booking,
+        | 'pickupOtpHash'
+        | 'pickupOtpCiphertext'
+        | 'pickupStatus'
+        | 'pickupVerifiedAt'
+        | 'pickupOtpFailedAttempts'
+        | 'pickupOtpExpiresAt'
+        | 'pickupOrder'
+      >
+    >
+  > {
+    if (ride.rideType !== RideType.REGULAR) {
+      return {
+        pickupOtpHash: null,
+        pickupOtpCiphertext: null,
+        pickupStatus: null,
+        pickupVerifiedAt: null,
+        pickupOtpFailedAttempts: 0,
+        pickupOtpExpiresAt: null,
+        pickupOrder: null,
+      };
+    }
+
+    const pepper = this.pickupOtpPepper();
+    const otp = generatePickupOtp();
+    const maxOrder = await manager
+      .getRepository(Booking)
+      .createQueryBuilder('booking')
+      .select('MAX(booking.pickup_order)', 'max')
+      .where('booking.ride_id = :rideId', { rideId: ride.id })
+      .getRawOne<{ max: string | null }>();
+
+    const nextOrder = Number(maxOrder?.max ?? 0) + 1;
+
+    return {
+      pickupOtpHash: hashPickupOtp(otp, bookingId, pepper),
+      pickupOtpCiphertext: encryptPickupOtp(otp, pepper),
+      pickupStatus: BookingPickupStatus.WAITING_FOR_PICKUP,
+      pickupVerifiedAt: null,
+      pickupOtpFailedAttempts: 0,
+      pickupOtpExpiresAt: new Date(Date.now() + PICKUP_OTP_TTL_MS),
+      pickupOrder: nextOrder,
+    };
+  }
+
+  /**
+   * Backfill OTP material for legacy Regular bookings created before this feature.
+   */
+  async ensurePickupOtpMaterial(
+    manager: EntityManager,
+    booking: Booking,
+    ride: Ride,
+  ): Promise<void> {
+    if (ride.rideType !== RideType.REGULAR) {
+      return;
+    }
+    if (
+      booking.status !== BookingStatus.PENDING &&
+      booking.status !== BookingStatus.CONFIRMED
+    ) {
+      return;
+    }
+    if (booking.pickupStatus === BookingPickupStatus.PICKED_UP) {
+      return;
+    }
+    if (booking.pickupOtpHash && booking.pickupOtpCiphertext) {
+      if (!booking.pickupStatus) {
+        booking.pickupStatus = BookingPickupStatus.WAITING_FOR_PICKUP;
+        await manager.getRepository(Booking).save(booking);
+      }
+      return;
+    }
+
+    const fields = await this.buildRegularPickupFields(
+      ride,
+      booking.id,
+      manager,
+    );
+    Object.assign(booking, fields);
+    if (!booking.pickupOrder) {
+      booking.pickupOrder = fields.pickupOrder ?? 1;
+    }
+    await manager.getRepository(Booking).save(booking);
+  }
+
+  /**
+   * Called when starting a Regular ride: ensure every active booking has OTP material.
+   */
+  async ensurePickupOtpsForRideStart(
+    manager: EntityManager,
+    ride: Ride,
+  ): Promise<void> {
+    if (ride.rideType !== RideType.REGULAR) {
+      return;
+    }
+    const bookings = await manager.getRepository(Booking).find({
+      where: {
+        rideId: ride.id,
+        status: In([BookingStatus.PENDING, BookingStatus.CONFIRMED]),
+      },
+      order: { createdAt: 'ASC', id: 'ASC' },
+    });
+    for (const booking of bookings) {
+      await this.ensurePickupOtpMaterial(manager, booking, ride);
+    }
   }
 
   private rethrowDuplicateActiveBooking(error: unknown): void {

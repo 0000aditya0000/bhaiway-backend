@@ -35,6 +35,8 @@ import { BookingResponseDto } from './dto/booking-response.dto';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { DriverBookingsQueryDto } from './dto/driver-bookings-query.dto';
 import { DriverBookingPageDto } from './dto/driver-booking-response.dto';
+import { VerifyPickupDto } from './dto/verify-pickup.dto';
+import { VerifyPickupResponseDto } from './dto/verify-pickup-response.dto';
 import { BookingsService } from './bookings.service';
 
 @ApiTags('Bookings')
@@ -124,6 +126,30 @@ export class BookingsController {
     return this.bookingsService.reportRiderNoShow(currentUser.userId, id);
   }
 
+  @Post(':id/verify-pickup')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Verify passenger pickup OTP (owning driver only)',
+    description:
+      'REGULAR rides only. Ride must be IN_PROGRESS. Booking must be CONFIRMED and WAITING_FOR_PICKUP. Marks booking PICKED_UP on success. Idempotent when already picked up. Never returns the OTP.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Booking id' })
+  @ApiOkResponse({ type: VerifyPickupResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid OTP format or wrong OTP' })
+  @ApiNotFoundResponse({
+    description: 'Booking not found for this driver',
+  })
+  @ApiConflictResponse({
+    description: 'Ride not in progress, cancelled booking, locked OTP, etc.',
+  })
+  verifyPickup(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: VerifyPickupDto,
+  ) {
+    return this.bookingsService.verifyPickup(currentUser.userId, id, body);
+  }
+
   @Get('my')
   @ApiOperation({
     summary: 'List bookings for the authenticated passenger',
@@ -137,7 +163,7 @@ export class BookingsController {
   @ApiOperation({
     summary: 'List bookings for rides owned by the authenticated driver',
     description:
-      'Returns paginated bookings where ride.driverId matches the JWT subject only. Optional rideId/status filters. Read-only: never mutates wallets, holds, seats, or booking state. Client-supplied driverId/userId are rejected.',
+      'Returns paginated bookings where ride.driverId matches the JWT subject only. Optional rideId/status filters. When rideId is set, results are ordered by pickupOrder ASC for sequential boarding. Includes pickupStatus (never OTP). Read-only: never mutates wallets, holds, seats, or booking state. Client-supplied driverId/userId are rejected.',
   })
   @ApiOkResponse({ type: DriverBookingPageDto })
   @ApiBadRequestResponse({

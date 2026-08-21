@@ -5,6 +5,7 @@ import {
   BookingMode,
   BookingPaymentMethod,
   BookingPaymentStatus,
+  BookingPickupStatus,
   BookingStatus,
 } from '../enums/booking.enums';
 
@@ -67,6 +68,27 @@ export class DriverBookingItemDto {
 
   @ApiProperty({ enum: BookingStatus, enumName: 'BookingStatus' })
   status!: BookingStatus;
+
+  @ApiPropertyOptional({
+    enum: BookingPickupStatus,
+    enumName: 'BookingPickupStatus',
+    nullable: true,
+    description:
+      'Regular-ride boarding state. Null when not applicable. Never includes OTP.',
+  })
+  pickupStatus!: BookingPickupStatus | null;
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    nullable: true,
+  })
+  pickupVerifiedAt!: string | null;
+
+  @ApiPropertyOptional({
+    description: '1-based boarding order within the ride',
+    nullable: true,
+  })
+  pickupOrder!: number | null;
 
   @ApiProperty({ enum: BookingMode, enumName: 'BookingMode' })
   bookingMode!: BookingMode;

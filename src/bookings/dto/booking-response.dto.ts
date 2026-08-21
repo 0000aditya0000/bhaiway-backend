@@ -4,6 +4,7 @@ import { RideStatus, RideType } from '../../rides/enums/ride.enums';
 import {
   BookingPaymentMethod,
   BookingPaymentStatus,
+  BookingPickupStatus,
   BookingStatus,
 } from '../enums/booking.enums';
 
@@ -111,6 +112,35 @@ export class BookingResponseDto {
     enum: ['ASSURED', 'REGULAR'],
   })
   bookingMode?: string;
+
+  @ApiPropertyOptional({
+    enum: BookingPickupStatus,
+    enumName: 'BookingPickupStatus',
+    nullable: true,
+    description:
+      'Regular-ride boarding state. Null for Assured / non-pickup bookings.',
+  })
+  pickupStatus?: BookingPickupStatus | null;
+
+  @ApiPropertyOptional({
+    description:
+      '4-digit pickup OTP for the booking owner only. Null after pickup or when not applicable. Never returned on driver APIs.',
+    example: '4821',
+    nullable: true,
+  })
+  pickupOtp?: string | null;
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    nullable: true,
+  })
+  pickupVerifiedAt?: string | null;
+
+  @ApiPropertyOptional({
+    description: '1-based boarding order within the Regular ride',
+    nullable: true,
+  })
+  pickupOrder?: number | null;
 
   @ApiPropertyOptional({ type: BookingRideSummaryDto })
   ride?: BookingRideSummaryDto;

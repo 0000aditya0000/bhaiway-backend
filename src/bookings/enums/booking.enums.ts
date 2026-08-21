@@ -28,3 +28,12 @@ export enum BookingCancellationReason {
   RIDE_CANCELLED = 'RIDE_CANCELLED',
   DRIVER_NO_SHOW = 'DRIVER_NO_SHOW',
 }
+
+/**
+ * Passenger boarding state for Regular rides.
+ * Independent of BookingStatus (CONFIRMED stays until ride completion).
+ */
+export enum BookingPickupStatus {
+  WAITING_FOR_PICKUP = 'WAITING_FOR_PICKUP',
+  PICKED_UP = 'PICKED_UP',
+}
