@@ -2,8 +2,8 @@
  * Pure Redis connection resolution (no I/O).
  * Priority: REDIS_URL → REDIS_HOST(+PORT/PASSWORD/USERNAME) → localhost (dev only).
  *
- * REDIS_URL is always normalized into discrete connection fields so ioredis
- * never receives both a rediss:// URL and a separate tls option (Upstash conflict).
+ * When REDIS_URL is set, the raw URL is preserved for ioredis (Upstash-recommended).
+ * Discrete host/port/user/pass are also parsed for safe diagnostics only.
  */
 
 export type RedisEnvSnapshot = {
@@ -18,6 +18,11 @@ export type RedisEnvSnapshot = {
 export type ResolvedRedisConfig = {
   /** How the config was sourced (for diagnostics only — never log secrets). */
   source: 'url' | 'discrete' | 'localhost-dev';
+  /**
+   * Original redis:// or rediss:// URL when source=url.
+   * Passed verbatim to ioredis — never log this value.
+   */
+  connectionUrl?: string;
   host: string;
   port: number;
   username?: string;
@@ -42,6 +47,21 @@ function trim(value: string | null | undefined): string | undefined {
   return t.length > 0 ? t : undefined;
 }
 
+/** Strip accidental wrapping quotes from Render/dashboard copy-paste. */
+function normalizeEnvValue(value: string | null | undefined): string | undefined {
+  const t = trim(value);
+  if (!t) {
+    return undefined;
+  }
+  if (
+    (t.startsWith('"') && t.endsWith('"')) ||
+    (t.startsWith("'") && t.endsWith("'"))
+  ) {
+    return trim(t.slice(1, -1));
+  }
+  return t;
+}
+
 function isProduction(nodeEnv: string | null | undefined): boolean {
   return (nodeEnv ?? '').trim().toLowerCase() === 'production';
 }
@@ -61,7 +81,7 @@ function decodeUriComponentSafe(value: string): string {
 export function resolveRedisConnectionConfig(
   env: RedisEnvSnapshot,
 ): ResolvedRedisConfig {
-  const redisUrl = trim(env.REDIS_URL);
+  const redisUrl = normalizeEnvValue(env.REDIS_URL);
   if (redisUrl) {
     let parsed: URL;
     try {
@@ -75,7 +95,7 @@ export function resolveRedisConnectionConfig(
     const protocol = parsed.protocol.toLowerCase();
     if (protocol !== 'redis:' && protocol !== 'rediss:') {
       throw new RedisConfigurationError(
-        '[Redis] REDIS_URL must use redis:// or rediss:// scheme.',
+        '[Redis] REDIS_URL must use redis:// or rediss:// scheme (not https:// REST).',
       );
     }
 
@@ -109,6 +129,7 @@ export function resolveRedisConnectionConfig(
 
     return {
       source: 'url',
+      connectionUrl: redisUrl,
       host: parsed.hostname,
       port,
       ...(username ? { username } : {}),
@@ -118,9 +139,9 @@ export function resolveRedisConnectionConfig(
     };
   }
 
-  const host = trim(env.REDIS_HOST);
+  const host = normalizeEnvValue(env.REDIS_HOST);
   if (host) {
-    const portRaw = trim(env.REDIS_PORT);
+    const portRaw = normalizeEnvValue(env.REDIS_PORT);
     const port = portRaw ? Number(portRaw) : 6379;
     if (!Number.isFinite(port) || port <= 0 || port > 65535) {
       throw new RedisConfigurationError(
@@ -128,8 +149,8 @@ export function resolveRedisConnectionConfig(
       );
     }
 
-    const username = trim(env.REDIS_USERNAME);
-    const password = trim(env.REDIS_PASSWORD);
+    const username = normalizeEnvValue(env.REDIS_USERNAME);
+    const password = normalizeEnvValue(env.REDIS_PASSWORD);
 
     return {
       source: 'discrete',
@@ -157,7 +178,7 @@ export function resolveRedisConnectionConfig(
 
 /** Safe, non-secret summary for startup / request diagnostics. */
 export function describeRedisConfig(resolved: ResolvedRedisConfig): string {
-  return `source=${resolved.source} host=${resolved.host} port=${resolved.port} tls=${resolved.tls} username=${resolved.username ? 'set' : 'none'} password=${resolved.password ? 'set' : 'none'} db=${resolved.db ?? 0}`;
+  return `source=${resolved.source} host=${resolved.host} port=${resolved.port} tls=${resolved.tls} username=${resolved.username ? 'set' : 'none'} password=${resolved.password ? 'set' : 'none'} db=${resolved.db ?? 0} urlMode=${resolved.connectionUrl ? 'verbatim' : 'discrete'}`;
 }
 
 /** Safe error text for logs — never include URLs or credential material. */
@@ -166,19 +187,32 @@ export function safeRedisErrorMessage(err: unknown): string {
     return 'unknown error';
   }
 
+  const name = err.name || 'Error';
   const code =
     typeof (err as NodeJS.ErrnoException).code === 'string'
       ? (err as NodeJS.ErrnoException).code
       : undefined;
 
-  let message = err.message ?? err.name ?? 'Error';
+  let message = err.message ?? name;
   message = message
     .replace(/rediss?:\/\/[^\s"'`]+/gi, '[redacted-url]')
     .replace(/(password|pwd|auth)([=:\s]+)([^\s,;]+)/gi, '$1$2[redacted]')
     .replace(/\/\/([^/@\s]+):([^@/\s]+)@/g, '//[redacted]@');
 
   if (code) {
-    return `${code}: ${message}`;
+    return `${name} ${code}: ${message}`;
   }
-  return message;
+  return `${name}: ${message}`;
+}
+
+export function isTransientRedisCommandError(err: unknown): boolean {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  return (
+    err.name === 'MaxRetriesPerRequestError' ||
+    /max retries per request/i.test(err.message) ||
+    /Stream isn't writeable/i.test(err.message) ||
+    /Connection is closed/i.test(err.message)
+  );
 }

@@ -5,6 +5,7 @@ import Redis, { RedisOptions } from 'ioredis';
 import { REDIS_CLIENT } from '../tracking.constants';
 import {
   describeRedisConfig,
+  isTransientRedisCommandError,
   resolveRedisConnectionConfig,
   safeRedisErrorMessage,
   type ResolvedRedisConfig,
@@ -13,50 +14,65 @@ import {
 const logger = new Logger('Redis');
 
 /**
- * Builds ioredis options from a normalized config.
- * Never passes a redis(s):// URL string into the constructor — avoids
- * conflicting URL-implied TLS with an explicit `tls` option (Upstash).
+ * Shared runtime options.
+ *
+ * Upstash path: pass REDIS_URL verbatim to `new Redis(url, options)` and do NOT
+ * also set `tls` (rediss:// already enables TLS). Rebuilding host/user/pass from
+ * URL previously caused Connected→Closed without Ready (AUTH/handshake break).
+ *
+ * enableOfflineQueue must stay true so AUTH + ready-check can complete.
+ * HTTP fail-fast is handled in TrackingService via redis.status !== 'ready'.
  */
 export function buildRedisOptions(resolved: ResolvedRedisConfig): RedisOptions {
   const options: RedisOptions = {
-    host: resolved.host,
-    port: resolved.port,
-    db: resolved.db ?? 0,
-    ...(resolved.username ? { username: resolved.username } : {}),
-    ...(resolved.password ? { password: resolved.password } : {}),
-    // Fail the command quickly instead of queuing during reconnect (avoids 4–5s hangs).
-    maxRetriesPerRequest: 1,
-    enableOfflineQueue: false,
-    connectTimeout: 5_000,
-    // Helps keep Upstash/serverless Redis connections from going silently dead.
-    keepAlive: 10_000,
+    maxRetriesPerRequest: 3,
+    enableOfflineQueue: true,
+    connectTimeout: 10_000,
+    keepAlive: 30_000,
     enableReadyCheck: true,
     lazyConnect: false,
+    // Prefer IPv4 — Render→Upstash IPv6 can connect then drop before ready.
+    family: 4,
     retryStrategy: (times: number) => {
-      // Cap backoff; stop after sustained failure so we don't reconnect forever silently.
-      if (times > 30) {
+      if (times > 20) {
         return null;
       }
       return Math.min(times * 200, 2_000);
     },
   };
 
-  if (resolved.tls) {
-    // Single TLS path with SNI (servername) — required for many managed Redis certs.
-    options.tls = {
-      servername: resolved.host,
-    };
+  if (resolved.connectionUrl) {
+    // URL mode: ioredis parses rediss:// + ACL itself. Do not add tls here.
+    return options;
   }
 
-  return options;
+  return {
+    ...options,
+    host: resolved.host,
+    port: resolved.port,
+    db: resolved.db ?? 0,
+    ...(resolved.username ? { username: resolved.username } : {}),
+    ...(resolved.password ? { password: resolved.password } : {}),
+    ...(resolved.tls
+      ? {
+          tls: {
+            servername: resolved.host,
+          },
+        }
+      : {}),
+  };
 }
 
 export function createRedisClient(resolved: ResolvedRedisConfig): Redis {
-  return new Redis(buildRedisOptions(resolved));
+  const options = buildRedisOptions(resolved);
+  if (resolved.connectionUrl) {
+    return new Redis(resolved.connectionUrl, options);
+  }
+  return new Redis(options);
 }
 
 /**
- * Attaches lifecycle listeners. Reconnecting is rate-limited to avoid log spam.
+ * Attaches lifecycle listeners. Reconnecting / transient errors are rate-limited.
  * Never logs URLs, passwords, or other secrets.
  */
 export function attachRedisLifecycleLogs(
@@ -64,7 +80,9 @@ export function attachRedisLifecycleLogs(
   log: Pick<Logger, 'log' | 'warn' | 'error'> = logger,
 ): void {
   let lastReconnectLogAt = 0;
-  const reconnectLogIntervalMs = 10_000;
+  let lastErrorLogAt = 0;
+  let sawReady = false;
+  const logIntervalMs = 10_000;
 
   log.log('[Redis] Connecting...');
 
@@ -73,16 +91,26 @@ export function attachRedisLifecycleLogs(
   });
 
   client.on('ready', () => {
+    sawReady = true;
     log.log('[Redis] Ready');
   });
 
   client.on('error', (err: Error) => {
+    const now = Date.now();
+    // MaxRetriesPerRequestError is noisy during reconnect — rate-limit it.
+    if (
+      isTransientRedisCommandError(err) &&
+      now - lastErrorLogAt < logIntervalMs
+    ) {
+      return;
+    }
+    lastErrorLogAt = now;
     log.error(`[Redis] Connection error: ${safeRedisErrorMessage(err)}`);
   });
 
   client.on('reconnecting', () => {
     const now = Date.now();
-    if (now - lastReconnectLogAt >= reconnectLogIntervalMs) {
+    if (now - lastReconnectLogAt >= logIntervalMs) {
       lastReconnectLogAt = now;
       log.warn(`[Redis] Reconnecting (status=${client.status})`);
     }
@@ -93,7 +121,13 @@ export function attachRedisLifecycleLogs(
   });
 
   client.on('close', () => {
-    log.warn('[Redis] Connection closed');
+    if (!sawReady) {
+      log.warn(
+        '[Redis] Connection closed before Ready — check REDIS_URL is rediss://default:<token>@<host>.upstash.io:6379 (Redis protocol, not REST https://), and that the token has no broken quoting',
+      );
+    } else {
+      log.warn('[Redis] Connection closed');
+    }
   });
 }
 

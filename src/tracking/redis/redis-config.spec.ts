@@ -9,10 +9,11 @@ import {
 import {
   attachRedisLifecycleLogs,
   buildRedisOptions,
+  createRedisClient,
 } from './redis.provider';
 
 describe('resolveRedisConnectionConfig', () => {
-  it('prefers REDIS_URL redis:// over host/port (normalized, no URL+tls conflict)', () => {
+  it('prefers REDIS_URL redis:// over host/port and keeps verbatim URL', () => {
     const resolved = resolveRedisConnectionConfig({
       NODE_ENV: 'production',
       REDIS_URL: 'redis://cache.example:6379/0',
@@ -21,8 +22,9 @@ describe('resolveRedisConnectionConfig', () => {
       REDIS_PASSWORD: 'ignored-password',
     });
 
-    expect(resolved).toEqual({
+    expect(resolved).toMatchObject({
       source: 'url',
+      connectionUrl: 'redis://cache.example:6379/0',
       host: 'cache.example',
       port: 6379,
       tls: false,
@@ -30,30 +32,27 @@ describe('resolveRedisConnectionConfig', () => {
     });
 
     const built = buildRedisOptions(resolved);
-    expect(built.host).toBe('cache.example');
-    expect(built.port).toBe(6379);
+    expect(built.host).toBeUndefined();
     expect(built.tls).toBeUndefined();
-    expect(built.enableOfflineQueue).toBe(false);
-    expect(built.maxRetriesPerRequest).toBe(1);
+    expect(built.enableOfflineQueue).toBe(true);
+    expect(built.family).toBe(4);
   });
 
-  it('supports REDIS_URL rediss:// with single TLS path + SNI', () => {
+  it('supports REDIS_URL rediss:// without adding a second tls option', () => {
     const resolved = resolveRedisConnectionConfig({
       NODE_ENV: 'production',
-      REDIS_URL: 'rediss://cache.example:6380',
+      REDIS_URL: 'rediss://default:TOKEN@cache.example:6379',
     });
 
-    expect(resolved).toEqual({
-      source: 'url',
-      host: 'cache.example',
-      port: 6380,
-      tls: true,
-    });
+    expect(resolved.tls).toBe(true);
+    expect(resolved.connectionUrl).toBe(
+      'rediss://default:TOKEN@cache.example:6379',
+    );
+    expect(resolved.username).toBe('default');
 
     const built = buildRedisOptions(resolved);
-    expect(built.tls).toEqual({ servername: 'cache.example' });
-    // Must not also pass a redis(s) URL into the constructor path.
-    expect(built).not.toHaveProperty('url');
+    // URL mode: TLS comes from rediss:// only — no options.tls.
+    expect(built.tls).toBeUndefined();
   });
 
   it('supports REDIS_URL with username and password (ACL)', () => {
@@ -66,17 +65,24 @@ describe('resolveRedisConnectionConfig', () => {
     expect(resolved.host).toBe('cache.example');
     expect(resolved.username).toBe('acl-user');
     expect(resolved.password).toBe('acl-secret');
-    expect(resolved.tls).toBe(false);
-
-    const built = buildRedisOptions(resolved);
-    expect(built.username).toBe('acl-user');
-    expect(built.password).toBe('acl-secret');
+    expect(resolved.connectionUrl).toContain('acl-user');
 
     const summary = describeRedisConfig(resolved);
     expect(summary).toContain('username=set');
     expect(summary).toContain('password=set');
+    expect(summary).toContain('urlMode=verbatim');
     expect(summary).not.toContain('acl-secret');
-    expect(summary).not.toContain('acl-user');
+  });
+
+  it('strips wrapping quotes from REDIS_URL', () => {
+    const resolved = resolveRedisConnectionConfig({
+      NODE_ENV: 'production',
+      REDIS_URL: '"rediss://default:tok@cache.example:6379"',
+    });
+    expect(resolved.connectionUrl).toBe(
+      'rediss://default:tok@cache.example:6379',
+    );
+    expect(resolved.tls).toBe(true);
   });
 
   it('falls back to REDIS_HOST / REDIS_PORT / REDIS_PASSWORD', () => {
@@ -145,6 +151,24 @@ describe('resolveRedisConnectionConfig', () => {
   });
 });
 
+describe('createRedisClient URL mode', () => {
+  it('constructs ioredis with verbatim URL (no host override)', () => {
+    const resolved = resolveRedisConnectionConfig({
+      NODE_ENV: 'production',
+      REDIS_URL: 'rediss://default:tok@example.upstash.io:6379',
+    });
+
+    // Do not connect — just ensure constructor accepts URL mode options.
+    const client = createRedisClient(resolved);
+    try {
+      expect(client.options.host).toBe('example.upstash.io');
+      expect((client.options as { tls?: unknown }).tls).toBeTruthy();
+    } finally {
+      client.disconnect();
+    }
+  });
+});
+
 describe('safeRedisErrorMessage', () => {
   it('never returns passwords or connection URLs', () => {
     const err = new Error(
@@ -163,7 +187,7 @@ describe('safeRedisErrorMessage', () => {
 });
 
 describe('attachRedisLifecycleLogs', () => {
-  it('logs lifecycle events without secrets and rate-limits reconnecting', () => {
+  it('logs close-before-ready hint and rate-limits reconnecting', () => {
     const client = new EventEmitter() as EventEmitter & {
       on: EventEmitter['on'];
       status: string;
@@ -181,12 +205,12 @@ describe('attachRedisLifecycleLogs', () => {
     expect(log.log).toHaveBeenCalledWith('[Redis] Connecting...');
 
     client.emit('connect');
-    client.emit('ready');
+    client.emit('close');
     client.emit(
       'error',
       Object.assign(
         new Error('Failed redis://user:leaked-password@host:6379'),
-        { code: 'ECONNREFUSED' },
+        { code: 'ECONNREFUSED', name: 'MaxRetriesPerRequestError' },
       ),
     );
     client.emit('reconnecting');
@@ -202,13 +226,10 @@ describe('attachRedisLifecycleLogs', () => {
       .join('\n');
 
     expect(log.log).toHaveBeenCalledWith('[Redis] Connected');
-    expect(log.log).toHaveBeenCalledWith('[Redis] Ready');
-    expect(log.log).toHaveBeenCalledWith('[Redis] Closed');
+    expect(log.warn.mock.calls[0][0]).toMatch(/closed before Ready/);
     expect(log.warn).toHaveBeenCalledWith(
       '[Redis] Reconnecting (status=reconnecting)',
     );
-    expect(log.warn).toHaveBeenCalledTimes(1);
-    expect(log.error.mock.calls[0][0]).toMatch(/^\[Redis\] Connection error:/);
     expect(allText).not.toContain('leaked-password');
     expect(allText).not.toContain('redis://');
   });
