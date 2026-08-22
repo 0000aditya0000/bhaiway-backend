@@ -196,18 +196,11 @@ export class TrackingService implements OnModuleDestroy {
     payload: StoredRideLocation,
   ): Promise<void> {
     const started = Date.now();
+    await this.ensureRedisReady('driver', 'SET');
+
     this.logger.log(
       `[Tracking][driver] SET started redisStatus=${this.redis.status}`,
     );
-
-    if (this.redis.status !== 'ready') {
-      this.logger.error(
-        `[Tracking][driver] SET aborted: redis not ready (status=${this.redis.status})`,
-      );
-      throw new ServiceUnavailableException(
-        'Live tracking temporarily unavailable',
-      );
-    }
 
     try {
       await this.redis.set(
@@ -233,18 +226,11 @@ export class TrackingService implements OnModuleDestroy {
     rideId: string,
   ): Promise<StoredRideLocation | null> {
     const started = Date.now();
+    await this.ensureRedisReady('passenger', 'GET');
+
     this.logger.log(
       `[Tracking][passenger] GET started redisStatus=${this.redis.status}`,
     );
-
-    if (this.redis.status !== 'ready') {
-      this.logger.error(
-        `[Tracking][passenger] GET aborted: redis not ready (status=${this.redis.status})`,
-      );
-      throw new ServiceUnavailableException(
-        'Live tracking temporarily unavailable',
-      );
-    }
 
     try {
       const raw = await this.redis.get(rideTrackingKey(rideId));
@@ -267,8 +253,58 @@ export class TrackingService implements OnModuleDestroy {
         return null;
       }
     } catch (error) {
+      if (error instanceof ServiceUnavailableException) {
+        throw error;
+      }
       this.logger.error(
         `[Tracking][passenger] GET failed elapsedMs=${Date.now() - started} err=${safeRedisErrorMessage(error)}`,
+      );
+      throw new ServiceUnavailableException(
+        'Live tracking temporarily unavailable',
+      );
+    }
+  }
+
+  /**
+   * If the client gave up (status=end) or is mid-reconnect, try to bring it back
+   * briefly before failing the HTTP request.
+   */
+  private async ensureRedisReady(
+    actor: 'driver' | 'passenger',
+    op: 'SET' | 'GET',
+  ): Promise<void> {
+    const currentStatus = (): string => String(this.redis.status);
+
+    if (currentStatus() === 'ready') {
+      return;
+    }
+
+    this.logger.warn(
+      `[Tracking][${actor}] ${op} redis not ready (status=${currentStatus()}) — attempting reconnect`,
+    );
+
+    try {
+      const statusBefore = currentStatus();
+      if (statusBefore === 'wait' || statusBefore === 'end') {
+        await this.redis.connect();
+      }
+      // Brief wait for ready after connect/reconnect kickoff.
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        if (currentStatus() === 'ready') {
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    } catch (error) {
+      this.logger.error(
+        `[Tracking][${actor}] ${op} reconnect failed err=${safeRedisErrorMessage(error)}`,
+      );
+    }
+
+    if (currentStatus() !== 'ready') {
+      this.logger.error(
+        `[Tracking][${actor}] ${op} aborted: redis not ready (status=${currentStatus()})`,
       );
       throw new ServiceUnavailableException(
         'Live tracking temporarily unavailable',

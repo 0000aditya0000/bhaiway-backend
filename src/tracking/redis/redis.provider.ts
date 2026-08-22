@@ -34,10 +34,8 @@ export function buildRedisOptions(resolved: ResolvedRedisConfig): RedisOptions {
     // Prefer IPv4 — Render→Upstash IPv6 can connect then drop before ready.
     family: 4,
     retryStrategy: (times: number) => {
-      if (times > 20) {
-        return null;
-      }
-      return Math.min(times * 200, 2_000);
+      // Never stop reconnecting — status=end makes tracking permanently dead.
+      return Math.min(Math.max(times, 1) * 200, 2_000);
     },
   };
 
@@ -145,6 +143,11 @@ export const redisClientProvider: Provider = {
     });
 
     logger.log(`[Redis] Config resolved: ${describeRedisConfig(resolved)}`);
+    if (resolved.tlsUpgradedFromPlainRedis) {
+      logger.warn(
+        '[Redis] Upstash REDIS_URL used redis:// — auto-upgraded to rediss:// (TLS required). Prefer setting rediss:// in Render env.',
+      );
+    }
 
     const client = createRedisClient(resolved);
     attachRedisLifecycleLogs(client);

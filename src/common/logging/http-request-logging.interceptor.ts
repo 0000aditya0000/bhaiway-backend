@@ -6,8 +6,9 @@ import {
   NestInterceptor,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { Observable } from 'rxjs';
-import { finalize } from 'rxjs/operators';
+import { Observable, throwError } from 'rxjs';
+import { catchError, finalize } from 'rxjs/operators';
+import { HttpException } from '@nestjs/common';
 
 const REQUEST_ID_HEADER = 'x-request-id';
 const RESPONSE_ID_HEADER = 'X-Request-Id';
@@ -49,6 +50,18 @@ export class HttpRequestLoggingInterceptor implements NestInterceptor {
     }
 
     return next.handle().pipe(
+      catchError((err: unknown) => {
+        try {
+          if (err instanceof HttpException) {
+            res.statusCode = err.getStatus();
+          } else if (!res.statusCode || res.statusCode < 400) {
+            res.statusCode = 500;
+          }
+        } catch {
+          // ignore
+        }
+        return throwError(() => err);
+      }),
       finalize(() => {
         try {
           const method = req.method ?? 'UNKNOWN';

@@ -27,9 +27,11 @@ export type ResolvedRedisConfig = {
   port: number;
   username?: string;
   password?: string;
-  /** True when REDIS_URL used rediss:// (TLS required). */
+  /** True when connection uses TLS (rediss:// or upgraded Upstash URL). */
   tls: boolean;
   db?: number;
+  /** True when redis://…upstash.io was auto-upgraded to rediss://. */
+  tlsUpgradedFromPlainRedis?: boolean;
 };
 
 export class RedisConfigurationError extends Error {
@@ -75,17 +77,49 @@ function decodeUriComponentSafe(value: string): string {
 }
 
 /**
+ * Upstash requires TLS. If someone pastes redis://…upstash.io…, upgrade to rediss://
+ * without re-serializing userinfo (avoids breaking token encoding).
+ */
+export function normalizeRedisConnectionUrl(redisUrl: string): {
+  url: string;
+  tlsUpgraded: boolean;
+  host: string;
+  tls: boolean;
+} {
+  const parsed = new URL(redisUrl);
+  const protocol = parsed.protocol.toLowerCase();
+  const host = parsed.hostname;
+  const isUpstash = host.toLowerCase().endsWith('.upstash.io');
+
+  if (protocol === 'redis:' && isUpstash) {
+    return {
+      url: `rediss://${redisUrl.slice('redis://'.length)}`,
+      tlsUpgraded: true,
+      host,
+      tls: true,
+    };
+  }
+
+  return {
+    url: redisUrl,
+    tlsUpgraded: false,
+    host,
+    tls: protocol === 'rediss:',
+  };
+}
+
+/**
  * Resolves Redis connection settings from environment.
  * Throws RedisConfigurationError in production when Redis is not configured.
  */
 export function resolveRedisConnectionConfig(
   env: RedisEnvSnapshot,
 ): ResolvedRedisConfig {
-  const redisUrl = normalizeEnvValue(env.REDIS_URL);
-  if (redisUrl) {
+  const redisUrlRaw = normalizeEnvValue(env.REDIS_URL);
+  if (redisUrlRaw) {
     let parsed: URL;
     try {
-      parsed = new URL(redisUrl);
+      parsed = new URL(redisUrlRaw);
     } catch {
       throw new RedisConfigurationError(
         '[Redis] REDIS_URL is invalid. Expected redis:// or rediss:// URL.',
@@ -104,6 +138,10 @@ export function resolveRedisConnectionConfig(
         '[Redis] REDIS_URL is missing a hostname.',
       );
     }
+
+    const normalized = normalizeRedisConnectionUrl(redisUrlRaw);
+    // Re-parse after possible redis→rediss upgrade so fields stay consistent.
+    parsed = new URL(normalized.url);
 
     const port = parsed.port ? Number(parsed.port) : 6379;
     if (!Number.isFinite(port) || port <= 0 || port > 65535) {
@@ -129,13 +167,16 @@ export function resolveRedisConnectionConfig(
 
     return {
       source: 'url',
-      connectionUrl: redisUrl,
+      connectionUrl: normalized.url,
       host: parsed.hostname,
       port,
       ...(username ? { username } : {}),
       ...(password ? { password } : {}),
-      tls: protocol === 'rediss:',
+      tls: normalized.tls,
       ...(db !== undefined ? { db } : {}),
+      ...(normalized.tlsUpgraded
+        ? { tlsUpgradedFromPlainRedis: true as const }
+        : {}),
     };
   }
 
@@ -178,7 +219,7 @@ export function resolveRedisConnectionConfig(
 
 /** Safe, non-secret summary for startup / request diagnostics. */
 export function describeRedisConfig(resolved: ResolvedRedisConfig): string {
-  return `source=${resolved.source} host=${resolved.host} port=${resolved.port} tls=${resolved.tls} username=${resolved.username ? 'set' : 'none'} password=${resolved.password ? 'set' : 'none'} db=${resolved.db ?? 0} urlMode=${resolved.connectionUrl ? 'verbatim' : 'discrete'}`;
+  return `source=${resolved.source} host=${resolved.host} port=${resolved.port} tls=${resolved.tls} tlsUpgraded=${Boolean(resolved.tlsUpgradedFromPlainRedis)} username=${resolved.username ? 'set' : 'none'} password=${resolved.password ? 'set' : 'none'} db=${resolved.db ?? 0} urlMode=${resolved.connectionUrl ? 'verbatim' : 'discrete'}`;
 }
 
 /** Safe error text for logs — never include URLs or credential material. */

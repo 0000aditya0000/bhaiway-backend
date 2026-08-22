@@ -74,15 +74,21 @@ describe('resolveRedisConnectionConfig', () => {
     expect(summary).not.toContain('acl-secret');
   });
 
-  it('strips wrapping quotes from REDIS_URL', () => {
+  it('auto-upgrades Upstash redis:// to rediss:// without rewriting the token', () => {
+    const input =
+      'redis://default:TEST_TOKEN_ONLY@lucky-akita-example.upstash.io:6379';
     const resolved = resolveRedisConnectionConfig({
       NODE_ENV: 'production',
-      REDIS_URL: '"rediss://default:tok@cache.example:6379"',
+      REDIS_URL: input,
     });
-    expect(resolved.connectionUrl).toBe(
-      'rediss://default:tok@cache.example:6379',
-    );
+
     expect(resolved.tls).toBe(true);
+    expect(resolved.tlsUpgradedFromPlainRedis).toBe(true);
+    expect(resolved.connectionUrl).toBe(
+      'rediss://default:TEST_TOKEN_ONLY@lucky-akita-example.upstash.io:6379',
+    );
+    expect(resolved.connectionUrl).toContain('TEST_TOKEN_ONLY');
+    expect(describeRedisConfig(resolved)).toContain('tlsUpgraded=true');
   });
 
   it('falls back to REDIS_HOST / REDIS_PORT / REDIS_PASSWORD', () => {
