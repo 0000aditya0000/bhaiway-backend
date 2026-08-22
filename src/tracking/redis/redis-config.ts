@@ -1,6 +1,9 @@
 /**
  * Pure Redis connection resolution (no I/O).
  * Priority: REDIS_URL → REDIS_HOST(+PORT/PASSWORD/USERNAME) → localhost (dev only).
+ *
+ * REDIS_URL is always normalized into discrete connection fields so ioredis
+ * never receives both a rediss:// URL and a separate tls option (Upstash conflict).
  */
 
 export type RedisEnvSnapshot = {
@@ -12,25 +15,17 @@ export type RedisEnvSnapshot = {
   REDIS_USERNAME?: string | null;
 };
 
-export type ResolvedRedisConfig =
-  | {
-      source: 'url';
-      /** Full connection URL; never log this value. */
-      url: string;
-      tls: boolean;
-    }
-  | {
-      source: 'discrete';
-      host: string;
-      port: number;
-      username?: string;
-      password?: string;
-    }
-  | {
-      source: 'localhost-dev';
-      host: 'localhost';
-      port: 6379;
-    };
+export type ResolvedRedisConfig = {
+  /** How the config was sourced (for diagnostics only — never log secrets). */
+  source: 'url' | 'discrete' | 'localhost-dev';
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  /** True when REDIS_URL used rediss:// (TLS required). */
+  tls: boolean;
+  db?: number;
+};
 
 export class RedisConfigurationError extends Error {
   constructor(message: string) {
@@ -49,6 +44,14 @@ function trim(value: string | null | undefined): string | undefined {
 
 function isProduction(nodeEnv: string | null | undefined): boolean {
   return (nodeEnv ?? '').trim().toLowerCase() === 'production';
+}
+
+function decodeUriComponentSafe(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 /**
@@ -76,10 +79,42 @@ export function resolveRedisConnectionConfig(
       );
     }
 
+    if (!parsed.hostname) {
+      throw new RedisConfigurationError(
+        '[Redis] REDIS_URL is missing a hostname.',
+      );
+    }
+
+    const port = parsed.port ? Number(parsed.port) : 6379;
+    if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+      throw new RedisConfigurationError(
+        '[Redis] REDIS_URL port is invalid.',
+      );
+    }
+
+    const username = parsed.username
+      ? decodeUriComponentSafe(parsed.username)
+      : undefined;
+    const password = parsed.password
+      ? decodeUriComponentSafe(parsed.password)
+      : undefined;
+
+    let db: number | undefined;
+    if (parsed.pathname && parsed.pathname.length > 1) {
+      const dbRaw = Number(parsed.pathname.slice(1));
+      if (Number.isFinite(dbRaw) && dbRaw >= 0) {
+        db = dbRaw;
+      }
+    }
+
     return {
       source: 'url',
-      url: redisUrl,
+      host: parsed.hostname,
+      port,
+      ...(username ? { username } : {}),
+      ...(password ? { password } : {}),
       tls: protocol === 'rediss:',
+      ...(db !== undefined ? { db } : {}),
     };
   }
 
@@ -102,6 +137,7 @@ export function resolveRedisConnectionConfig(
       port,
       ...(username ? { username } : {}),
       ...(password ? { password } : {}),
+      tls: false,
     };
   }
 
@@ -115,7 +151,13 @@ export function resolveRedisConnectionConfig(
     source: 'localhost-dev',
     host: 'localhost',
     port: 6379,
+    tls: false,
   };
+}
+
+/** Safe, non-secret summary for startup / request diagnostics. */
+export function describeRedisConfig(resolved: ResolvedRedisConfig): string {
+  return `source=${resolved.source} host=${resolved.host} port=${resolved.port} tls=${resolved.tls} username=${resolved.username ? 'set' : 'none'} password=${resolved.password ? 'set' : 'none'} db=${resolved.db ?? 0}`;
 }
 
 /** Safe error text for logs — never include URLs or credential material. */

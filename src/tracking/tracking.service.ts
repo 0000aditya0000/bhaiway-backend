@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException,
   OnModuleDestroy,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import Redis from 'ioredis';
@@ -17,6 +18,7 @@ import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { UpdateDriverLocationDto } from './dto/update-driver-location.dto';
 import { RideTrackingResponseDto } from './dto/ride-tracking-response.dto';
+import { safeRedisErrorMessage } from './redis/redis-config';
 import {
   REDIS_CLIENT,
   RIDE_TRACKING_STALE_AFTER_MS,
@@ -59,7 +61,7 @@ export class TrackingService implements OnModuleDestroy {
     dto: UpdateDriverLocationDto,
   ): Promise<RideTrackingResponseDto> {
     this.logger.log(
-      `[Tracking][driver] location received ride=${rideId} lat=${dto.latitude} lng=${dto.longitude}`,
+      `[Tracking][driver] location received ride=${rideId} redisStatus=${this.redis.status}`,
     );
 
     const ride = await this.rideRepository.findOne({ where: { id: rideId } });
@@ -109,15 +111,10 @@ export class TrackingService implements OnModuleDestroy {
     };
 
     const key = rideTrackingKey(ride.id);
-    await this.redis.set(
-      key,
-      JSON.stringify(payload),
-      'EX',
-      RIDE_TRACKING_TTL_SECONDS,
-    );
+    await this.setLocationAtomic(key, payload);
 
     this.logger.log(
-      `[Tracking][driver] location stored ride=${ride.id} key=${key} ttl=${RIDE_TRACKING_TTL_SECONDS}s`,
+      `[Tracking][driver] location stored ride=${ride.id} ttl=${RIDE_TRACKING_TTL_SECONDS}s`,
     );
 
     return this.toResponse(ride, payload);
@@ -127,8 +124,9 @@ export class TrackingService implements OnModuleDestroy {
     userId: string,
     rideId: string,
   ): Promise<RideTrackingResponseDto> {
+    const started = Date.now();
     this.logger.log(
-      `[Tracking][passenger] location requested ride=${rideId} user=${userId}`,
+      `[Tracking][passenger] location requested ride=${rideId} redisStatus=${this.redis.status}`,
     );
 
     const ride = await this.rideRepository.findOne({ where: { id: rideId } });
@@ -162,11 +160,12 @@ export class TrackingService implements OnModuleDestroy {
 
     const stored = await this.readStoredLocation(ride.id);
     const response = this.toResponse(ride, stored);
+    const elapsedMs = Date.now() - started;
 
     this.logger.log(
       `[Tracking][passenger] location returned ride=${ride.id} hasCoordinate=${Boolean(
         response.driverCoordinate,
-      )} isStale=${response.isStale}`,
+      )} isStale=${response.isStale} elapsedMs=${elapsedMs}`,
     );
 
     return response;
@@ -175,28 +174,105 @@ export class TrackingService implements OnModuleDestroy {
   /** Clears Redis tracking state when a ride ends (complete/cancel). */
   async clearRideTracking(rideId: string): Promise<void> {
     const key = rideTrackingKey(rideId);
-    await this.redis.del(key);
-    this.logger.log(`[Tracking] cleared ride=${rideId}`);
+    try {
+      this.logger.log(
+        `[Tracking] clear started ride=${rideId} redisStatus=${this.redis.status}`,
+      );
+      await this.redis.del(key);
+      this.logger.log(`[Tracking] cleared ride=${rideId}`);
+    } catch (error) {
+      this.logger.error(
+        `[Tracking] clear failed ride=${rideId} err=${safeRedisErrorMessage(error)}`,
+      );
+      // Do not block ride complete/cancel on Redis; TTL will expire the key.
+    }
+  }
+
+  /**
+   * Single atomic SET with EX TTL (one round-trip). Avoids separate EXPIRE.
+   */
+  private async setLocationAtomic(
+    key: string,
+    payload: StoredRideLocation,
+  ): Promise<void> {
+    const started = Date.now();
+    this.logger.log(
+      `[Tracking][driver] SET started redisStatus=${this.redis.status}`,
+    );
+
+    if (this.redis.status !== 'ready') {
+      this.logger.error(
+        `[Tracking][driver] SET aborted: redis not ready (status=${this.redis.status})`,
+      );
+      throw new ServiceUnavailableException(
+        'Live tracking temporarily unavailable',
+      );
+    }
+
+    try {
+      await this.redis.set(
+        key,
+        JSON.stringify(payload),
+        'EX',
+        RIDE_TRACKING_TTL_SECONDS,
+      );
+      this.logger.log(
+        `[Tracking][driver] SET+TTL succeeded elapsedMs=${Date.now() - started}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `[Tracking][driver] SET+TTL failed elapsedMs=${Date.now() - started} err=${safeRedisErrorMessage(error)}`,
+      );
+      throw new ServiceUnavailableException(
+        'Live tracking temporarily unavailable',
+      );
+    }
   }
 
   private async readStoredLocation(
     rideId: string,
   ): Promise<StoredRideLocation | null> {
-    const raw = await this.redis.get(rideTrackingKey(rideId));
-    if (!raw) {
-      return null;
+    const started = Date.now();
+    this.logger.log(
+      `[Tracking][passenger] GET started redisStatus=${this.redis.status}`,
+    );
+
+    if (this.redis.status !== 'ready') {
+      this.logger.error(
+        `[Tracking][passenger] GET aborted: redis not ready (status=${this.redis.status})`,
+      );
+      throw new ServiceUnavailableException(
+        'Live tracking temporarily unavailable',
+      );
     }
+
     try {
-      const parsed = JSON.parse(raw) as StoredRideLocation;
-      if (
-        typeof parsed.latitude !== 'number' ||
-        typeof parsed.longitude !== 'number'
-      ) {
+      const raw = await this.redis.get(rideTrackingKey(rideId));
+      this.logger.log(
+        `[Tracking][passenger] GET succeeded hit=${Boolean(raw)} elapsedMs=${Date.now() - started}`,
+      );
+      if (!raw) {
         return null;
       }
-      return parsed;
-    } catch {
-      return null;
+      try {
+        const parsed = JSON.parse(raw) as StoredRideLocation;
+        if (
+          typeof parsed.latitude !== 'number' ||
+          typeof parsed.longitude !== 'number'
+        ) {
+          return null;
+        }
+        return parsed;
+      } catch {
+        return null;
+      }
+    } catch (error) {
+      this.logger.error(
+        `[Tracking][passenger] GET failed elapsedMs=${Date.now() - started} err=${safeRedisErrorMessage(error)}`,
+      );
+      throw new ServiceUnavailableException(
+        'Live tracking temporarily unavailable',
+      );
     }
   }
 

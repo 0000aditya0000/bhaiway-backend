@@ -385,6 +385,11 @@ describe('Tracking (integration — Redis)', () => {
     expect(view.body.driverCoordinate.latitude).toBe(28.62);
     expect(view.body.driverCoordinate.longitude).toBe(77.21);
 
+    // Atomic SET EX — key must have a positive TTL (not -1 permanent).
+    const ttl = await redis.ttl(rideTrackingKey(ride.id));
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(120);
+
     const otp = (
       await request(app.getHttpServer())
         .get('/bookings/my')

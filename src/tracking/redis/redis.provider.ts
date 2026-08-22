@@ -4,6 +4,7 @@ import Redis, { RedisOptions } from 'ioredis';
 
 import { REDIS_CLIENT } from '../tracking.constants';
 import {
+  describeRedisConfig,
   resolveRedisConnectionConfig,
   safeRedisErrorMessage,
   type ResolvedRedisConfig,
@@ -11,47 +12,47 @@ import {
 
 const logger = new Logger('Redis');
 
-export function buildRedisOptions(
-  resolved: ResolvedRedisConfig,
-): { url?: string; options: RedisOptions } {
-  const base: RedisOptions = {
-    maxRetriesPerRequest: 3,
+/**
+ * Builds ioredis options from a normalized config.
+ * Never passes a redis(s):// URL string into the constructor — avoids
+ * conflicting URL-implied TLS with an explicit `tls` option (Upstash).
+ */
+export function buildRedisOptions(resolved: ResolvedRedisConfig): RedisOptions {
+  const options: RedisOptions = {
+    host: resolved.host,
+    port: resolved.port,
+    db: resolved.db ?? 0,
+    ...(resolved.username ? { username: resolved.username } : {}),
+    ...(resolved.password ? { password: resolved.password } : {}),
+    // Fail the command quickly instead of queuing during reconnect (avoids 4–5s hangs).
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    connectTimeout: 5_000,
+    // Helps keep Upstash/serverless Redis connections from going silently dead.
+    keepAlive: 10_000,
     enableReadyCheck: true,
     lazyConnect: false,
+    retryStrategy: (times: number) => {
+      // Cap backoff; stop after sustained failure so we don't reconnect forever silently.
+      if (times > 30) {
+        return null;
+      }
+      return Math.min(times * 200, 2_000);
+    },
   };
 
-  if (resolved.source === 'url') {
-    return {
-      url: resolved.url,
-      options: {
-        ...base,
-        // Explicit TLS for rediss:// in addition to ioredis URL handling.
-        ...(resolved.tls ? { tls: {} } : {}),
-      },
+  if (resolved.tls) {
+    // Single TLS path with SNI (servername) — required for many managed Redis certs.
+    options.tls = {
+      servername: resolved.host,
     };
   }
 
-  return {
-    options: {
-      ...base,
-      host: resolved.host,
-      port: resolved.port,
-      ...(resolved.source === 'discrete' && resolved.username
-        ? { username: resolved.username }
-        : {}),
-      ...(resolved.source === 'discrete' && resolved.password
-        ? { password: resolved.password }
-        : {}),
-    },
-  };
+  return options;
 }
 
 export function createRedisClient(resolved: ResolvedRedisConfig): Redis {
-  const built = buildRedisOptions(resolved);
-  if (built.url) {
-    return new Redis(built.url, built.options);
-  }
-  return new Redis(built.options);
+  return new Redis(buildRedisOptions(resolved));
 }
 
 /**
@@ -83,12 +84,16 @@ export function attachRedisLifecycleLogs(
     const now = Date.now();
     if (now - lastReconnectLogAt >= reconnectLogIntervalMs) {
       lastReconnectLogAt = now;
-      log.warn('[Redis] Reconnecting');
+      log.warn(`[Redis] Reconnecting (status=${client.status})`);
     }
   });
 
   client.on('end', () => {
     log.log('[Redis] Closed');
+  });
+
+  client.on('close', () => {
+    log.warn('[Redis] Connection closed');
   });
 }
 
@@ -104,6 +109,8 @@ export const redisClientProvider: Provider = {
       REDIS_PASSWORD: config.get<string>('REDIS_PASSWORD'),
       REDIS_USERNAME: config.get<string>('REDIS_USERNAME'),
     });
+
+    logger.log(`[Redis] Config resolved: ${describeRedisConfig(resolved)}`);
 
     const client = createRedisClient(resolved);
     attachRedisLifecycleLogs(client);

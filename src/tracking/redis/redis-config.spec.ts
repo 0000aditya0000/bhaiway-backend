@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 
 import {
+  describeRedisConfig,
   RedisConfigurationError,
   resolveRedisConnectionConfig,
   safeRedisErrorMessage,
@@ -11,7 +12,7 @@ import {
 } from './redis.provider';
 
 describe('resolveRedisConnectionConfig', () => {
-  it('prefers REDIS_URL redis:// over host/port', () => {
+  it('prefers REDIS_URL redis:// over host/port (normalized, no URL+tls conflict)', () => {
     const resolved = resolveRedisConnectionConfig({
       NODE_ENV: 'production',
       REDIS_URL: 'redis://cache.example:6379/0',
@@ -22,12 +23,21 @@ describe('resolveRedisConnectionConfig', () => {
 
     expect(resolved).toEqual({
       source: 'url',
-      url: 'redis://cache.example:6379/0',
+      host: 'cache.example',
+      port: 6379,
       tls: false,
+      db: 0,
     });
+
+    const built = buildRedisOptions(resolved);
+    expect(built.host).toBe('cache.example');
+    expect(built.port).toBe(6379);
+    expect(built.tls).toBeUndefined();
+    expect(built.enableOfflineQueue).toBe(false);
+    expect(built.maxRetriesPerRequest).toBe(1);
   });
 
-  it('supports REDIS_URL rediss:// with TLS flag', () => {
+  it('supports REDIS_URL rediss:// with single TLS path + SNI', () => {
     const resolved = resolveRedisConnectionConfig({
       NODE_ENV: 'production',
       REDIS_URL: 'rediss://cache.example:6380',
@@ -35,13 +45,15 @@ describe('resolveRedisConnectionConfig', () => {
 
     expect(resolved).toEqual({
       source: 'url',
-      url: 'rediss://cache.example:6380',
+      host: 'cache.example',
+      port: 6380,
       tls: true,
     });
 
     const built = buildRedisOptions(resolved);
-    expect(built.url).toBe('rediss://cache.example:6380');
-    expect(built.options.tls).toEqual({});
+    expect(built.tls).toEqual({ servername: 'cache.example' });
+    // Must not also pass a redis(s) URL into the constructor path.
+    expect(built).not.toHaveProperty('url');
   });
 
   it('supports REDIS_URL with username and password (ACL)', () => {
@@ -51,11 +63,20 @@ describe('resolveRedisConnectionConfig', () => {
     });
 
     expect(resolved.source).toBe('url');
-    if (resolved.source === 'url') {
-      expect(resolved.url).toContain('acl-user');
-      expect(resolved.url).toContain('acl-secret');
-      expect(resolved.tls).toBe(false);
-    }
+    expect(resolved.host).toBe('cache.example');
+    expect(resolved.username).toBe('acl-user');
+    expect(resolved.password).toBe('acl-secret');
+    expect(resolved.tls).toBe(false);
+
+    const built = buildRedisOptions(resolved);
+    expect(built.username).toBe('acl-user');
+    expect(built.password).toBe('acl-secret');
+
+    const summary = describeRedisConfig(resolved);
+    expect(summary).toContain('username=set');
+    expect(summary).toContain('password=set');
+    expect(summary).not.toContain('acl-secret');
+    expect(summary).not.toContain('acl-user');
   });
 
   it('falls back to REDIS_HOST / REDIS_PORT / REDIS_PASSWORD', () => {
@@ -73,11 +94,11 @@ describe('resolveRedisConnectionConfig', () => {
       port: 6380,
       username: 'acl-user',
       password: 'host-secret',
+      tls: false,
     });
 
     const built = buildRedisOptions(resolved);
-    expect(built.url).toBeUndefined();
-    expect(built.options).toMatchObject({
+    expect(built).toMatchObject({
       host: 'redis.internal',
       port: 6380,
       username: 'acl-user',
@@ -94,6 +115,7 @@ describe('resolveRedisConnectionConfig', () => {
       source: 'localhost-dev',
       host: 'localhost',
       port: 6379,
+      tls: false,
     });
   });
 
@@ -144,7 +166,10 @@ describe('attachRedisLifecycleLogs', () => {
   it('logs lifecycle events without secrets and rate-limits reconnecting', () => {
     const client = new EventEmitter() as EventEmitter & {
       on: EventEmitter['on'];
+      status: string;
     };
+    client.status = 'reconnecting';
+
     const log = {
       log: jest.fn(),
       warn: jest.fn(),
@@ -179,7 +204,9 @@ describe('attachRedisLifecycleLogs', () => {
     expect(log.log).toHaveBeenCalledWith('[Redis] Connected');
     expect(log.log).toHaveBeenCalledWith('[Redis] Ready');
     expect(log.log).toHaveBeenCalledWith('[Redis] Closed');
-    expect(log.warn).toHaveBeenCalledWith('[Redis] Reconnecting');
+    expect(log.warn).toHaveBeenCalledWith(
+      '[Redis] Reconnecting (status=reconnecting)',
+    );
     expect(log.warn).toHaveBeenCalledTimes(1);
     expect(log.error.mock.calls[0][0]).toMatch(/^\[Redis\] Connection error:/);
     expect(allText).not.toContain('leaked-password');
