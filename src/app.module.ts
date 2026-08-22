@@ -7,6 +7,7 @@ import { BookingsModule } from './bookings/bookings.module';
 import { DatabaseModule } from './database/database.module';
 import { RidesModule } from './rides/rides.module';
 import { SettingsModule } from './settings/settings.module';
+import { TrackingModule } from './tracking/tracking.module';
 import { UsersModule } from './users/users.module';
 import { VehiclesModule } from './vehicles/vehicles.module';
 import { VerificationModule } from './verification/verification.module';
@@ -28,6 +29,7 @@ import { WalletModule } from './wallet/wallet.module';
     AssuredModule,
     RidesModule,
     BookingsModule,
+    TrackingModule,
   ],
 })
 export class AppModule {}

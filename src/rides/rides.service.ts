@@ -26,6 +26,7 @@ import {
 } from '../bookings/enums/booking.enums';
 import { BookingsService } from '../bookings/bookings.service';
 import { SettingsService } from '../settings/settings.service';
+import { TrackingService } from '../tracking/tracking.service';
 import { User, UserStatus } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
@@ -84,6 +85,7 @@ export class RidesService {
     private readonly settingsService: SettingsService,
     private readonly assuredLifecycleService: AssuredLifecycleService,
     private readonly bookingsService: BookingsService,
+    private readonly trackingService: TrackingService,
   ) {}
 
   async cancelByDriver(
@@ -172,7 +174,7 @@ export class RidesService {
     driverId: string,
     rideId: string,
   ): Promise<AssuredRideLifecycleResponseDto> {
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const ride = await manager
         .getRepository(Ride)
         .createQueryBuilder('ride')
@@ -261,6 +263,9 @@ export class RidesService {
         alreadyApplied: false,
       };
     });
+
+    await this.trackingService.clearRideTracking(rideId);
+    return result;
   }
 
   async reportDriverNoShow(
@@ -563,7 +568,7 @@ export class RidesService {
     rideId: string,
   ): Promise<CompleteRideResponseDto> {
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      const result = await this.dataSource.transaction(async (manager) => {
         const ride = await manager
           .getRepository(Ride)
           .createQueryBuilder('ride')
@@ -721,6 +726,12 @@ export class RidesService {
           alreadyCompleted: false,
         };
       });
+
+      if (result.rideType === RideType.REGULAR) {
+        await this.trackingService.clearRideTracking(rideId);
+      }
+
+      return result;
     } catch (error) {
       if (
         error instanceof WalletHoldAlreadyConsumedError ||

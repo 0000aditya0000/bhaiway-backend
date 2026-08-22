@@ -6,6 +6,7 @@ import { AuthModule } from '../auth/auth.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingsModule } from '../bookings/bookings.module';
 import { SettingsModule } from '../settings/settings.module';
+import { TrackingModule } from '../tracking/tracking.module';
 import { User } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
@@ -34,6 +35,7 @@ import { RidesService } from './rides.service';
     SettingsModule,
     AssuredModule,
     BookingsModule,
+    TrackingModule,
   ],
   controllers: [RidesController],
   providers: [RidesService],

@@ -30,6 +30,10 @@ export function setupSwagger(app: INestApplication): void {
       'Passenger seat reservations (Phase 1 — no wallet movement)',
     )
     .addTag(
+      'Tracking',
+      'Regular ride live driver location (Redis current fix; JWT + ownership)',
+    )
+    .addTag(
       'Wallet',
       'Wallet financial operations (service layer only — no HTTP endpoints yet)',
     )
