@@ -30,8 +30,12 @@ import { TrackingService } from '../tracking/tracking.service';
 import { User, UserStatus } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
+import { UserVerification } from '../verification/entities/user-verification.entity';
 import { VerificationService } from '../verification/verification.service';
-import { VerificationType } from '../verification/enums/verification.enums';
+import {
+  VerificationStatus,
+  VerificationType,
+} from '../verification/enums/verification.enums';
 import {
   InsufficientWalletBalanceError,
   WalletHoldAlreadyConsumedError,
@@ -47,6 +51,16 @@ import { Wallet, WalletStatus } from '../wallet/entities/wallet.entity';
 import { WalletService } from '../wallet/wallet.service';
 import { CompleteRideResponseDto } from './dto/complete-ride-response.dto';
 import { CreateRideDto } from './dto/create-ride.dto';
+import { RideHistoryQueryDto } from './dto/ride-history-query.dto';
+import {
+  RideHistoryDetailDto,
+  RideHistoryEarningsDto,
+  RideHistoryListItemDto,
+  RideHistoryPageDto,
+  RideHistoryPassengerDto,
+  RideHistoryTripDto,
+  RideHistoryVehicleDto,
+} from './dto/ride-history-response.dto';
 import { UpdateRideDto } from './dto/update-ride.dto';
 import { RideResponseDto } from './dto/ride-response.dto';
 import {
@@ -80,6 +94,8 @@ export class RidesService {
     private readonly bookingRepository: Repository<Booking>,
     @InjectRepository(WalletHold)
     private readonly walletHoldRepository: Repository<WalletHold>,
+    @InjectRepository(UserVerification)
+    private readonly verificationRepository: Repository<UserVerification>,
     private readonly verificationService: VerificationService,
     private readonly walletService: WalletService,
     private readonly settingsService: SettingsService,
@@ -404,6 +420,122 @@ export class RidesService {
       order: { departureDate: 'ASC', departureTime: 'ASC', createdAt: 'DESC' },
     });
     return rides.map((ride) => this.toResponse(ride));
+  }
+
+  /**
+   * Paginated past rides for the owning driver (COMPLETED / CANCELLED only).
+   * Does not include PUBLISHED or IN_PROGRESS.
+   */
+  async findHistory(
+    driverId: string,
+    query: RideHistoryQueryDto,
+  ): Promise<RideHistoryPageDto> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const statuses = query.status
+      ? [query.status]
+      : [RideStatus.COMPLETED, RideStatus.CANCELLED];
+
+    const qb = this.rideRepository
+      .createQueryBuilder('ride')
+      .where('ride.driver_id = :driverId', { driverId })
+      .andWhere('ride.status IN (:...statuses)', { statuses })
+      .orderBy('ride.departure_date', 'DESC')
+      .addOrderBy('ride.departure_time', 'DESC')
+      .addOrderBy('ride.updated_at', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    const [rides, total] = await qb.getManyAndCount();
+    const items = await this.toHistoryListItems(rides);
+
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: total === 0 ? 0 : Math.ceil(total / limit),
+    };
+  }
+
+  /**
+   * Driver past-ride detail with passengers and earnings from real bookings.
+   */
+  async findHistoryDetail(
+    driverId: string,
+    rideId: string,
+  ): Promise<RideHistoryDetailDto> {
+    const ride = await this.rideRepository.findOne({
+      where: { id: rideId, driverId },
+    });
+    if (
+      !ride ||
+      (ride.status !== RideStatus.COMPLETED &&
+        ride.status !== RideStatus.CANCELLED)
+    ) {
+      throw new NotFoundException('Ride not found');
+    }
+
+    const bookings = await this.bookingRepository.find({
+      where: { rideId: ride.id },
+      order: { pickupOrder: 'ASC', createdAt: 'ASC', id: 'ASC' },
+    });
+
+    const passengerIds = [
+      ...new Set(bookings.map((booking) => booking.passengerId)),
+    ];
+    const profiles =
+      passengerIds.length === 0
+        ? []
+        : await this.userProfileRepository.find({
+            where: { userId: In(passengerIds) },
+          });
+    const profileByUserId = new Map(
+      profiles.map((profile) => [profile.userId, profile] as const),
+    );
+
+    const vehicle = await this.vehicleRepository.findOne({
+      where: { id: ride.vehicleId },
+      withDeleted: true,
+    });
+    const vehicleVerified = vehicle
+      ? await this.isVerificationCurrentlyVerified(
+          vehicle.userId,
+          VerificationType.VEHICLE,
+        )
+      : false;
+
+    const passengers: RideHistoryPassengerDto[] = bookings.map((booking) => {
+      const profile = profileByUserId.get(booking.passengerId);
+      return {
+        bookingId: booking.id,
+        userId: booking.passengerId,
+        name: profile?.displayName ?? profile?.firstName ?? null,
+        profileImage: profile?.profilePhoto ?? null,
+        fare: booking.totalAmount,
+        seats: booking.seats,
+        bookingStatus: booking.status,
+      };
+    });
+
+    const bookedSeats = bookings
+      .filter((booking) =>
+        [
+          BookingStatus.PENDING,
+          BookingStatus.CONFIRMED,
+          BookingStatus.COMPLETED,
+        ].includes(booking.status),
+      )
+      .reduce((sum, booking) => sum + booking.seats, 0);
+
+    return {
+      ride: this.toHistoryTrip(ride, bookedSeats),
+      vehicle: vehicle
+        ? this.toHistoryVehicle(vehicle, vehicleVerified)
+        : null,
+      passengers,
+      earnings: this.calculateHistoryEarnings(bookings),
+    };
   }
 
   async findOne(requesterId: string, rideId: string): Promise<RideResponseDto> {
@@ -1184,6 +1316,186 @@ export class RidesService {
       return `${value}:00`;
     }
     return value;
+  }
+
+  private async toHistoryListItems(
+    rides: Ride[],
+  ): Promise<RideHistoryListItemDto[]> {
+    if (rides.length === 0) {
+      return [];
+    }
+
+    const rideIds = rides.map((ride) => ride.id);
+    const vehicleIds = [...new Set(rides.map((ride) => ride.vehicleId))];
+
+    const [bookings, vehicles] = await Promise.all([
+      this.bookingRepository.find({
+        where: { rideId: In(rideIds) },
+        select: {
+          id: true,
+          rideId: true,
+          seats: true,
+          status: true,
+          totalAmount: true,
+        },
+      }),
+      this.vehicleRepository.find({
+        where: { id: In(vehicleIds) },
+        withDeleted: true,
+      }),
+    ]);
+
+    const bookingsByRideId = new Map<string, Booking[]>();
+    for (const booking of bookings) {
+      const list = bookingsByRideId.get(booking.rideId) ?? [];
+      list.push(booking);
+      bookingsByRideId.set(booking.rideId, list);
+    }
+
+    const vehicleById = new Map(
+      vehicles.map((vehicle) => [vehicle.id, vehicle] as const),
+    );
+    const vehicleOwnerIds = [
+      ...new Set(vehicles.map((vehicle) => vehicle.userId)),
+    ];
+    const vehicleVerifiedByUserId =
+      await this.resolveVerificationFlags(
+        vehicleOwnerIds,
+        VerificationType.VEHICLE,
+      );
+
+    return rides.map((ride) => {
+      const rideBookings = bookingsByRideId.get(ride.id) ?? [];
+      const bookedSeats = rideBookings
+        .filter((booking) =>
+          [
+            BookingStatus.PENDING,
+            BookingStatus.CONFIRMED,
+            BookingStatus.COMPLETED,
+          ].includes(booking.status),
+        )
+        .reduce((sum, booking) => sum + booking.seats, 0);
+      const vehicle = vehicleById.get(ride.vehicleId) ?? null;
+
+      return {
+        ride: this.toHistoryTrip(ride, bookedSeats),
+        vehicle: vehicle
+          ? this.toHistoryVehicle(
+              vehicle,
+              vehicleVerifiedByUserId.get(vehicle.userId) === true,
+            )
+          : null,
+        earnings: this.calculateHistoryEarnings(rideBookings),
+        passengerCount: rideBookings.length,
+      };
+    });
+  }
+
+  private toHistoryTrip(ride: Ride, bookedSeats: number): RideHistoryTripDto {
+    return {
+      id: ride.id,
+      status: ride.status,
+      rideType: ride.rideType,
+      source: ride.source,
+      destination: ride.destination,
+      sourceLatitude: null,
+      sourceLongitude: null,
+      destinationLatitude: null,
+      destinationLongitude: null,
+      departureDate: this.toCivilDate(ride.departureDate),
+      departureTime: this.formatTime(ride.departureTime),
+      startedAt: null,
+      completedAt: null,
+      cancelledAt: ride.cancelledAt?.toISOString() ?? null,
+      durationMinutes: null,
+      distanceKm: null,
+      totalSeats: ride.totalSeats,
+      bookedSeats,
+      pricePerSeat: ride.pricePerSeat,
+    };
+  }
+
+  private toHistoryVehicle(
+    vehicle: Vehicle,
+    isVerified: boolean,
+  ): RideHistoryVehicleDto {
+    return {
+      id: vehicle.id,
+      name: `${vehicle.make} ${vehicle.model}`.trim(),
+      make: vehicle.make,
+      model: vehicle.model,
+      color: vehicle.color,
+      registrationNumber: vehicle.registrationNumber,
+      isVerified,
+    };
+  }
+
+  private calculateHistoryEarnings(
+    bookings: Array<Pick<Booking, 'status' | 'totalAmount'>>,
+  ): RideHistoryEarningsDto {
+    const passengerTotal = bookings
+      .filter((booking) => booking.status === BookingStatus.COMPLETED)
+      .reduce((sum, booking) => sum + BigInt(booking.totalAmount), 0n);
+
+    return {
+      passengerTotal: passengerTotal.toString(),
+      assuredBonus: null,
+      otherEarnings: null,
+      total: passengerTotal.toString(),
+    };
+  }
+
+  private async resolveVerificationFlags(
+    userIds: string[],
+    type: VerificationType,
+  ): Promise<Map<string, boolean>> {
+    const uniqueIds = [...new Set(userIds.filter(Boolean))];
+    const result = new Map<string, boolean>();
+    if (uniqueIds.length === 0) {
+      return result;
+    }
+
+    const rows = await this.verificationRepository.find({
+      where: {
+        userId: In(uniqueIds),
+        verificationType: type,
+        isCurrent: true,
+      },
+    });
+
+    for (const userId of uniqueIds) {
+      result.set(userId, false);
+    }
+    for (const row of rows) {
+      result.set(row.userId, this.isIdentityCurrentlyVerified(row));
+    }
+    return result;
+  }
+
+  private async isVerificationCurrentlyVerified(
+    userId: string,
+    type: VerificationType,
+  ): Promise<boolean> {
+    const record = await this.verificationRepository.findOne({
+      where: {
+        userId,
+        verificationType: type,
+        isCurrent: true,
+      },
+    });
+    return this.isIdentityCurrentlyVerified(record ?? undefined);
+  }
+
+  private isIdentityCurrentlyVerified(
+    record: UserVerification | undefined,
+  ): boolean {
+    if (!record || record.status !== VerificationStatus.VERIFIED) {
+      return false;
+    }
+    if (record.expiresAt && record.expiresAt.getTime() <= Date.now()) {
+      return false;
+    }
+    return true;
   }
 
   private toResponse(ride: Ride): RideResponseDto {

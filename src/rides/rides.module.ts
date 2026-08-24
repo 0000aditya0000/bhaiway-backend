@@ -9,6 +9,7 @@ import { SettingsModule } from '../settings/settings.module';
 import { TrackingModule } from '../tracking/tracking.module';
 import { User } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
+import { UserVerification } from '../verification/entities/user-verification.entity';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { VerificationModule } from '../verification/verification.module';
 import { WalletHold } from '../wallet/entities/wallet-hold.entity';
@@ -24,6 +25,7 @@ import { RidesService } from './rides.service';
       Ride,
       User,
       UserProfile,
+      UserVerification,
       Vehicle,
       Wallet,
       Booking,

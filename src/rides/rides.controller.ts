@@ -35,6 +35,11 @@ import {
 import { HalfTimeDecisionDto } from '../assured/dto/half-time-decision.dto';
 import { CompleteRideResponseDto } from './dto/complete-ride-response.dto';
 import { CreateRideDto } from './dto/create-ride.dto';
+import { RideHistoryQueryDto } from './dto/ride-history-query.dto';
+import {
+  RideHistoryDetailDto,
+  RideHistoryPageDto,
+} from './dto/ride-history-response.dto';
 import { RideResponseDto } from './dto/ride-response.dto';
 import {
   RideSearchItemDto,
@@ -89,6 +94,39 @@ export class RidesController {
   @ApiOkResponse({ type: RideResponseDto, isArray: true })
   findMine(@CurrentUser() currentUser: AuthenticatedUser) {
     return this.ridesService.findMine(currentUser.userId);
+  }
+
+  @Get('history')
+  @ApiOperation({
+    summary: 'Paginated past rides for the authenticated driver',
+    description:
+      'Returns COMPLETED and CANCELLED rides owned by the JWT subject only. PUBLISHED and IN_PROGRESS are excluded. Earnings use real booking totalAmount sums (COMPLETED bookings). Coordinates/duration/distance/startedAt are null when not stored.',
+  })
+  @ApiOkResponse({ type: RideHistoryPageDto })
+  @ApiBadRequestResponse({ description: 'Invalid query parameters' })
+  findHistory(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Query() query: RideHistoryQueryDto,
+  ) {
+    return this.ridesService.findHistory(currentUser.userId, query);
+  }
+
+  @Get('history/:id')
+  @ApiOperation({
+    summary: 'Past ride detail for the owning driver',
+    description:
+      'Includes passenger fare lines and earnings from real bookings. Only COMPLETED/CANCELLED rides owned by the JWT subject.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOkResponse({ type: RideHistoryDetailDto })
+  @ApiNotFoundResponse({
+    description: 'Past ride not found for this driver',
+  })
+  findHistoryDetail(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.ridesService.findHistoryDetail(currentUser.userId, id);
   }
 
   @Get('public/:id')

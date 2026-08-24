@@ -33,6 +33,11 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { BookingResponseDto } from './dto/booking-response.dto';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { BookingHistoryQueryDto } from './dto/booking-history-query.dto';
+import {
+  BookingHistoryDetailDto,
+  BookingHistoryPageDto,
+} from './dto/booking-history-response.dto';
 import { DriverBookingsQueryDto } from './dto/driver-bookings-query.dto';
 import { DriverBookingPageDto } from './dto/driver-booking-response.dto';
 import { VerifyPickupDto } from './dto/verify-pickup.dto';
@@ -179,6 +184,39 @@ export class BookingsController {
     @Query() query: DriverBookingsQueryDto,
   ) {
     return this.bookingsService.findForDriverRides(currentUser.userId, query);
+  }
+
+  @Get('history')
+  @ApiOperation({
+    summary: 'Paginated past bookings for the authenticated passenger',
+    description:
+      'Returns COMPLETED and CANCELLED bookings owned by the JWT subject only. Active PENDING/CONFIRMED bookings are excluded. Fare/driver/vehicle come from real database records; unavailable invoice/coords fields are null.',
+  })
+  @ApiOkResponse({ type: BookingHistoryPageDto })
+  @ApiBadRequestResponse({ description: 'Invalid query parameters' })
+  findHistory(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Query() query: BookingHistoryQueryDto,
+  ) {
+    return this.bookingsService.findHistory(currentUser.userId, query);
+  }
+
+  @Get('history/:id')
+  @ApiOperation({
+    summary: 'Past booking detail for the booking owner',
+    description:
+      'Includes driver, vehicle, fare breakdown, and payment fields from real data. Invoice IDs are null until an invoice system exists.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOkResponse({ type: BookingHistoryDetailDto })
+  @ApiNotFoundResponse({
+    description: 'Past booking not found for this passenger',
+  })
+  findHistoryDetail(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.bookingsService.findHistoryDetail(currentUser.userId, id);
   }
 
   @Get(':id')

@@ -56,6 +56,16 @@ import {
   BookingResponseDto,
   BookingVehicleSnapshotDto,
 } from './dto/booking-response.dto';
+import { BookingHistoryQueryDto } from './dto/booking-history-query.dto';
+import {
+  BookingHistoryDetailDto,
+  BookingHistoryDriverDto,
+  BookingHistoryFareBreakdownDto,
+  BookingHistoryListItemDto,
+  BookingHistoryPageDto,
+  BookingHistoryTripDto,
+  BookingHistoryVehicleDto,
+} from './dto/booking-history-response.dto';
 import { DriverBookingsQueryDto } from './dto/driver-bookings-query.dto';
 import {
   DriverBookingItemDto,
@@ -764,6 +774,83 @@ export class BookingsService {
     });
   }
 
+  /**
+   * Paginated past bookings for the authenticated passenger
+   * (COMPLETED / CANCELLED only).
+   */
+  async findHistory(
+    passengerId: string,
+    query: BookingHistoryQueryDto,
+  ): Promise<BookingHistoryPageDto> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const statuses = query.status
+      ? [query.status]
+      : [BookingStatus.COMPLETED, BookingStatus.CANCELLED];
+
+    const qb = this.bookingRepository
+      .createQueryBuilder('booking')
+      .where('booking.passenger_id = :passengerId', { passengerId })
+      .andWhere('booking.status IN (:...statuses)', { statuses })
+      .orderBy('booking.created_at', 'DESC')
+      .addOrderBy('booking.id', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    const [bookings, total] = await qb.getManyAndCount();
+    const items = await this.toHistoryListItems(bookings);
+
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: total === 0 ? 0 : Math.ceil(total / limit),
+    };
+  }
+
+  /**
+   * Passenger past-booking detail with driver/vehicle/fare from real data.
+   */
+  async findHistoryDetail(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<BookingHistoryDetailDto> {
+    const booking = await this.bookingRepository.findOne({
+      where: { id: bookingId, passengerId },
+    });
+    if (
+      !booking ||
+      (booking.status !== BookingStatus.COMPLETED &&
+        booking.status !== BookingStatus.CANCELLED)
+    ) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    const [item] = await this.toHistoryListItems([booking]);
+    if (!item) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    return {
+      trip: item.trip,
+      driver: item.driver,
+      vehicle: item.vehicle,
+      fare: item.fare,
+      payment: {
+        paymentMethod: booking.paymentMethod,
+        paymentStatus: booking.paymentStatus,
+        transactionId: booking.walletTransactionId,
+      },
+      invoice: {
+        invoiceId: null,
+        invoiceDate: null,
+        paymentReference: booking.walletTransactionId,
+      },
+      bookedAt: item.bookedAt,
+    };
+  }
+
   async findOne(
     passengerId: string,
     bookingId: string,
@@ -1085,6 +1172,151 @@ export class BookingsService {
       });
     }
 
+    return result;
+  }
+
+  private async toHistoryListItems(
+    bookings: Booking[],
+  ): Promise<BookingHistoryListItemDto[]> {
+    if (bookings.length === 0) {
+      return [];
+    }
+
+    const rideIds = [...new Set(bookings.map((booking) => booking.rideId))];
+    const rides = await this.rideRepository.find({
+      where: { id: In(rideIds) },
+    });
+    const rideById = new Map(rides.map((ride) => [ride.id, ride] as const));
+
+    const driverById = await this.resolveDrivers(
+      rides.map((ride) => ride.driverId),
+    );
+
+    const vehicleIds = [...new Set(rides.map((ride) => ride.vehicleId))];
+    const vehicles =
+      vehicleIds.length === 0
+        ? []
+        : await this.vehicleRepository.find({
+            where: { id: In(vehicleIds) },
+            withDeleted: true,
+          });
+    const vehicleById = new Map(
+      vehicles.map((vehicle) => [vehicle.id, vehicle] as const),
+    );
+
+    const vehicleOwnerIds = [
+      ...new Set(vehicles.map((vehicle) => vehicle.userId)),
+    ];
+    const vehicleVerifiedByUserId = await this.resolveVerificationFlags(
+      vehicleOwnerIds,
+      VerificationType.VEHICLE,
+    );
+
+    return bookings.map((booking) => {
+      const ride = rideById.get(booking.rideId);
+      const driver = ride ? driverById.get(ride.driverId) : undefined;
+      const vehicle = ride ? vehicleById.get(ride.vehicleId) : undefined;
+
+      return {
+        trip: this.toHistoryTrip(booking, ride),
+        driver: driver
+          ? ({
+              id: driver.id,
+              name: driver.displayName,
+              profileImage: driver.profilePhoto,
+              isVerified: driver.isVerified,
+            } satisfies BookingHistoryDriverDto)
+          : null,
+        vehicle: vehicle
+          ? ({
+              id: vehicle.id,
+              name: `${vehicle.make} ${vehicle.model}`.trim(),
+              make: vehicle.make,
+              model: vehicle.model,
+              color: vehicle.color,
+              registrationNumber: vehicle.registrationNumber,
+              isVerified:
+                vehicleVerifiedByUserId.get(vehicle.userId) === true,
+            } satisfies BookingHistoryVehicleDto)
+          : null,
+        fare: this.toHistoryFare(booking),
+        bookedAt: booking.createdAt.toISOString(),
+      };
+    });
+  }
+
+  private toHistoryTrip(
+    booking: Booking,
+    ride: Ride | undefined,
+  ): BookingHistoryTripDto {
+    return {
+      bookingId: booking.id,
+      rideId: booking.rideId,
+      bookingStatus: booking.status,
+      rideStatus: ride?.status ?? RideStatus.CANCELLED,
+      rideType: ride?.rideType ?? RideType.REGULAR,
+      source: ride?.source ?? '',
+      destination: ride?.destination ?? '',
+      sourceLatitude: null,
+      sourceLongitude: null,
+      destinationLatitude: null,
+      destinationLongitude: null,
+      departureDate: ride
+        ? String(ride.departureDate).slice(0, 10)
+        : '',
+      departureTime: ride
+        ? ride.departureTime.length >= 8
+          ? ride.departureTime.slice(0, 8)
+          : ride.departureTime
+        : '',
+      pickedUpAt: booking.pickupVerifiedAt?.toISOString() ?? null,
+      droppedOffAt: null,
+      durationMinutes: null,
+      distanceKm: null,
+      pickupStatus: booking.pickupStatus,
+      seats: booking.seats,
+    };
+  }
+
+  private toHistoryFare(booking: Booking): BookingHistoryFareBreakdownDto {
+    return {
+      rideFare: booking.totalAmount,
+      platformFee: null,
+      taxes: null,
+      promoDiscount: null,
+      securityDeposit: booking.assuredDepositAmount,
+      otherCharges: null,
+      totalPaid:
+        booking.paymentStatus === BookingPaymentStatus.PAID
+          ? booking.totalAmount
+          : '0',
+    };
+  }
+
+  private async resolveVerificationFlags(
+    userIds: string[],
+    type: VerificationType,
+  ): Promise<Map<string, boolean>> {
+    const uniqueIds = [...new Set(userIds.filter(Boolean))];
+    const result = new Map<string, boolean>();
+    if (uniqueIds.length === 0) {
+      return result;
+    }
+
+    const rows = await this.verificationRepository.find({
+      where: {
+        userId: In(uniqueIds),
+        verificationType: type,
+        isCurrent: true,
+      },
+    });
+
+    for (const userId of uniqueIds) {
+      result.set(userId, false);
+    }
+    for (const row of rows) {
+      result.set(row.userId, this.isIdentityCurrentlyVerified(row));
+    }
     return result;
   }
 
