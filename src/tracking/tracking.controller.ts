@@ -55,11 +55,9 @@ export class TrackingController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: UpdateDriverLocationDto,
   ) {
-    return this.trackingService.updateDriverLocation(
-      currentUser.userId,
-      id,
-      body,
-    );
+    return this.trackingService
+      .updateDriverLocation(currentUser.userId, id, body)
+      .then(({ throttled: _throttled, ...tracking }) => tracking);
   }
 
   @Get(':id')

@@ -372,6 +372,8 @@ describe('Tracking (integration — Redis)', () => {
       .send({ latitude: 28.61, longitude: 77.2 })
       .expect(200);
 
+    await new Promise((r) => setTimeout(r, 1_100));
+
     await request(app.getHttpServer())
       .post(`/tracking/rides/${ride.id}/location`)
       .set('Authorization', `Bearer ${driver.accessToken}`)

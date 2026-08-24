@@ -6,6 +6,7 @@ import { Booking } from '../bookings/entities/booking.entity';
 import { Ride } from '../rides/entities/ride.entity';
 import { redisClientProvider } from './redis/redis.provider';
 import { TrackingController } from './tracking.controller';
+import { TrackingGateway } from './tracking.gateway';
 import { TrackingService } from './tracking.service';
 import { REDIS_CLIENT } from './tracking.constants';
 
@@ -14,7 +15,7 @@ import { REDIS_CLIENT } from './tracking.constants';
 @Module({
   imports: [TypeOrmModule.forFeature([Ride, Booking]), AuthModule],
   controllers: [TrackingController],
-  providers: [redisClientProvider, TrackingService],
-  exports: [TrackingService, REDIS_CLIENT],
+  providers: [redisClientProvider, TrackingService, TrackingGateway],
+  exports: [TrackingService, REDIS_CLIENT, TrackingGateway],
 })
 export class TrackingModule {}

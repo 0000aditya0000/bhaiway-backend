@@ -14,6 +14,18 @@ export class DriverCoordinateDto {
     description: 'GPS fix / last update time',
   })
   timestamp!: string;
+
+  @ApiPropertyOptional({
+    description: 'Compass heading in degrees when provided by the driver',
+    example: 125,
+  })
+  heading?: number;
+
+  @ApiPropertyOptional({
+    description: 'Speed when provided by the driver',
+    example: 32,
+  })
+  speed?: number;
 }
 
 /**
@@ -47,4 +59,27 @@ export class RideTrackingResponseDto {
       'True when no location exists, TTL expired, or last update is older than the freshness window',
   })
   isStale!: boolean;
+}
+
+/** Payload broadcast on `ride:location:updated` (Socket.IO). */
+export class RideLocationUpdatedEventDto {
+  @ApiProperty({ format: 'uuid' })
+  rideId!: string;
+
+  @ApiProperty({ type: DriverCoordinateDto })
+  driverCoordinate!: DriverCoordinateDto;
+
+  @ApiProperty({ format: 'date-time' })
+  updatedAt!: string;
+}
+
+/** Payload broadcast on `ride:tracking:ended`. */
+export class RideTrackingEndedEventDto {
+  @ApiProperty({ format: 'uuid' })
+  rideId!: string;
+
+  @ApiPropertyOptional({
+    description: 'Why tracking stopped (complete, cancel, or clear)',
+  })
+  reason?: string;
 }

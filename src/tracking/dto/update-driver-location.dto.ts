@@ -40,4 +40,28 @@ export class UpdateDriverLocationDto {
   @IsOptional()
   @IsDateString()
   timestamp?: string;
+
+  @ApiPropertyOptional({
+    description: 'Compass heading in degrees (0–360). Optional.',
+    example: 125,
+    minimum: 0,
+    maximum: 360,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(360)
+  heading?: number;
+
+  @ApiPropertyOptional({
+    description: 'Ground speed in km/h (or device units). Optional; must be finite ≥ 0.',
+    example: 32,
+    minimum: 0,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  speed?: number;
 }

@@ -1,11 +1,14 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
+  forwardRef,
   Inject,
   Injectable,
   Logger,
   NotFoundException,
   OnModuleDestroy,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -17,14 +20,23 @@ import { BookingStatus } from '../bookings/enums/booking.enums';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { UpdateDriverLocationDto } from './dto/update-driver-location.dto';
-import { RideTrackingResponseDto } from './dto/ride-tracking-response.dto';
+import {
+  RideLocationUpdatedEventDto,
+  RideTrackingResponseDto,
+} from './dto/ride-tracking-response.dto';
 import { safeRedisErrorMessage } from './redis/redis-config';
 import {
   REDIS_CLIENT,
+  RIDE_TRACKING_ABSOLUTE_MIN_INTERVAL_MS,
+  RIDE_TRACKING_MAX_FUTURE_MS,
+  RIDE_TRACKING_MIN_MOVE_METERS,
+  RIDE_TRACKING_MIN_UPDATE_INTERVAL_MS,
+  RIDE_TRACKING_OUT_OF_ORDER_GRACE_MS,
   RIDE_TRACKING_STALE_AFTER_MS,
   RIDE_TRACKING_TTL_SECONDS,
   rideTrackingKey,
 } from './tracking.constants';
+import { TrackingGateway } from './tracking.gateway';
 
 interface StoredRideLocation {
   rideId: string;
@@ -33,11 +45,20 @@ interface StoredRideLocation {
   longitude: number;
   timestamp: string;
   updatedAt: string;
+  heading?: number;
+  speed?: number;
 }
+
+export type RideTrackingResponseWithMeta = RideTrackingResponseDto & {
+  throttled?: boolean;
+};
 
 @Injectable()
 export class TrackingService implements OnModuleDestroy {
   private readonly logger = new Logger('Tracking');
+
+  /** Per-ride last accepted write time (process-local soft rate limit). */
+  private readonly lastAcceptMsByRide = new Map<string, number>();
 
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
@@ -45,6 +66,9 @@ export class TrackingService implements OnModuleDestroy {
     private readonly rideRepository: Repository<Ride>,
     @InjectRepository(Booking)
     private readonly bookingRepository: Repository<Booking>,
+    @Optional()
+    @Inject(forwardRef(() => TrackingGateway))
+    private readonly trackingGateway?: TrackingGateway,
   ) {}
 
   async onModuleDestroy(): Promise<void> {
@@ -55,11 +79,59 @@ export class TrackingService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Authorize Socket.IO room join. Drivers must own an IN_PROGRESS Regular ride;
+   * passengers need an eligible booking on that active ride.
+   */
+  async assertCanJoinTrackingRoom(
+    userId: string,
+    rideId: string,
+  ): Promise<{ role: 'driver' | 'passenger' }> {
+    const ride = await this.rideRepository.findOne({ where: { id: rideId } });
+    if (!ride) {
+      throw new NotFoundException('Ride not found');
+    }
+
+    if (ride.rideType !== RideType.REGULAR) {
+      throw new BadRequestException(
+        'Live tracking applies only to Regular rides',
+      );
+    }
+
+    if (ride.status !== RideStatus.IN_PROGRESS) {
+      throw new ConflictException(
+        'Tracking rooms are only available while the ride is IN_PROGRESS',
+      );
+    }
+
+    if (ride.driverId === userId) {
+      return { role: 'driver' };
+    }
+
+    const booking = await this.bookingRepository.findOne({
+      where: {
+        rideId: ride.id,
+        passengerId: userId,
+        status: In([
+          BookingStatus.PENDING,
+          BookingStatus.CONFIRMED,
+          BookingStatus.COMPLETED,
+        ]),
+      },
+    });
+
+    if (!booking) {
+      throw new ForbiddenException('Not authorized to track this ride');
+    }
+
+    return { role: 'passenger' };
+  }
+
   async updateDriverLocation(
     driverId: string,
     rideId: string,
     dto: UpdateDriverLocationDto,
-  ): Promise<RideTrackingResponseDto> {
+  ): Promise<RideTrackingResponseWithMeta> {
     this.logger.log(
       `[Tracking][driver] location received ride=${rideId} redisStatus=${this.redis.status}`,
     );
@@ -76,11 +148,15 @@ export class TrackingService implements OnModuleDestroy {
     }
 
     if (ride.status === RideStatus.CANCELLED) {
-      throw new ConflictException('Cancelled rides cannot accept location updates');
+      throw new ConflictException(
+        'Cancelled rides cannot accept location updates',
+      );
     }
 
     if (ride.status === RideStatus.COMPLETED) {
-      throw new ConflictException('Completed rides cannot accept location updates');
+      throw new ConflictException(
+        'Completed rides cannot accept location updates',
+      );
     }
 
     if (ride.status !== RideStatus.IN_PROGRESS) {
@@ -90,15 +166,65 @@ export class TrackingService implements OnModuleDestroy {
     }
 
     this.assertValidCoordinates(dto.latitude, dto.longitude);
+    this.assertOptionalMotionFields(dto.heading, dto.speed);
 
     const now = new Date();
     const clientTs = dto.timestamp ? new Date(dto.timestamp) : now;
     if (Number.isNaN(clientTs.getTime())) {
       throw new BadRequestException('Invalid timestamp');
     }
-    // Reject absurd future clocks (> 2 minutes ahead).
-    if (clientTs.getTime() - now.getTime() > 120_000) {
+    if (clientTs.getTime() - now.getTime() > RIDE_TRACKING_MAX_FUTURE_MS) {
       throw new BadRequestException('timestamp is too far in the future');
+    }
+
+    const existing = await this.readStoredLocation(ride.id);
+
+    if (existing) {
+      const lastTs = Date.parse(existing.timestamp);
+      if (
+        Number.isFinite(lastTs) &&
+        clientTs.getTime() < lastTs - RIDE_TRACKING_OUT_OF_ORDER_GRACE_MS
+      ) {
+        throw new BadRequestException(
+          'timestamp is older than the last accepted location',
+        );
+      }
+
+      if (
+        existing.timestamp === clientTs.toISOString() &&
+        existing.latitude === dto.latitude &&
+        existing.longitude === dto.longitude
+      ) {
+        return { ...this.toResponse(ride, existing), throttled: true };
+      }
+    }
+
+    const lastAcceptMs = this.lastAcceptMsByRide.get(ride.id);
+    if (lastAcceptMs !== undefined) {
+      const elapsed = now.getTime() - lastAcceptMs;
+      const movedMeters =
+        existing == null
+          ? Number.POSITIVE_INFINITY
+          : haversineMeters(
+              existing.latitude,
+              existing.longitude,
+              dto.latitude,
+              dto.longitude,
+            );
+
+      if (movedMeters < RIDE_TRACKING_MIN_MOVE_METERS) {
+        if (elapsed < RIDE_TRACKING_MIN_UPDATE_INTERVAL_MS) {
+          this.logger.log(
+            `[Tracking][driver] location throttled ride=${ride.id} reason=soft_interval`,
+          );
+          return { ...this.toResponse(ride, existing), throttled: true };
+        }
+      } else if (elapsed < RIDE_TRACKING_ABSOLUTE_MIN_INTERVAL_MS) {
+        this.logger.log(
+          `[Tracking][driver] location throttled ride=${ride.id} reason=absolute_min`,
+        );
+        return { ...this.toResponse(ride, existing), throttled: true };
+      }
     }
 
     const payload: StoredRideLocation = {
@@ -110,14 +236,24 @@ export class TrackingService implements OnModuleDestroy {
       updatedAt: now.toISOString(),
     };
 
+    if (dto.heading !== undefined) {
+      payload.heading = dto.heading;
+    }
+    if (dto.speed !== undefined) {
+      payload.speed = dto.speed;
+    }
+
     const key = rideTrackingKey(ride.id);
     await this.setLocationAtomic(key, payload);
+    this.lastAcceptMsByRide.set(ride.id, now.getTime());
 
     this.logger.log(
       `[Tracking][driver] location stored ride=${ride.id} ttl=${RIDE_TRACKING_TTL_SECONDS}s`,
     );
 
-    return this.toResponse(ride, payload);
+    const response = this.toResponse(ride, payload);
+    this.emitLocationBroadcast(response);
+    return response;
   }
 
   async getRideTracking(
@@ -172,8 +308,12 @@ export class TrackingService implements OnModuleDestroy {
   }
 
   /** Clears Redis tracking state when a ride ends (complete/cancel). */
-  async clearRideTracking(rideId: string): Promise<void> {
+  async clearRideTracking(
+    rideId: string,
+    reason: 'complete' | 'cancel' | 'ended' = 'ended',
+  ): Promise<void> {
     const key = rideTrackingKey(rideId);
+    this.lastAcceptMsByRide.delete(rideId);
     try {
       this.logger.log(
         `[Tracking] clear started ride=${rideId} redisStatus=${this.redis.status}`,
@@ -185,6 +325,14 @@ export class TrackingService implements OnModuleDestroy {
         `[Tracking] clear failed ride=${rideId} err=${safeRedisErrorMessage(error)}`,
       );
       // Do not block ride complete/cancel on Redis; TTL will expire the key.
+    }
+
+    try {
+      await this.trackingGateway?.broadcastTrackingEnded(rideId, reason);
+    } catch (error) {
+      this.logger.warn(
+        `[Tracking] ended broadcast failed ride=${rideId} err=${safeRedisErrorMessage(error)}`,
+      );
     }
   }
 
@@ -288,7 +436,6 @@ export class TrackingService implements OnModuleDestroy {
       if (statusBefore === 'wait' || statusBefore === 'end') {
         await this.redis.connect();
       }
-      // Brief wait for ready after connect/reconnect kickoff.
       const deadline = Date.now() + 2_000;
       while (Date.now() < deadline) {
         if (currentStatus() === 'ready') {
@@ -308,6 +455,24 @@ export class TrackingService implements OnModuleDestroy {
       );
       throw new ServiceUnavailableException(
         'Live tracking temporarily unavailable',
+      );
+    }
+  }
+
+  private emitLocationBroadcast(response: RideTrackingResponseDto): void {
+    if (!response.driverCoordinate || !response.updatedAt) {
+      return;
+    }
+    const event: RideLocationUpdatedEventDto = {
+      rideId: response.rideId,
+      driverCoordinate: response.driverCoordinate,
+      updatedAt: response.updatedAt,
+    };
+    try {
+      this.trackingGateway?.broadcastLocationUpdated(response.rideId, event);
+    } catch (error) {
+      this.logger.warn(
+        `[Tracking] broadcast failed ride=${response.rideId} err=${safeRedisErrorMessage(error)}`,
       );
     }
   }
@@ -332,14 +497,22 @@ export class TrackingService implements OnModuleDestroy {
       : Number.POSITIVE_INFINITY;
     const isStale = ageMs > RIDE_TRACKING_STALE_AFTER_MS;
 
+    const driverCoordinate: RideTrackingResponseDto['driverCoordinate'] = {
+      latitude: stored.latitude,
+      longitude: stored.longitude,
+      timestamp: stored.timestamp,
+    };
+    if (stored.heading !== undefined) {
+      driverCoordinate.heading = stored.heading;
+    }
+    if (stored.speed !== undefined) {
+      driverCoordinate.speed = stored.speed;
+    }
+
     return {
       rideId: ride.id,
       rideStatus: ride.status,
-      driverCoordinate: {
-        latitude: stored.latitude,
-        longitude: stored.longitude,
-        timestamp: stored.timestamp,
-      },
+      driverCoordinate,
       updatedAt: stored.updatedAt,
       isStale,
     };
@@ -356,9 +529,42 @@ export class TrackingService implements OnModuleDestroy {
     ) {
       throw new BadRequestException('Invalid coordinates');
     }
-    // Reject the Null Island placeholder often used by demos.
     if (latitude === 0 && longitude === 0) {
       throw new BadRequestException('Invalid coordinates');
     }
   }
+
+  private assertOptionalMotionFields(
+    heading?: number,
+    speed?: number,
+  ): void {
+    if (heading !== undefined) {
+      if (!Number.isFinite(heading) || heading < 0 || heading > 360) {
+        throw new BadRequestException('Invalid heading');
+      }
+    }
+    if (speed !== undefined) {
+      if (!Number.isFinite(speed) || speed < 0) {
+        throw new BadRequestException('Invalid speed');
+      }
+    }
+  }
+}
+
+function haversineMeters(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number {
+  const earthRadiusM = 6_371_000;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
+  return 2 * earthRadiusM * Math.asin(Math.sqrt(a));
 }

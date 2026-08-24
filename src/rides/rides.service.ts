@@ -264,7 +264,7 @@ export class RidesService {
       };
     });
 
-    await this.trackingService.clearRideTracking(rideId);
+    await this.trackingService.clearRideTracking(rideId, 'cancel');
     return result;
   }
 
@@ -728,7 +728,7 @@ export class RidesService {
       });
 
       if (result.rideType === RideType.REGULAR) {
-        await this.trackingService.clearRideTracking(rideId);
+        await this.trackingService.clearRideTracking(rideId, 'complete');
       }
 
       return result;
