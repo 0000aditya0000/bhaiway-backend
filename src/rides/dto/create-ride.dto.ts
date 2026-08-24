@@ -1,10 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -42,6 +44,51 @@ export class CreateRideDto {
   @IsNotEmpty()
   @MaxLength(255)
   destination!: string;
+
+  @ApiPropertyOptional({
+    description:
+      'WGS84 latitude of the published source. Provide all four coordinate fields to enable route-corridor search.',
+    example: 28.5355,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 8 })
+  @Min(-90)
+  @Max(90)
+  sourceLatitude?: number;
+
+  @ApiPropertyOptional({
+    description: 'WGS84 longitude of the published source',
+    example: 77.391,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 8 })
+  @Min(-180)
+  @Max(180)
+  sourceLongitude?: number;
+
+  @ApiPropertyOptional({
+    description: 'WGS84 latitude of the published destination',
+    example: 30.3165,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 8 })
+  @Min(-90)
+  @Max(90)
+  destinationLatitude?: number;
+
+  @ApiPropertyOptional({
+    description: 'WGS84 longitude of the published destination',
+    example: 78.0322,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 8 })
+  @Min(-180)
+  @Max(180)
+  destinationLongitude?: number;
 
   @ApiProperty({
     description: 'Civil departure date (YYYY-MM-DD), no timezone conversion',

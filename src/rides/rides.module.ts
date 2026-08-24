@@ -18,6 +18,7 @@ import { WalletModule } from '../wallet/wallet.module';
 import { Ride } from './entities/ride.entity';
 import { RidesController } from './rides.controller';
 import { RidesService } from './rides.service';
+import { RideDirectionsService } from './route/ride-directions.service';
 
 @Module({
   imports: [
@@ -40,7 +41,7 @@ import { RidesService } from './rides.service';
     TrackingModule,
   ],
   controllers: [RidesController],
-  providers: [RidesService],
+  providers: [RidesService, RideDirectionsService],
   exports: [TypeOrmModule, RidesService],
 })
 export class RidesModule {}

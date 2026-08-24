@@ -79,7 +79,7 @@ export class RidesController {
   @ApiOperation({
     summary: 'Search published rides (passenger discovery)',
     description:
-      'Read-only search of PUBLISHED rides. Optional rideType filters REGULAR or ASSURED; when omitted, both types are returned. Filters by source/destination (case-insensitive contains), date, optional time (at/after), and seats. Paginated.',
+      'Read-only search of PUBLISHED rides. Optional rideType filters REGULAR or ASSURED; when omitted, both types are returned. With pickup/dropoff coordinates, matching uses a 50km route-corridor along the published polyline (direction-aware). Without coordinates, filters by source/destination place-name contains. Also filters by date, optional time (at/after), and seats. Paginated.',
   })
   @ApiOkResponse({ type: RideSearchPageDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })

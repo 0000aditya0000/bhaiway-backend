@@ -1,9 +1,11 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -44,6 +46,38 @@ export class UpdateRideDto {
   @MinLength(1)
   @MaxLength(255)
   destination?: string;
+
+  @ApiPropertyOptional({ example: 28.5355 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 8 })
+  @Min(-90)
+  @Max(90)
+  sourceLatitude?: number;
+
+  @ApiPropertyOptional({ example: 77.391 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 8 })
+  @Min(-180)
+  @Max(180)
+  sourceLongitude?: number;
+
+  @ApiPropertyOptional({ example: 30.3165 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 8 })
+  @Min(-90)
+  @Max(90)
+  destinationLatitude?: number;
+
+  @ApiPropertyOptional({ example: 78.0322 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 8 })
+  @Min(-180)
+  @Max(180)
+  destinationLongitude?: number;
 
   @ApiPropertyOptional({
     description: 'Civil departure date (YYYY-MM-DD)',

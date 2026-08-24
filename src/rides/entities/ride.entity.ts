@@ -95,6 +95,77 @@ export class Ride {
   })
   destination!: string;
 
+  @Column({
+    name: 'source_latitude',
+    type: 'double precision',
+    nullable: true,
+  })
+  sourceLatitude!: number | null;
+
+  @Column({
+    name: 'source_longitude',
+    type: 'double precision',
+    nullable: true,
+  })
+  sourceLongitude!: number | null;
+
+  @Column({
+    name: 'destination_latitude',
+    type: 'double precision',
+    nullable: true,
+  })
+  destinationLatitude!: number | null;
+
+  @Column({
+    name: 'destination_longitude',
+    type: 'double precision',
+    nullable: true,
+  })
+  destinationLongitude!: number | null;
+
+  /** Google-encoded polyline for the published driving corridor. */
+  @Column({
+    name: 'route_polyline',
+    type: 'text',
+    nullable: true,
+  })
+  routePolyline!: string | null;
+
+  @Column({
+    name: 'route_length_meters',
+    type: 'double precision',
+    nullable: true,
+  })
+  routeLengthMeters!: number | null;
+
+  @Column({
+    name: 'route_bbox_min_lat',
+    type: 'double precision',
+    nullable: true,
+  })
+  routeBboxMinLat!: number | null;
+
+  @Column({
+    name: 'route_bbox_max_lat',
+    type: 'double precision',
+    nullable: true,
+  })
+  routeBboxMaxLat!: number | null;
+
+  @Column({
+    name: 'route_bbox_min_lng',
+    type: 'double precision',
+    nullable: true,
+  })
+  routeBboxMinLng!: number | null;
+
+  @Column({
+    name: 'route_bbox_max_lng',
+    type: 'double precision',
+    nullable: true,
+  })
+  routeBboxMaxLng!: number | null;
+
   /** Civil calendar date (YYYY-MM-DD), no timezone. */
   @Column({
     name: 'departure_date',
