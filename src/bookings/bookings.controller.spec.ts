@@ -528,6 +528,12 @@ describe('BookingsController (integration)', () => {
     expect(mine.body).toHaveLength(1);
     expect(mine.body[0].id).toBe(bookingA.body.id);
     expect(mine.body[0].ride.source).toBe('Noida Sector 62');
+    expect(mine.body[0].vehicle).toMatchObject({
+      make: 'Honda',
+      model: 'City',
+      color: 'White',
+    });
+    expect(mine.body[0].vehicle.registrationNumber).toBeTruthy();
   });
 
   it('GET another user booking rejected', async () => {
@@ -549,7 +555,15 @@ describe('BookingsController (integration)', () => {
     await request(app.getHttpServer())
       .get(`/bookings/${booking.body.id}`)
       .set('Authorization', `Bearer ${passengerA.accessToken}`)
-      .expect(200);
+      .expect(200)
+      .expect((res) => {
+        expect(res.body.vehicle).toMatchObject({
+          make: 'Honda',
+          model: 'City',
+          color: 'White',
+        });
+        expect(res.body.vehicle.registrationNumber).toBeTruthy();
+      });
   });
 
   it('duplicate active booking rejected; cancelled can be rebooked', async () => {

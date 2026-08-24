@@ -50,9 +50,11 @@ import { WalletHoldType } from '../wallet/entities/wallet-hold.entity';
 import { Wallet, WalletStatus } from '../wallet/entities/wallet.entity';
 import { WalletService } from '../wallet/wallet.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import {
   BookingDriverDto,
   BookingResponseDto,
+  BookingVehicleSnapshotDto,
 } from './dto/booking-response.dto';
 import { DriverBookingsQueryDto } from './dto/driver-bookings-query.dto';
 import {
@@ -106,6 +108,8 @@ export class BookingsService {
     private readonly walletRepository: Repository<Wallet>,
     @InjectRepository(UserCoupon)
     private readonly userCouponRepository: Repository<UserCoupon>,
+    @InjectRepository(Vehicle)
+    private readonly vehicleRepository: Repository<Vehicle>,
     private readonly verificationService: VerificationService,
     private readonly walletService: WalletService,
     private readonly settingsService: SettingsService,
@@ -734,6 +738,9 @@ export class BookingsService {
     const driverById = await this.resolveDrivers(
       rides.map((ride) => ride.driverId),
     );
+    const vehicleById = await this.resolveVehicles(
+      rides.map((ride) => ride.vehicleId),
+    );
 
     const hydrated: Booking[] = [];
     for (const booking of bookings) {
@@ -752,6 +759,7 @@ export class BookingsService {
         booking,
         ride,
         ride ? driverById.get(ride.driverId) : undefined,
+        ride ? vehicleById.get(ride.vehicleId) : undefined,
       );
     });
   }
@@ -777,12 +785,20 @@ export class BookingsService {
       );
     }
 
-    const driver =
+    const [driverById, vehicleById] =
       ride != null
-        ? (await this.resolveDrivers([ride.driverId])).get(ride.driverId)
-        : undefined;
+        ? await Promise.all([
+            this.resolveDrivers([ride.driverId]),
+            this.resolveVehicles([ride.vehicleId]),
+          ])
+        : [new Map<string, BookingDriverDto>(), new Map<string, BookingVehicleSnapshotDto>()];
 
-    return this.toResponse(booking, ride ?? undefined, driver);
+    return this.toResponse(
+      booking,
+      ride ?? undefined,
+      ride != null ? driverById.get(ride.driverId) : undefined,
+      ride != null ? vehicleById.get(ride.vehicleId) : undefined,
+    );
   }
 
   /**
@@ -984,11 +1000,21 @@ export class BookingsService {
     booking: Booking,
     ride?: Ride,
   ): Promise<BookingResponseDto> {
-    const driver =
-      ride != null
-        ? (await this.resolveDrivers([ride.driverId])).get(ride.driverId)
-        : undefined;
-    return this.toResponse(booking, ride, driver);
+    if (ride == null) {
+      return this.toResponse(booking, ride);
+    }
+
+    const [driverById, vehicleById] = await Promise.all([
+      this.resolveDrivers([ride.driverId]),
+      this.resolveVehicles([ride.vehicleId]),
+    ]);
+
+    return this.toResponse(
+      booking,
+      ride,
+      driverById.get(ride.driverId),
+      vehicleById.get(ride.vehicleId),
+    );
   }
 
   private async resolveDrivers(
@@ -1035,6 +1061,33 @@ export class BookingsService {
     return result;
   }
 
+  private async resolveVehicles(
+    vehicleIds: string[],
+  ): Promise<Map<string, BookingVehicleSnapshotDto>> {
+    const uniqueIds = [...new Set(vehicleIds.filter(Boolean))];
+    const result = new Map<string, BookingVehicleSnapshotDto>();
+
+    if (uniqueIds.length === 0) {
+      return result;
+    }
+
+    const vehicles = await this.vehicleRepository.find({
+      where: { id: In(uniqueIds) },
+      withDeleted: true,
+    });
+
+    for (const vehicle of vehicles) {
+      result.set(vehicle.id, {
+        make: vehicle.make,
+        model: vehicle.model,
+        color: vehicle.color,
+        registrationNumber: vehicle.registrationNumber,
+      });
+    }
+
+    return result;
+  }
+
   private isIdentityCurrentlyVerified(
     record: UserVerification | undefined,
   ): boolean {
@@ -1051,6 +1104,7 @@ export class BookingsService {
     booking: Booking,
     ride?: Ride,
     driver?: BookingDriverDto,
+    vehicle?: BookingVehicleSnapshotDto,
   ): BookingResponseDto {
     const includeOtp =
       booking.pickupStatus === BookingPickupStatus.WAITING_FOR_PICKUP &&
@@ -1090,6 +1144,7 @@ export class BookingsService {
           }
         : undefined,
       driver,
+      vehicle,
       createdAt: booking.createdAt.toISOString(),
       updatedAt: booking.updatedAt.toISOString(),
     };

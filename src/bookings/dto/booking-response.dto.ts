@@ -30,6 +30,24 @@ export class BookingDriverDto {
   isVerified!: boolean;
 }
 
+/** Vehicle snapshot from the ride at booking time (via ride.vehicleId). */
+export class BookingVehicleSnapshotDto {
+  @ApiProperty({ example: 'Tata' })
+  make!: string;
+
+  @ApiProperty({ example: 'Nexon' })
+  model!: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: 'Black',
+  })
+  color!: string | null;
+
+  @ApiProperty({ example: 'DL 3C AB 1234' })
+  registrationNumber!: string;
+}
+
 export class BookingRideSummaryDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
@@ -151,6 +169,13 @@ export class BookingResponseDto {
       'Safe driver summary from the ride owner. Derived from UserProfile + IDENTITY verification.',
   })
   driver?: BookingDriverDto;
+
+  @ApiPropertyOptional({
+    type: BookingVehicleSnapshotDto,
+    description:
+      'Vehicle snapshot for the booked ride (make/model/color/registration).',
+  })
+  vehicle?: BookingVehicleSnapshotDto;
 
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;
