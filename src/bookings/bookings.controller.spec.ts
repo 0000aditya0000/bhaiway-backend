@@ -494,13 +494,17 @@ describe('BookingsController (integration)', () => {
       .patch(`/rides/${ride.id}`)
       .set('Authorization', `Bearer ${login.accessToken}`)
       .send({ pricePerSeat: 999 })
-      .expect(200);
+      .expect(409);
 
     const row = await dataSource.getRepository(Booking).findOneByOrFail({
       id: booking.body.id,
     });
     expect(row.pricePerSeatSnapshot).toBe('250');
     expect(row.totalAmount).toBe('500');
+    const rideRow = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: ride.id,
+    });
+    expect(rideRow.pricePerSeat).toBe('250');
   });
 
   it('GET /bookings/my returns only current user bookings', async () => {

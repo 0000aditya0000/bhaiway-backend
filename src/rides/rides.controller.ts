@@ -245,11 +245,17 @@ export class RidesController {
   @ApiOperation({
     summary: 'Update an owned ride',
     description:
-      'Only the owning driver may update. status/driverId/availableSeats cannot be client-controlled. Use POST /rides/:id/complete to complete a ride. Vehicle changes re-run eligibility checks.',
+      'Only the owning driver may update. Regular PUBLISHED rides: with zero active bookings, route/schedule/fare/seats may change; with active bookings, only seats may change and totalSeats cannot fall below booked seats. IN_PROGRESS/COMPLETED/CANCELLED Regular rides cannot be modified. status/driverId/availableSeats cannot be client-controlled. Vehicle changes re-run eligibility checks.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: RideResponseDto })
-  @ApiBadRequestResponse({ description: 'Validation failed' })
+  @ApiBadRequestResponse({
+    description: 'Validation failed, or seats below booked capacity',
+  })
+  @ApiConflictResponse({
+    description:
+      'Ride is not editable in its current status, or protected fields changed after bookings',
+  })
   @ApiForbiddenResponse({ description: 'Vehicle/driver not eligible' })
   @ApiNotFoundResponse({ description: 'Ride not found' })
   update(

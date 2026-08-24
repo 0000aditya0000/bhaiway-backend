@@ -482,12 +482,80 @@ export class RidesService {
     rideId: string,
     dto: UpdateRideDto,
   ): Promise<RideResponseDto> {
-    const ride = await this.requireOwnedRide(driverId, rideId);
+    return this.dataSource.transaction(async (manager) => {
+      const ride = await manager
+        .getRepository(Ride)
+        .createQueryBuilder('ride')
+        .setLock('pessimistic_write')
+        .where('ride.id = :rideId', { rideId })
+        .getOne();
 
-    if (
-      ride.rideType === RideType.ASSURED &&
-      ride.driverDepositHoldId !== null
-    ) {
+      if (!ride || ride.driverId !== driverId) {
+        throw new NotFoundException('Ride not found');
+      }
+
+      if (ride.rideType === RideType.REGULAR) {
+        await this.applyRegularRideUpdate(manager, driverId, ride, dto);
+      } else {
+        await this.applyAssuredRideUpdate(manager, driverId, ride, dto);
+      }
+
+      const saved = await manager.getRepository(Ride).save(ride);
+      return this.toResponse(saved);
+    });
+  }
+
+  private async applyRegularRideUpdate(
+    manager: EntityManager,
+    driverId: string,
+    ride: Ride,
+    dto: UpdateRideDto,
+  ): Promise<void> {
+    if (ride.status !== RideStatus.PUBLISHED) {
+      if (ride.status === RideStatus.IN_PROGRESS) {
+        throw new ConflictException(
+          'Ride cannot be modified after it has started.',
+        );
+      }
+      if (ride.status === RideStatus.COMPLETED) {
+        throw new ConflictException('Completed rides cannot be modified.');
+      }
+      if (ride.status === RideStatus.CANCELLED) {
+        throw new ConflictException('Cancelled rides cannot be modified.');
+      }
+      throw new ConflictException(
+        `Ride cannot be modified from status ${ride.status}`,
+      );
+    }
+
+    const bookedSeats = await this.sumActiveBookedSeats(manager, ride.id);
+
+    if (bookedSeats > 0) {
+      this.assertRegularProtectedFieldsUnchanged(ride, dto);
+    }
+
+    if (dto.totalSeats !== undefined) {
+      if (dto.totalSeats < bookedSeats) {
+        throw new BadRequestException(
+          'Seats cannot be reduced below the number of booked seats.',
+        );
+      }
+      ride.availableSeats = dto.totalSeats - bookedSeats;
+      ride.totalSeats = dto.totalSeats;
+    }
+
+    if (bookedSeats === 0) {
+      await this.applyUnrestrictedRideFields(driverId, ride, dto);
+    }
+  }
+
+  private async applyAssuredRideUpdate(
+    manager: EntityManager,
+    driverId: string,
+    ride: Ride,
+    dto: UpdateRideDto,
+  ): Promise<void> {
+    if (ride.driverDepositHoldId !== null) {
       const priceChanging =
         dto.pricePerSeat !== undefined &&
         String(dto.pricePerSeat) !== ride.pricePerSeat;
@@ -503,6 +571,28 @@ export class RidesService {
       }
     }
 
+    const bookedSeats = await this.sumActiveBookedSeats(manager, ride.id);
+    if (dto.totalSeats !== undefined) {
+      if (dto.totalSeats < bookedSeats) {
+        throw new ForbiddenException(
+          'totalSeats cannot be less than already reserved seats',
+        );
+      }
+      ride.availableSeats = dto.totalSeats - bookedSeats;
+      ride.totalSeats = dto.totalSeats;
+    }
+
+    await this.applyUnrestrictedRideFields(driverId, ride, dto, {
+      skipSeats: true,
+    });
+  }
+
+  private async applyUnrestrictedRideFields(
+    driverId: string,
+    ride: Ride,
+    dto: UpdateRideDto,
+    options: { skipSeats?: boolean } = {},
+  ): Promise<void> {
     if (dto.vehicleId !== undefined && dto.vehicleId !== ride.vehicleId) {
       await this.assertDriverCanPublish(driverId, dto.vehicleId);
       ride.vehicleId = dto.vehicleId;
@@ -523,7 +613,7 @@ export class RidesService {
     if (dto.departureTime !== undefined) {
       ride.departureTime = this.normalizeTime(dto.departureTime);
     }
-    if (dto.totalSeats !== undefined) {
+    if (!options.skipSeats && dto.totalSeats !== undefined) {
       const bookedSeats = ride.totalSeats - ride.availableSeats;
       if (dto.totalSeats < bookedSeats) {
         throw new ForbiddenException(
@@ -551,9 +641,73 @@ export class RidesService {
     if (dto.notes !== undefined) {
       ride.notes = dto.notes?.trim() ?? null;
     }
+  }
 
-    const saved = await this.rideRepository.save(ride);
-    return this.toResponse(saved);
+  private assertRegularProtectedFieldsUnchanged(
+    ride: Ride,
+    dto: UpdateRideDto,
+  ): void {
+    const protectedChanged =
+      this.hasStringChange(dto.source, ride.source) ||
+      this.hasStringChange(dto.destination, ride.destination) ||
+      (dto.departureDate !== undefined &&
+        this.toCivilDate(dto.departureDate) !==
+          this.toCivilDate(ride.departureDate)) ||
+      (dto.departureTime !== undefined &&
+        this.normalizeTime(dto.departureTime) !==
+          this.normalizeTime(ride.departureTime)) ||
+      (dto.pricePerSeat !== undefined &&
+        String(dto.pricePerSeat) !== ride.pricePerSeat) ||
+      (dto.vehicleId !== undefined && dto.vehicleId !== ride.vehicleId) ||
+      (dto.rideType !== undefined && dto.rideType !== ride.rideType) ||
+      (dto.maxTwoInBackSeat !== undefined &&
+        dto.maxTwoInBackSeat !== ride.maxTwoInBackSeat) ||
+      (dto.noSmoking !== undefined && dto.noSmoking !== ride.noSmoking) ||
+      (dto.noPets !== undefined && dto.noPets !== ride.noPets) ||
+      (dto.luggageAllowed !== undefined &&
+        dto.luggageAllowed !== ride.luggageAllowed) ||
+      (dto.notes !== undefined &&
+        (dto.notes?.trim() ?? null) !== (ride.notes?.trim() ?? null));
+
+    if (protectedChanged) {
+      throw new ConflictException(
+        'Ride details cannot be modified after a booking has been made. Only seats can be changed.',
+      );
+    }
+  }
+
+  private hasStringChange(
+    incoming: string | undefined,
+    current: string,
+  ): boolean {
+    return incoming !== undefined && incoming.trim() !== current.trim();
+  }
+
+  private toCivilDate(value: string | Date): string {
+    if (value instanceof Date) {
+      const year = value.getFullYear();
+      const month = String(value.getMonth() + 1).padStart(2, '0');
+      const day = String(value.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+    return String(value).slice(0, 10);
+  }
+
+  private async sumActiveBookedSeats(
+    manager: EntityManager,
+    rideId: string,
+  ): Promise<number> {
+    const raw = await manager
+      .getRepository(Booking)
+      .createQueryBuilder('booking')
+      .select('COALESCE(SUM(booking.seats), 0)', 'booked')
+      .where('booking.ride_id = :rideId', { rideId })
+      .andWhere('booking.status IN (:...statuses)', {
+        statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+      })
+      .getRawOne<{ booked: string | number }>();
+
+    return Number(raw?.booked ?? 0);
   }
 
   /**
