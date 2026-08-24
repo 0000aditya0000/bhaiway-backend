@@ -319,7 +319,14 @@ export class RidesService {
       return this.createAssuredRide(driverId, dto);
     }
 
-    const routeFields = await this.buildRouteFieldsFromDto(dto);
+    const routeFields = await this.buildRouteFieldsFromDto({
+      source: dto.source,
+      destination: dto.destination,
+      sourceLatitude: dto.sourceLatitude,
+      sourceLongitude: dto.sourceLongitude,
+      destinationLatitude: dto.destinationLatitude,
+      destinationLongitude: dto.destinationLongitude,
+    });
 
     const ride = this.rideRepository.create({
       driverId,
@@ -388,7 +395,14 @@ export class RidesService {
           driverDepositHoldId = holdResult.hold!.id;
         }
 
-        const routeFields = await this.buildRouteFieldsFromDto(dto);
+        const routeFields = await this.buildRouteFieldsFromDto({
+          source: dto.source,
+          destination: dto.destination,
+          sourceLatitude: dto.sourceLatitude,
+          sourceLongitude: dto.sourceLongitude,
+          destinationLatitude: dto.destinationLatitude,
+          destinationLongitude: dto.destinationLongitude,
+        });
 
         const ride = manager.getRepository(Ride).create({
           id: rideId,
@@ -581,6 +595,10 @@ export class RidesService {
     const page = dto.page ?? 1;
     const limit = dto.limit ?? 20;
     const useCorridor = this.hasCompleteSearchCoordinates(dto);
+
+    if (useCorridor) {
+      await this.backfillMissingRouteGeometryForSearch(dto);
+    }
 
     const qb = this.rideRepository
       .createQueryBuilder('ride')
@@ -876,24 +894,41 @@ export class RidesService {
 
     if (routeRelatedChange) {
       this.assertDtoEndpointCoordsAllOrNone(dto);
-      const routeFields = await this.buildRouteFieldsFromEndpoints({
-        sourceLatitude:
-          dto.sourceLatitude !== undefined
-            ? dto.sourceLatitude
-            : ride.sourceLatitude,
-        sourceLongitude:
-          dto.sourceLongitude !== undefined
-            ? dto.sourceLongitude
-            : ride.sourceLongitude,
-        destinationLatitude:
-          dto.destinationLatitude !== undefined
-            ? dto.destinationLatitude
-            : ride.destinationLatitude,
-        destinationLongitude:
-          dto.destinationLongitude !== undefined
-            ? dto.destinationLongitude
-            : ride.destinationLongitude,
-      });
+      const coordsProvidedInDto =
+        dto.sourceLatitude !== undefined ||
+        dto.sourceLongitude !== undefined ||
+        dto.destinationLatitude !== undefined ||
+        dto.destinationLongitude !== undefined;
+      const placeTextChanged =
+        dto.source !== undefined || dto.destination !== undefined;
+
+      let routeFields;
+      if (coordsProvidedInDto) {
+        routeFields = await this.buildRouteFieldsFromDto({
+          source: dto.source !== undefined ? dto.source : ride.source,
+          destination:
+            dto.destination !== undefined ? dto.destination : ride.destination,
+          sourceLatitude: dto.sourceLatitude,
+          sourceLongitude: dto.sourceLongitude,
+          destinationLatitude: dto.destinationLatitude,
+          destinationLongitude: dto.destinationLongitude,
+          allowPlaceNameFallback: false,
+        });
+      } else if (placeTextChanged) {
+        // Place labels changed without new coords — rebuild from names (drop stale geometry).
+        routeFields = await this.buildRouteFieldsFromDto({
+          source: ride.source,
+          destination: ride.destination,
+          allowPlaceNameFallback: true,
+        });
+      } else {
+        routeFields = await this.buildRouteFieldsFromEndpoints({
+          sourceLatitude: ride.sourceLatitude,
+          sourceLongitude: ride.sourceLongitude,
+          destinationLatitude: ride.destinationLatitude,
+          destinationLongitude: ride.destinationLongitude,
+        });
+      }
       Object.assign(ride, routeFields);
     }
   }
@@ -1008,10 +1043,14 @@ export class RidesService {
   }
 
   private async buildRouteFieldsFromDto(dto: {
-    sourceLatitude?: number;
-    sourceLongitude?: number;
-    destinationLatitude?: number;
-    destinationLongitude?: number;
+    source: string;
+    destination: string;
+    sourceLatitude?: number | null;
+    sourceLongitude?: number | null;
+    destinationLatitude?: number | null;
+    destinationLongitude?: number | null;
+    /** When true and coords are absent, resolve corridor via Google place names. */
+    allowPlaceNameFallback?: boolean;
   }): Promise<{
     sourceLatitude: number | null;
     sourceLongitude: number | null;
@@ -1024,13 +1063,99 @@ export class RidesService {
     routeBboxMinLng: number | null;
     routeBboxMaxLng: number | null;
   }> {
-    this.assertDtoEndpointCoordsAllOrNone(dto);
-    return this.buildRouteFieldsFromEndpoints({
+    this.assertDtoEndpointCoordsAllOrNone({
+      sourceLatitude:
+        dto.sourceLatitude === null ? undefined : dto.sourceLatitude,
+      sourceLongitude:
+        dto.sourceLongitude === null ? undefined : dto.sourceLongitude,
+      destinationLatitude:
+        dto.destinationLatitude === null
+          ? undefined
+          : dto.destinationLatitude,
+      destinationLongitude:
+        dto.destinationLongitude === null
+          ? undefined
+          : dto.destinationLongitude,
+    });
+
+    const endpoints = {
       sourceLatitude: dto.sourceLatitude ?? null,
       sourceLongitude: dto.sourceLongitude ?? null,
       destinationLatitude: dto.destinationLatitude ?? null,
       destinationLongitude: dto.destinationLongitude ?? null,
-    });
+    };
+
+    const presentCount = [
+      endpoints.sourceLatitude,
+      endpoints.sourceLongitude,
+      endpoints.destinationLatitude,
+      endpoints.destinationLongitude,
+    ].filter((value) => value !== null && value !== undefined).length;
+
+    if (presentCount === 0 && dto.allowPlaceNameFallback !== false) {
+      const fromPlaces =
+        await this.rideDirectionsService.buildRouteGeometryFromPlaceNames(
+          dto.source,
+          dto.destination,
+        );
+      if (fromPlaces) {
+        return {
+          sourceLatitude: fromPlaces.source.latitude,
+          sourceLongitude: fromPlaces.source.longitude,
+          destinationLatitude: fromPlaces.destination.latitude,
+          destinationLongitude: fromPlaces.destination.longitude,
+          routePolyline: fromPlaces.polylineEncoded,
+          routeLengthMeters: fromPlaces.lengthMeters,
+          routeBboxMinLat: fromPlaces.bbox.minLat,
+          routeBboxMaxLat: fromPlaces.bbox.maxLat,
+          routeBboxMinLng: fromPlaces.bbox.minLng,
+          routeBboxMaxLng: fromPlaces.bbox.maxLng,
+        };
+      }
+    }
+
+    return this.buildRouteFieldsFromEndpoints(endpoints);
+  }
+
+  /**
+   * One-time corridor backfill for published rides that predate route storage
+   * (or were published without coords / place-name Directions). Caps API usage.
+   */
+  private async backfillMissingRouteGeometryForSearch(
+    dto: SearchRidesDto,
+  ): Promise<void> {
+    const qb = this.rideRepository
+      .createQueryBuilder('ride')
+      .where('ride.status = :status', { status: RideStatus.PUBLISHED })
+      .andWhere('ride.departure_date = :date', { date: dto.date })
+      .andWhere('ride.route_polyline IS NULL')
+      .orderBy('ride.created_at', 'ASC')
+      .take(20);
+
+    if (dto.rideType !== undefined) {
+      qb.andWhere('ride.ride_type = :rideType', { rideType: dto.rideType });
+    }
+    if (dto.seats !== undefined) {
+      qb.andWhere('ride.available_seats >= :seats', { seats: dto.seats });
+    }
+
+    const rides = await qb.getMany();
+    for (const ride of rides) {
+      const fields = await this.buildRouteFieldsFromDto({
+        source: ride.source,
+        destination: ride.destination,
+        sourceLatitude: ride.sourceLatitude ?? undefined,
+        sourceLongitude: ride.sourceLongitude ?? undefined,
+        destinationLatitude: ride.destinationLatitude ?? undefined,
+        destinationLongitude: ride.destinationLongitude ?? undefined,
+        allowPlaceNameFallback: true,
+      });
+      if (!fields.routePolyline) {
+        continue;
+      }
+      Object.assign(ride, fields);
+      await this.rideRepository.save(ride);
+    }
   }
 
   private async buildRouteFieldsFromEndpoints(endpoints: {
