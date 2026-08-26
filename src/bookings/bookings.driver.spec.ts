@@ -11,6 +11,7 @@ import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideType } from '../rides/enums/ride.enums';
+import { ASSURED_TEST_ROUTE } from '../rides/test/assured-ride-test.helpers';
 import { RidesModule } from '../rides/rides.module';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
@@ -221,6 +222,7 @@ describe('BookingsController driver my-rides (integration)', () => {
       .set('Authorization', `Bearer ${login.accessToken}`)
       .send({
         rideType: options.rideType ?? RideType.REGULAR,
+        ...(options.rideType === RideType.ASSURED ? ASSURED_TEST_ROUTE : {}),
         vehicleId: vehicle.id,
         source: options.source ?? 'Noida Sector 62',
         destination: options.destination ?? 'Connaught Place, Delhi',

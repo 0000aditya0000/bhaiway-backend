@@ -7,13 +7,28 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { Brackets, DataSource, EntityManager, In, Repository } from 'typeorm';
+import {
+  Brackets,
+  DataSource,
+  EntityManager,
+  In,
+  QueryFailedError,
+  Repository,
+} from 'typeorm';
 
 import {
   ASSURED_RIDE_DRIVER_DEPOSIT_REF,
   calculateDriverAssuredDeposit,
 } from '../assured/assured-deposit.math';
+import { AssuredGeographicQueueService } from '../assured/assured-geographic-queue.service';
 import { AssuredLifecycleService } from '../assured/assured-lifecycle.service';
+import { AssuredQueueService } from '../assured/assured-queue.service';
+import {
+  assertRideStartableForType,
+  isAssuredPreTripOfferStatus,
+  isAssuredSearchVisibleOffer,
+  isRegularPublishedStatus,
+} from '../assured/assured-ride-status';
 import {
   AssuredRideLifecycleResponseDto,
   HalfTimeDecisionResponseDto,
@@ -25,6 +40,7 @@ import {
   BookingStatus,
 } from '../bookings/enums/booking.enums';
 import { BookingsService } from '../bookings/bookings.service';
+import { FareSettlementService } from '../fare/fare-settlement.service';
 import { SettingsService } from '../settings/settings.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { User, UserStatus } from '../users/entities/user.entity';
@@ -75,6 +91,7 @@ import {
   RideStatus,
   RideType,
 } from './enums/ride.enums';
+import { supportsTripLifecycle } from './ride-trip-lifecycle';
 import { RideDirectionsService } from './route/ride-directions.service';
 import {
   decodePolyline,
@@ -108,6 +125,9 @@ export class RidesService {
     private readonly walletService: WalletService,
     private readonly settingsService: SettingsService,
     private readonly assuredLifecycleService: AssuredLifecycleService,
+    private readonly assuredQueueService: AssuredQueueService,
+    private readonly assuredGeographicQueueService: AssuredGeographicQueueService,
+    private readonly fareSettlementService: FareSettlementService,
     private readonly bookingsService: BookingsService,
     private readonly trackingService: TrackingService,
     private readonly rideDirectionsService: RideDirectionsService,
@@ -138,9 +158,8 @@ export class RidesService {
   }
 
   /**
-   * Start a Regular ride: PUBLISHED → IN_PROGRESS.
-   * Zero confirmed passengers is allowed (same as empty completion historically).
-   * Assured rides are not started via this endpoint.
+   * Start a trip-lifecycle ride (Regular or Assured): PUBLISHED → IN_PROGRESS.
+   * Zero confirmed passengers is allowed.
    */
   async startByDriver(
     driverId: string,
@@ -158,9 +177,9 @@ export class RidesService {
         throw new NotFoundException('Ride not found');
       }
 
-      if (ride.rideType !== RideType.REGULAR) {
+      if (!supportsTripLifecycle(ride.rideType)) {
         throw new BadRequestException(
-          'Only Regular rides can be started via this endpoint',
+          `Ride type ${ride.rideType} cannot be started via this endpoint`,
         );
       }
 
@@ -176,7 +195,7 @@ export class RidesService {
         throw new ConflictException('Ride is already in progress');
       }
 
-      if (ride.status !== RideStatus.PUBLISHED) {
+      if (!assertRideStartableForType(ride.rideType, ride.status)) {
         throw new ConflictException(
           `Ride cannot be started from status ${ride.status}`,
         );
@@ -312,11 +331,15 @@ export class RidesService {
     );
   }
 
-  async create(driverId: string, dto: CreateRideDto): Promise<RideResponseDto> {
+  async create(
+    driverId: string,
+    dto: CreateRideDto,
+    options?: { idempotencyKey?: string | null },
+  ): Promise<RideResponseDto> {
     await this.assertDriverCanPublish(driverId, dto.vehicleId);
 
     if (dto.rideType === RideType.ASSURED) {
-      return this.createAssuredRide(driverId, dto);
+      return this.createAssuredRide(driverId, dto, options?.idempotencyKey);
     }
 
     const routeFields = await this.buildRouteFieldsFromDto({
@@ -348,6 +371,7 @@ export class RidesService {
       assuredDepositPercentage: null,
       assuredDepositAmount: null,
       driverDepositHoldId: null,
+      publishIdempotencyKey: null,
       ...routeFields,
     });
 
@@ -356,13 +380,51 @@ export class RidesService {
   }
 
   /**
-   * Atomic Assured publish: Wallet → Balance → Lots → Ride.
-   * Driver deposit hold + ride publication commit together.
+   * Assured publish: resolve geometry outside the wallet lock, then atomic
+   * Wallet → Balance → Lots → geographic queue → enqueue → Ride.
+   * When Idempotency-Key is supplied, retries with the same key are safe.
    */
   private async createAssuredRide(
     driverId: string,
     dto: CreateRideDto,
+    idempotencyKey: string | null | undefined,
   ): Promise<RideResponseDto> {
+    const clientKey = idempotencyKey?.trim() || null;
+    if (clientKey && clientKey.length > 255) {
+      throw new BadRequestException(
+        'Idempotency-Key must be at most 255 characters',
+      );
+    }
+    // Prefer client key for retry safety; otherwise generate a unique key so
+    // the column remains populated for Assured rows (no silent Regular-style null).
+    const key = clientKey ?? `assured-publish:${randomUUID()}`;
+
+    if (clientKey) {
+      const existing = await this.rideRepository.findOne({
+        where: { publishIdempotencyKey: key },
+      });
+      if (existing) {
+        this.assertAssuredPublishIdempotentMatches(existing, driverId, dto);
+        return this.toResponse(existing);
+      }
+    }
+
+    this.assertAssuredPublishCoordinates(dto);
+
+    // Resolve geometry before opening the wallet transaction so Directions
+    // latency does not hold financial locks, and geometry failures never
+    // create a deposit hold.
+    const routeFields = await this.buildRouteFieldsFromDto({
+      source: dto.source,
+      destination: dto.destination,
+      sourceLatitude: dto.sourceLatitude,
+      sourceLongitude: dto.sourceLongitude,
+      destinationLatitude: dto.destinationLatitude,
+      destinationLongitude: dto.destinationLongitude,
+      allowPlaceNameFallback: false,
+    });
+    this.assertAssuredRouteGeometryForQueue(routeFields);
+
     const percentage =
       await this.settingsService.getAssuredRideDepositPercentage();
     const pricePerSeat = BigInt(dto.pricePerSeat);
@@ -372,10 +434,24 @@ export class RidesService {
       percentage,
     );
     const rideId = randomUUID();
-    const idempotencyKey = `assured-driver-deposit:${rideId}`;
+    const depositLedgerKey = `assured-driver-deposit:${rideId}`;
 
     try {
       return await this.dataSource.transaction(async (manager) => {
+        if (clientKey) {
+          const existingAfterLock = await manager.getRepository(Ride).findOne({
+            where: { publishIdempotencyKey: key },
+          });
+          if (existingAfterLock) {
+            this.assertAssuredPublishIdempotentMatches(
+              existingAfterLock,
+              driverId,
+              dto,
+            );
+            return this.toResponse(existingAfterLock);
+          }
+        }
+
         const wallet = await this.lockWalletForUpdate(manager, driverId);
         this.assertWalletAllowsDeposit(wallet);
 
@@ -389,27 +465,17 @@ export class RidesService {
               holdType: WalletHoldType.ASSURED_DEPOSIT,
               referenceType: ASSURED_RIDE_DRIVER_DEPOSIT_REF,
               referenceId: rideId,
-              idempotencyKey,
+              idempotencyKey: depositLedgerKey,
             },
           );
           driverDepositHoldId = holdResult.hold!.id;
         }
-
-        const routeFields = await this.buildRouteFieldsFromDto({
-          source: dto.source,
-          destination: dto.destination,
-          sourceLatitude: dto.sourceLatitude,
-          sourceLongitude: dto.sourceLongitude,
-          destinationLatitude: dto.destinationLatitude,
-          destinationLongitude: dto.destinationLongitude,
-        });
 
         const ride = manager.getRepository(Ride).create({
           id: rideId,
           driverId,
           vehicleId: dto.vehicleId,
           rideType: RideType.ASSURED,
-          status: RideStatus.PUBLISHED,
           source: dto.source.trim(),
           destination: dto.destination.trim(),
           departureDate: dto.departureDate,
@@ -425,22 +491,96 @@ export class RidesService {
           assuredDepositPercentage: percentage,
           assuredDepositAmount: depositAmount.toString(),
           driverDepositHoldId,
+          publishIdempotencyKey: key,
           ...routeFields,
         });
 
-        const saved = await manager.getRepository(Ride).save(ride);
+        await this.assuredGeographicQueueService.assignGeographicQueueInTransaction(
+          manager,
+          ride,
+        );
+        await this.assuredQueueService.enqueueAssuredRideInTransaction(
+          manager,
+          ride,
+        );
+
+        const saved =
+          await this.assuredQueueService.saveNewAssuredRideInTransaction(
+            manager,
+            ride,
+          );
         return this.toResponse(saved);
       });
     } catch (error) {
-      if (
-        error instanceof InsufficientWalletBalanceError ||
-        error instanceof WalletNotFoundError ||
-        error instanceof ForbiddenException
-      ) {
-        throw error;
+      if (clientKey && this.isAssuredPublishIdempotencyUniqueViolation(error)) {
+        const recovered = await this.rideRepository.findOne({
+          where: { publishIdempotencyKey: key },
+        });
+        if (recovered) {
+          this.assertAssuredPublishIdempotentMatches(recovered, driverId, dto);
+          return this.toResponse(recovered);
+        }
       }
       throw error;
     }
+  }
+
+  private assertAssuredPublishCoordinates(dto: CreateRideDto): void {
+    if (dto.sourceLatitude == null || dto.sourceLongitude == null) {
+      throw new BadRequestException(
+        'Assured ride publishing requires source coordinates',
+      );
+    }
+    if (dto.destinationLatitude == null || dto.destinationLongitude == null) {
+      throw new BadRequestException(
+        'Assured ride publishing requires destination coordinates',
+      );
+    }
+  }
+
+  private assertAssuredPublishIdempotentMatches(
+    existing: Ride,
+    driverId: string,
+    dto: CreateRideDto,
+  ): void {
+    if (
+      existing.driverId !== driverId ||
+      existing.rideType !== RideType.ASSURED ||
+      existing.vehicleId !== dto.vehicleId ||
+      existing.source.trim() !== dto.source.trim() ||
+      existing.destination.trim() !== dto.destination.trim() ||
+      this.toCivilDate(existing.departureDate) !== dto.departureDate ||
+      this.formatTime(existing.departureTime) !==
+        this.normalizeTime(dto.departureTime) ||
+      existing.totalSeats !== dto.totalSeats ||
+      existing.pricePerSeat !== String(dto.pricePerSeat)
+    ) {
+      throw new ConflictException(
+        'Idempotency key was reused for a different Assured publish request',
+      );
+    }
+  }
+
+  private isAssuredPublishIdempotencyUniqueViolation(error: unknown): boolean {
+    if (!(error instanceof QueryFailedError)) {
+      return false;
+    }
+    const driverError = error.driverError as {
+      code?: string;
+      constraint?: string;
+      detail?: string;
+    };
+    const code = driverError?.code ?? (error as { code?: string }).code;
+    const constraint =
+      driverError?.constraint ??
+      (error as { constraint?: string }).constraint ??
+      '';
+    const detail = driverError?.detail ?? '';
+    return (
+      code === '23505' &&
+      (constraint.includes('publish_idempotency') ||
+        detail.includes('publish_idempotency_key'))
+    );
   }
 
   async findMine(driverId: string): Promise<RideResponseDto[]> {
@@ -578,12 +718,9 @@ export class RidesService {
    */
   async findPublishedPublic(rideId: string): Promise<RideSearchItemDto> {
     const ride = await this.rideRepository.findOne({
-      where: {
-        id: rideId,
-        status: RideStatus.PUBLISHED,
-      },
+      where: { id: rideId },
     });
-    if (!ride) {
+    if (!ride || !this.isPassengerVisibleRide(ride)) {
       throw new NotFoundException('Ride not found');
     }
 
@@ -602,8 +739,8 @@ export class RidesService {
 
     const qb = this.rideRepository
       .createQueryBuilder('ride')
-      .where('ride.status = :status', { status: RideStatus.PUBLISHED })
-      .andWhere('ride.departure_date = :date', { date: dto.date });
+      .where('ride.departure_date = :date', { date: dto.date });
+    this.applyPassengerVisibilityFilter(qb);
 
     if (dto.rideType !== undefined) {
       qb.andWhere('ride.ride_type = :rideType', { rideType: dto.rideType });
@@ -797,6 +934,29 @@ export class RidesService {
     ride: Ride,
     dto: UpdateRideDto,
   ): Promise<void> {
+    if (!isAssuredPreTripOfferStatus(ride.status)) {
+      if (ride.status === RideStatus.IN_PROGRESS) {
+        throw new ConflictException(
+          'Ride cannot be modified after it has started.',
+        );
+      }
+      if (ride.status === RideStatus.COMPLETED) {
+        throw new ConflictException('Completed rides cannot be modified.');
+      }
+      if (ride.status === RideStatus.CANCELLED) {
+        throw new ConflictException('Cancelled rides cannot be modified.');
+      }
+      throw new ConflictException(
+        `Ride cannot be modified from status ${ride.status}`,
+      );
+    }
+
+    if (ride.status === RideStatus.ASSURANCE_ACTIVE) {
+      this.assertAssuredActiveQueueFieldsUnchanged(ride, dto);
+    }
+
+    const previousQueueId = ride.assuredQueueId;
+
     if (ride.driverDepositHoldId !== null) {
       const priceChanging =
         dto.pricePerSeat !== undefined &&
@@ -827,6 +987,89 @@ export class RidesService {
     await this.applyUnrestrictedRideFields(driverId, ride, dto, {
       skipSeats: true,
     });
+
+    if (ride.status === RideStatus.ASSURANCE_PENDING) {
+      this.assertAssuredRouteGeometryForQueue({
+        sourceLatitude: ride.sourceLatitude,
+        sourceLongitude: ride.sourceLongitude,
+        destinationLatitude: ride.destinationLatitude,
+        destinationLongitude: ride.destinationLongitude,
+        routePolyline: ride.routePolyline,
+      });
+      await this.assuredGeographicQueueService.assignGeographicQueueInTransaction(
+        manager,
+        ride,
+      );
+      if (previousQueueId !== ride.assuredQueueId) {
+        await this.assuredQueueService.requeuePendingRideInTransaction(
+          manager,
+          ride,
+          previousQueueId,
+        );
+      }
+    }
+  }
+
+  private assertAssuredActiveQueueFieldsUnchanged(
+    ride: Ride,
+    dto: UpdateRideDto,
+  ): void {
+    const queueFieldsChanged =
+      this.hasStringChange(dto.source, ride.source) ||
+      this.hasStringChange(dto.destination, ride.destination) ||
+      this.hasCoordinateChange(dto.sourceLatitude, ride.sourceLatitude) ||
+      this.hasCoordinateChange(dto.sourceLongitude, ride.sourceLongitude) ||
+      this.hasCoordinateChange(
+        dto.destinationLatitude,
+        ride.destinationLatitude,
+      ) ||
+      this.hasCoordinateChange(
+        dto.destinationLongitude,
+        ride.destinationLongitude,
+      ) ||
+      (dto.departureDate !== undefined &&
+        this.toCivilDate(dto.departureDate) !==
+          this.toCivilDate(ride.departureDate)) ||
+      (dto.departureTime !== undefined &&
+        this.normalizeTime(dto.departureTime) !==
+          this.normalizeTime(ride.departureTime));
+
+    if (queueFieldsChanged) {
+      throw new ConflictException(
+        'Active Assured rides cannot change route or departure schedule',
+      );
+    }
+  }
+
+  private isPassengerVisibleRide(ride: Ride): boolean {
+    if (ride.rideType === RideType.ASSURED) {
+      return isAssuredSearchVisibleOffer(ride.status, ride.availableSeats);
+    }
+    return isRegularPublishedStatus(ride.status);
+  }
+
+  private applyPassengerVisibilityFilter(
+    qb: ReturnType<Repository<Ride>['createQueryBuilder']>,
+  ): void {
+    qb.andWhere(
+      new Brackets((visibility) => {
+        visibility
+          .where(
+            '(ride.ride_type = :regularType AND ride.status = :publishedStatus)',
+            {
+              regularType: RideType.REGULAR,
+              publishedStatus: RideStatus.PUBLISHED,
+            },
+          )
+          .orWhere(
+            '(ride.ride_type = :assuredType AND ride.status = :assuranceActiveStatus AND ride.available_seats > 0)',
+            {
+              assuredType: RideType.ASSURED,
+              assuranceActiveStatus: RideStatus.ASSURANCE_ACTIVE,
+            },
+          );
+      }),
+    );
   }
 
   private async applyUnrestrictedRideFields(
@@ -1126,11 +1369,10 @@ export class RidesService {
   ): Promise<void> {
     const qb = this.rideRepository
       .createQueryBuilder('ride')
-      .where('ride.status = :status', { status: RideStatus.PUBLISHED })
-      .andWhere('ride.departure_date = :date', { date: dto.date })
-      .andWhere('ride.route_polyline IS NULL')
-      .orderBy('ride.created_at', 'ASC')
-      .take(20);
+      .where('ride.departure_date = :date', { date: dto.date })
+      .andWhere('ride.route_polyline IS NULL');
+    this.applyPassengerVisibilityFilter(qb);
+    qb.orderBy('ride.created_at', 'ASC').take(20);
 
     if (dto.rideType !== undefined) {
       qb.andWhere('ride.ride_type = :rideType', { rideType: dto.rideType });
@@ -1155,6 +1397,33 @@ export class RidesService {
       }
       Object.assign(ride, fields);
       await this.rideRepository.save(ride);
+    }
+  }
+
+  private assertAssuredRouteGeometryForQueue(fields: {
+    sourceLatitude?: number | null;
+    sourceLongitude?: number | null;
+    destinationLatitude?: number | null;
+    destinationLongitude?: number | null;
+    routePolyline?: string | null;
+  }): void {
+    if (fields.sourceLatitude == null || fields.sourceLongitude == null) {
+      throw new BadRequestException(
+        'Assured ride publishing requires source coordinates',
+      );
+    }
+    if (
+      fields.destinationLatitude == null ||
+      fields.destinationLongitude == null
+    ) {
+      throw new BadRequestException(
+        'Assured ride publishing requires destination coordinates',
+      );
+    }
+    if (!fields.routePolyline?.trim()) {
+      throw new BadRequestException(
+        'Assured ride publishing requires resolvable route geometry. Check source and destination coordinates and try again.',
+      );
     }
   }
 
@@ -1286,11 +1555,10 @@ export class RidesService {
   }
 
   /**
-   * Dedicated completion: PUBLISHED → COMPLETED.
-   * Assured rides also release ACTIVE driver/rider ASSURED_DEPOSIT holds.
-   *
-   * Lock order: Ride → (holds sorted by walletId, holdId): Hold → Balance → Lots
-   * → Booking updates → Ride COMPLETED.
+   * Dedicated completion for trip-lifecycle rides (Regular + Assured).
+   * Regular: IN_PROGRESS → COMPLETED after all passengers are picked up.
+   * Assured: same trip gates, then releases ACTIVE deposit holds and
+   * applies partial-fill compensation when applicable.
    */
   async complete(
     driverId: string,
@@ -1321,58 +1589,52 @@ export class RidesService {
           throw new ConflictException('Draft rides cannot be completed');
         }
 
-        if (ride.rideType === RideType.REGULAR) {
-          if (ride.status !== RideStatus.IN_PROGRESS) {
-            throw new ConflictException(
-              'Regular rides must be started (IN_PROGRESS) before completion',
-            );
-          }
-
-          const unpicked = await manager
-            .getRepository(Booking)
-            .createQueryBuilder('booking')
-            .where('booking.ride_id = :rideId', { rideId: ride.id })
-            .andWhere('booking.status IN (:...statuses)', {
-              statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
-            })
-            .andWhere(
-              '(booking.pickup_status IS NULL OR booking.pickup_status = :waiting)',
-              { waiting: BookingPickupStatus.WAITING_FOR_PICKUP },
-            )
-            .getCount();
-          if (unpicked > 0) {
-            throw new ConflictException(
-              'All confirmed passengers must be picked up before completing the ride',
-            );
-          }
-
-          await manager
-            .getRepository(Booking)
-            .createQueryBuilder()
-            .update(Booking)
-            .set({ status: BookingStatus.COMPLETED })
-            .where('ride_id = :rideId', { rideId: ride.id })
-            .andWhere('status IN (:...statuses)', {
-              statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
-            })
-            .execute();
-
-          ride.status = RideStatus.COMPLETED;
-          await manager.getRepository(Ride).save(ride);
-
-          return {
-            rideId: ride.id,
-            status: RideStatus.COMPLETED,
-            rideType: ride.rideType,
-            alreadyCompleted: false,
-          };
-        }
-
-        if (ride.status !== RideStatus.PUBLISHED) {
-          throw new ConflictException(
-            `Ride cannot be completed from status ${ride.status}`,
+        if (!supportsTripLifecycle(ride.rideType)) {
+          throw new BadRequestException(
+            `Ride type ${ride.rideType} cannot be completed via this endpoint`,
           );
         }
+
+        if (ride.status !== RideStatus.IN_PROGRESS) {
+          throw new ConflictException(
+            'Rides must be started (IN_PROGRESS) before completion',
+          );
+        }
+
+        const unpicked = await manager
+          .getRepository(Booking)
+          .createQueryBuilder('booking')
+          .where('booking.ride_id = :rideId', { rideId: ride.id })
+          .andWhere('booking.status IN (:...statuses)', {
+            statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+          })
+          .andWhere(
+            '(booking.pickup_status IS NULL OR booking.pickup_status = :waiting)',
+            { waiting: BookingPickupStatus.WAITING_FOR_PICKUP },
+          )
+          .getCount();
+        if (unpicked > 0) {
+          throw new ConflictException(
+            'All confirmed passengers must be picked up before completing the ride',
+          );
+        }
+
+        const activeBookings = await manager
+          .getRepository(Booking)
+          .createQueryBuilder('booking')
+          .setLock('pessimistic_write')
+          .where('booking.ride_id = :rideId', { rideId: ride.id })
+          .andWhere('booking.status IN (:...statuses)', {
+            statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+          })
+          .orderBy('booking.id', 'ASC')
+          .getMany();
+
+        await this.fareSettlementService.settleRideFaresInTransaction(manager, {
+          ride,
+          driverId: ride.driverId,
+          bookings: activeBookings,
+        });
 
         let driverReleased: string | null = null;
         let ridersReleased = 0n;
@@ -1384,7 +1646,6 @@ export class RidesService {
             ride,
           );
 
-          // Deterministic order: walletId then holdId
           releasePlan.sort((a, b) => {
             const walletCmp = a.walletId.localeCompare(b.walletId);
             if (walletCmp !== 0) {
@@ -1394,14 +1655,12 @@ export class RidesService {
           });
 
           for (const target of releasePlan) {
-            const result = await this.walletService.releaseHoldInTransaction(
-              manager,
-              {
+            const releaseResult =
+              await this.walletService.releaseHoldInTransaction(manager, {
                 holdId: target.holdId,
                 idempotencyKey: `assured-deposit-release:${target.holdId}`,
-              },
-            );
-            const amount = BigInt(result.hold?.amount ?? target.amount);
+              });
+            const amount = BigInt(releaseResult.hold?.amount ?? target.amount);
             if (target.role === 'driver') {
               driverReleased = amount.toString();
             } else {
@@ -1456,7 +1715,7 @@ export class RidesService {
         };
       });
 
-      if (result.rideType === RideType.REGULAR) {
+      if (supportsTripLifecycle(result.rideType)) {
         await this.trackingService.clearRideTracking(rideId, 'complete');
       }
 
@@ -1942,6 +2201,11 @@ export class RidesService {
   }
 
   private toResponse(ride: Ride): RideResponseDto {
+    const isAssured = ride.rideType === RideType.ASSURED;
+    const isBookable = isAssured
+      ? isAssuredSearchVisibleOffer(ride.status, ride.availableSeats)
+      : isRegularPublishedStatus(ride.status) && ride.availableSeats > 0;
+
     return {
       id: ride.id,
       driverId: ride.driverId,
@@ -1950,7 +2214,7 @@ export class RidesService {
       status: ride.status,
       source: ride.source,
       destination: ride.destination,
-      departureDate: ride.departureDate,
+      departureDate: this.toCivilDate(ride.departureDate),
       departureTime: this.formatTime(ride.departureTime),
       totalSeats: ride.totalSeats,
       availableSeats: ride.availableSeats,
@@ -1963,6 +2227,17 @@ export class RidesService {
       assuredDepositPercentage: ride.assuredDepositPercentage,
       assuredDepositAmount: ride.assuredDepositAmount,
       regularSeatsPolicy: ride.regularSeatsPolicy,
+      assuranceWindowStart: isAssured
+        ? ride.assuranceWindowStart
+          ? this.formatTime(ride.assuranceWindowStart)
+          : null
+        : null,
+      assuranceWindowEnd: isAssured
+        ? ride.assuranceWindowEnd
+          ? this.formatTime(ride.assuranceWindowEnd)
+          : null
+        : null,
+      isBookable,
       createdAt: ride.createdAt.toISOString(),
       updatedAt: ride.updatedAt.toISOString(),
     };

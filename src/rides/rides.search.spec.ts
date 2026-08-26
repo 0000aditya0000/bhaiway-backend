@@ -36,6 +36,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
 
 describe('Rides search (integration)', () => {
   let app: INestApplication;
@@ -218,6 +219,7 @@ describe('Rides search (integration)', () => {
         noPets: false,
         luggageAllowed: true,
         notes: 'AC car',
+        ...(overrides.rideType === RideType.ASSURED ? ASSURED_TEST_ROUTE : {}),
         ...overrides,
       })
       .expect(201);

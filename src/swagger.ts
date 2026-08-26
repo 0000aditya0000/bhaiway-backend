@@ -35,7 +35,7 @@ export function setupSwagger(app: INestApplication): void {
     )
     .addTag(
       'Wallet',
-      'Wallet financial operations (service layer only — no HTTP endpoints yet)',
+      'Wallet balance, transaction history, and mock top-up (1 Coin = ₹1, integer string amounts). Wallet credit occurs only after verified gateway callback.',
     )
     .build();
 

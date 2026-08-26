@@ -39,13 +39,15 @@ export class TrackingController {
   @Post(':id/location')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Publish driver live location (owning driver, Regular IN_PROGRESS)',
+    summary: 'Publish driver live location (owning driver, IN_PROGRESS trip ride)',
     description:
-      'Stores the latest GPS fix in Redis (TTL). Does not write to PostgreSQL. Rejected before start, after complete/cancel, and for non-owners.',
+      'Stores the latest GPS fix in Redis (TTL) for REGULAR and ASSURED rides. Does not write to PostgreSQL. Rejected before start, after complete/cancel, and for non-owners.',
   })
   @ApiParam({ name: 'id', format: 'uuid', description: 'Ride id' })
   @ApiOkResponse({ type: RideTrackingResponseDto })
-  @ApiBadRequestResponse({ description: 'Invalid coordinates or non-Regular ride' })
+  @ApiBadRequestResponse({
+    description: 'Invalid coordinates or non-trip-lifecycle ride',
+  })
   @ApiNotFoundResponse({ description: 'Ride not found for this driver' })
   @ApiConflictResponse({
     description: 'Ride not IN_PROGRESS (or cancelled/completed)',
@@ -62,9 +64,9 @@ export class TrackingController {
 
   @Get(':id')
   @ApiOperation({
-    summary: 'Get current driver location for a Regular ride',
+    summary: 'Get current driver location for a trip-lifecycle ride',
     description:
-      'Available to the ride driver or a passenger with an active/completed booking on the ride. Returns `driverCoordinate` for the mobile map marker.',
+      'Available to the ride driver or a passenger with an active/completed booking on REGULAR or ASSURED rides. Returns `driverCoordinate` for the mobile map marker.',
   })
   @ApiParam({ name: 'id', format: 'uuid', description: 'Ride id' })
   @ApiOkResponse({ type: RideTrackingResponseDto })

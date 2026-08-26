@@ -6,6 +6,10 @@ export enum RideType {
 export enum RideStatus {
   DRAFT = 'DRAFT',
   PUBLISHED = 'PUBLISHED',
+  /** Assured queue: waiting for visibility; not searchable or bookable. */
+  ASSURANCE_PENDING = 'ASSURANCE_PENDING',
+  /** Assured queue: visible offer; bookable until IN_PROGRESS. */
+  ASSURANCE_ACTIVE = 'ASSURANCE_ACTIVE',
   IN_PROGRESS = 'IN_PROGRESS',
   CANCELLED = 'CANCELLED',
   COMPLETED = 'COMPLETED',

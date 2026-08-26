@@ -17,6 +17,11 @@ import {
 } from 'typeorm';
 
 import { AssuredLifecycleService } from '../assured/assured-lifecycle.service';
+import { AssuredQueueService } from '../assured/assured-queue.service';
+import {
+  isAssuredBookableStatus,
+  isRegularPublishedStatus,
+} from '../assured/assured-ride-status';
 import {
   AssuredBookingLifecycleResponseDto,
 } from '../assured/dto/assured-lifecycle-response.dto';
@@ -35,6 +40,7 @@ import {
   RideStatus,
   RideType,
 } from '../rides/enums/ride.enums';
+import { supportsTripLifecycle } from '../rides/ride-trip-lifecycle';
 import { SettingsService } from '../settings/settings.service';
 import { User } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
@@ -124,6 +130,7 @@ export class BookingsService {
     private readonly walletService: WalletService,
     private readonly settingsService: SettingsService,
     private readonly assuredLifecycleService: AssuredLifecycleService,
+    private readonly assuredQueueService: AssuredQueueService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -145,7 +152,7 @@ export class BookingsService {
   }
 
   /**
-   * Driver verifies passenger pickup OTP for a Regular ride booking.
+   * Driver verifies passenger pickup OTP for a trip-lifecycle ride booking.
    * Requires ride IN_PROGRESS and booking CONFIRMED + WAITING_FOR_PICKUP.
    */
   async verifyPickup(
@@ -181,9 +188,9 @@ export class BookingsService {
         throw new NotFoundException('Booking not found');
       }
 
-      if (ride.rideType !== RideType.REGULAR) {
+      if (!supportsTripLifecycle(ride.rideType)) {
         throw new BadRequestException(
-          'Pickup OTP verification applies only to Regular rides',
+          'Pickup OTP verification applies only to trip-lifecycle rides',
         );
       }
 
@@ -341,6 +348,7 @@ export class BookingsService {
 
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
+        await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
 
         const bookingId = randomUUID();
         const pickupFields = this.buildRegularPickupFields(
@@ -457,6 +465,7 @@ export class BookingsService {
 
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
+        await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
 
         const pickupFields = await this.buildRegularPickupFields(
           ride,
@@ -626,6 +635,7 @@ export class BookingsService {
 
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
+        await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
 
         const booking = manager.getRepository(Booking).create({
           id: bookingId,
@@ -1028,13 +1038,30 @@ export class BookingsService {
   }
 
   private assertRideBookable(ride: Ride, passengerId: string): void {
-    if (ride.status !== RideStatus.PUBLISHED) {
+    if (ride.rideType === RideType.ASSURED) {
+      if (!isAssuredBookableStatus(ride.status)) {
+        throw new BadRequestException('Only active Assured rides can be booked');
+      }
+    } else if (!isRegularPublishedStatus(ride.status)) {
       throw new BadRequestException('Only published rides can be booked');
     }
 
     if (ride.driverId === passengerId) {
       throw new ForbiddenException('Drivers cannot book their own ride');
     }
+  }
+
+  private async maybeAdvanceAssuredQueueAfterBooking(
+    manager: EntityManager,
+    ride: Ride,
+  ): Promise<void> {
+    if (ride.rideType !== RideType.ASSURED || ride.availableSeats > 0) {
+      return;
+    }
+    await this.assuredQueueService.handleRideBecameFullInTransaction(
+      manager,
+      ride,
+    );
   }
 
   private assertEnoughSeats(ride: Ride, seats: number): void {
@@ -1452,7 +1479,7 @@ export class BookingsService {
       >
     >
   > {
-    if (ride.rideType !== RideType.REGULAR) {
+    if (!supportsTripLifecycle(ride.rideType)) {
       return {
         pickupOtpHash: null,
         pickupOtpCiphertext: null,
@@ -1487,14 +1514,14 @@ export class BookingsService {
   }
 
   /**
-   * Backfill OTP material for legacy Regular bookings created before this feature.
+   * Backfill OTP material for legacy trip-lifecycle bookings created before this feature.
    */
   async ensurePickupOtpMaterial(
     manager: EntityManager,
     booking: Booking,
     ride: Ride,
   ): Promise<void> {
-    if (ride.rideType !== RideType.REGULAR) {
+    if (!supportsTripLifecycle(ride.rideType)) {
       return;
     }
     if (
@@ -1527,13 +1554,13 @@ export class BookingsService {
   }
 
   /**
-   * Called when starting a Regular ride: ensure every active booking has OTP material.
+   * Called when starting a trip-lifecycle ride: ensure every active booking has OTP material.
    */
   async ensurePickupOtpsForRideStart(
     manager: EntityManager,
     ride: Ride,
   ): Promise<void> {
-    if (ride.rideType !== RideType.REGULAR) {
+    if (!supportsTripLifecycle(ride.rideType)) {
       return;
     }
     const bookings = await manager.getRepository(Booking).find({

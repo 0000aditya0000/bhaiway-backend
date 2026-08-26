@@ -53,7 +53,17 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
 import { RidesService } from './rides.service';
+import { startRideAndVerifyAllPickups } from './test/ride-trip-test.helpers';
+
+function pickupOtpPepper(): string {
+  const secret = process.env.JWT_ACCESS_SECRET?.trim();
+  if (!secret || secret.length < 8) {
+    throw new Error('JWT_ACCESS_SECRET is required for pickup OTP tests');
+  }
+  return secret;
+}
 
 describe('Ride completion Phase 3 (integration)', () => {
   let app: INestApplication;
@@ -273,14 +283,15 @@ describe('Ride completion Phase 3 (integration)', () => {
 
   it('assured completion releases driver and rider deposits; idempotent retry', async () => {
     const driver = await fundedDriver();
-    const passengerA = await fundedPassenger(500n);
-    const passengerB = await fundedPassenger(500n);
+    const passengerA = await fundedPassenger(2000n);
+    const passengerB = await fundedPassenger(2000n);
 
     const ride = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Complete Assured A',
         destination: 'Complete Assured B',
@@ -318,6 +329,14 @@ describe('Ride completion Phase 3 (integration)', () => {
       .getRepository(WalletBalance)
       .findOneByOrFail({ walletId: driver.wallet.id });
     expect(driverBefore.purchasedHeld).toBe('100');
+
+    await startRideAndVerifyAllPickups(
+      app,
+      dataSource,
+      driver.login.accessToken,
+      ride.body.id,
+      pickupOtpPepper(),
+    );
 
     const completed = await request(app.getHttpServer())
       .post(`/rides/${ride.body.id}/complete`)
@@ -470,6 +489,7 @@ describe('Ride completion Phase 3 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Cancel Hold A',
         destination: 'Cancel Hold B',
@@ -497,6 +517,11 @@ describe('Ride completion Phase 3 (integration)', () => {
     );
 
     await request(app.getHttpServer())
+      .post(`/rides/${ride.body.id}/start`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
       .post(`/rides/${ride.body.id}/complete`)
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .expect(200);
@@ -519,6 +544,7 @@ describe('Ride completion Phase 3 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Snapshot A',
         destination: 'Snapshot B',
@@ -534,6 +560,11 @@ describe('Ride completion Phase 3 (integration)', () => {
     await settings.setAssuredRideDepositPercentage(7);
 
     try {
+      await request(app.getHttpServer())
+        .post(`/rides/${ride.body.id}/start`)
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .expect(200);
+
       const completed = await request(app.getHttpServer())
         .post(`/rides/${ride.body.id}/complete`)
         .set('Authorization', `Bearer ${driver.login.accessToken}`)
@@ -552,6 +583,7 @@ describe('Ride completion Phase 3 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Rollback Complete A',
         destination: 'Rollback Complete B',
@@ -565,6 +597,11 @@ describe('Ride completion Phase 3 (integration)', () => {
     const balanceBefore = await dataSource
       .getRepository(WalletBalance)
       .findOneByOrFail({ walletId: driver.wallet.id });
+
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.body.id}/start`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
 
     const spy = jest
       .spyOn(walletService, 'releaseHoldInTransaction')
@@ -581,7 +618,7 @@ describe('Ride completion Phase 3 (integration)', () => {
     const rideRow = await dataSource.getRepository(Ride).findOneByOrFail({
       id: ride.body.id,
     });
-    expect(rideRow.status).toBe(RideStatus.PUBLISHED);
+    expect(rideRow.status).toBe(RideStatus.IN_PROGRESS);
 
     const balanceAfter = await dataSource
       .getRepository(WalletBalance)
@@ -599,6 +636,7 @@ describe('Ride completion Phase 3 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Conc Complete A',
         destination: 'Conc Complete B',
@@ -608,6 +646,11 @@ describe('Ride completion Phase 3 (integration)', () => {
         pricePerSeat: 500,
       })
       .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.body.id}/start`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
 
     const results = await Promise.allSettled([
       ridesService.complete(driver.login.user.id, ride.body.id),

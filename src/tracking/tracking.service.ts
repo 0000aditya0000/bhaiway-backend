@@ -18,7 +18,8 @@ import { In, Repository } from 'typeorm';
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingStatus } from '../bookings/enums/booking.enums';
 import { Ride } from '../rides/entities/ride.entity';
-import { RideStatus, RideType } from '../rides/enums/ride.enums';
+import { RideStatus } from '../rides/enums/ride.enums';
+import { supportsTripLifecycle } from '../rides/ride-trip-lifecycle';
 import { UpdateDriverLocationDto } from './dto/update-driver-location.dto';
 import {
   RideLocationUpdatedEventDto,
@@ -80,7 +81,7 @@ export class TrackingService implements OnModuleDestroy {
   }
 
   /**
-   * Authorize Socket.IO room join. Drivers must own an IN_PROGRESS Regular ride;
+   * Authorize Socket.IO room join. Drivers must own an IN_PROGRESS trip-lifecycle ride;
    * passengers need an eligible booking on that active ride.
    */
   async assertCanJoinTrackingRoom(
@@ -92,9 +93,9 @@ export class TrackingService implements OnModuleDestroy {
       throw new NotFoundException('Ride not found');
     }
 
-    if (ride.rideType !== RideType.REGULAR) {
+    if (!supportsTripLifecycle(ride.rideType)) {
       throw new BadRequestException(
-        'Live tracking applies only to Regular rides',
+        'Live tracking applies only to trip-lifecycle rides',
       );
     }
 
@@ -141,9 +142,9 @@ export class TrackingService implements OnModuleDestroy {
       throw new NotFoundException('Ride not found');
     }
 
-    if (ride.rideType !== RideType.REGULAR) {
+    if (!supportsTripLifecycle(ride.rideType)) {
       throw new BadRequestException(
-        'Live tracking applies only to Regular rides',
+        'Live tracking applies only to trip-lifecycle rides',
       );
     }
 
@@ -270,9 +271,9 @@ export class TrackingService implements OnModuleDestroy {
       throw new NotFoundException('Ride not found');
     }
 
-    if (ride.rideType !== RideType.REGULAR) {
+    if (!supportsTripLifecycle(ride.rideType)) {
       throw new BadRequestException(
-        'Live tracking applies only to Regular rides',
+        'Live tracking applies only to trip-lifecycle rides',
       );
     }
 

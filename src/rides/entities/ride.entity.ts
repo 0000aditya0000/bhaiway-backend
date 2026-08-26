@@ -36,6 +36,10 @@ import {
 @Index('IDX_rides_vehicle_id', ['vehicleId'])
 @Index('IDX_rides_departure_date', ['departureDate'])
 @Index('IDX_rides_search', ['status', 'departureDate', 'departureTime'])
+@Index('UQ_rides_publish_idempotency_key', ['publishIdempotencyKey'], {
+  unique: true,
+  where: '"publish_idempotency_key" IS NOT NULL',
+})
 @Check(`"total_seats" > 0`)
 @Check(`"available_seats" >= 0`)
 @Check(`"available_seats" <= "total_seats"`)
@@ -307,6 +311,47 @@ export class Ride {
     default: 0,
   })
   partialFillCompensatedSeats!: number;
+
+  /** Deterministic Assured queue identity (route + date + assurance window). */
+  @Column({
+    name: 'assured_queue_key',
+    type: 'varchar',
+    length: 512,
+    nullable: true,
+  })
+  assuredQueueKey!: string | null;
+
+  /** Authoritative geographic Assured queue membership. */
+  @Column({ name: 'assured_queue_id', type: 'uuid', nullable: true })
+  assuredQueueId!: string | null;
+
+  /** Civil assurance window start (HH:mm:ss), derived from departure time. */
+  @Column({
+    name: 'assurance_window_start',
+    type: 'time',
+    nullable: true,
+  })
+  assuranceWindowStart!: string | null;
+
+  /** Civil assurance window end (HH:mm:ss). */
+  @Column({
+    name: 'assurance_window_end',
+    type: 'time',
+    nullable: true,
+  })
+  assuranceWindowEnd!: string | null;
+
+  /**
+   * Client Idempotency-Key for Assured publish (retry / double-tap safety).
+   * Null for Regular rides.
+   */
+  @Column({
+    name: 'publish_idempotency_key',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  publishIdempotencyKey!: string | null;
 
   @CreateDateColumn({
     name: 'created_at',

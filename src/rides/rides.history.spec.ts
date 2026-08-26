@@ -25,9 +25,11 @@ import { VehiclesService } from '../vehicles/vehicles.service';
 import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { WalletModule } from '../wallet/wallet.module';
+import { WalletService } from '../wallet/wallet.service';
 import {
   assertSafeTestDatabaseUrl,
   cleanupTestWallet,
+  creditTestWalletPoints,
   TestWalletContext,
 } from '../wallet/test/wallet-test.helpers';
 import { Ride } from './entities/ride.entity';
@@ -41,6 +43,7 @@ describe('Past ride history (integration)', () => {
   let authService: AuthService;
   let verificationService: VerificationService;
   let vehiclesService: VehiclesService;
+  let walletService: WalletService;
   const tracked: TestWalletContext[] = [];
 
   beforeAll(async () => {
@@ -89,6 +92,7 @@ describe('Past ride history (integration)', () => {
     authService = moduleRef.get(AuthService);
     verificationService = moduleRef.get(VerificationService);
     vehiclesService = moduleRef.get(VehiclesService);
+    walletService = moduleRef.get(WalletService);
   });
 
   afterEach(async () => {
@@ -217,6 +221,16 @@ describe('Past ride history (integration)', () => {
         profilePhoto: `https://cdn.example.com/${displayName.replace(/\s+/g, '-').toLowerCase()}.jpg`,
       }),
     );
+    const wallet = await dataSource.getRepository(Wallet).findOneByOrFail({
+      userId: login.user.id,
+    });
+    await creditTestWalletPoints(
+      walletService,
+      wallet.id,
+      login.user.id,
+      10000n,
+      'history-passenger',
+    );
     return login;
   }
 
@@ -343,7 +357,8 @@ describe('Past ride history (integration)', () => {
 
     expect(detail.body.invoice.invoiceId).toBeNull();
     expect(detail.body.payment.paymentMethod).toBe('PAY_LATER');
-    expect(detail.body.fare.totalPaid).toBe('0');
+    expect(detail.body.payment.paymentStatus).toBe('PAID');
+    expect(detail.body.fare.totalPaid).toBe('150');
 
     await request(app.getHttpServer())
       .get(`/bookings/history/${completed.b1.id}`)

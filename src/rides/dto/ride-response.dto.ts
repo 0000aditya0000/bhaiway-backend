@@ -81,6 +81,29 @@ export class RideResponseDto {
   })
   regularSeatsPolicy?: string | null;
 
+  @ApiPropertyOptional({
+    description:
+      'Assured 1-hour assurance window start (HH:mm:ss). Null for Regular.',
+    nullable: true,
+    example: '13:00:00',
+  })
+  assuranceWindowStart?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Assured 1-hour assurance window end (HH:mm:ss). Null for Regular.',
+    nullable: true,
+    example: '14:00:00',
+  })
+  assuranceWindowEnd?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Whether the ride is currently bookable by passengers (Assured: ASSURANCE_ACTIVE with seats; Regular: PUBLISHED with seats).',
+    example: true,
+  })
+  isBookable?: boolean;
+
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;
 

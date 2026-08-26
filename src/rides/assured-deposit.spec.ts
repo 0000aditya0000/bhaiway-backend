@@ -59,6 +59,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from './entities/ride.entity';
 import { RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
 
 describe('Assured deposit Phase 2 (integration)', () => {
   let app: INestApplication;
@@ -264,6 +265,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Deposit Source',
         destination: 'Deposit Dest',
@@ -321,6 +323,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${poor.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: poor.vehicle.id,
         source: 'Poor Source',
         destination: 'Poor Dest',
@@ -351,6 +354,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${suspended.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: suspended.vehicle.id,
         source: 'Sus Source',
         destination: 'Sus Dest',
@@ -370,6 +374,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${locked.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: locked.vehicle.id,
         source: 'Lock Source',
         destination: 'Lock Dest',
@@ -388,6 +393,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Update Source',
         destination: 'Update Dest',
@@ -426,6 +432,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Book Source',
         destination: 'Book Dest',
@@ -521,6 +528,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Rollback Source',
         destination: 'Rollback Dest',
@@ -607,6 +615,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Conc Source',
         destination: 'Conc Dest',

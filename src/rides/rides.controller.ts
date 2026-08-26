@@ -4,17 +4,20 @@ import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
+  ApiHeader,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiParam,
   ApiTags,
   ApiUnauthorizedResponse,
+  ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
 import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Param,
@@ -61,18 +64,37 @@ export class RidesController {
   @ApiOperation({
     summary: 'Publish a ride',
     description:
-      'Creates a PUBLISHED REGULAR or ASSURED ride after verification checks. ASSURED publishing atomically creates an ACTIVE driver ASSURED_DEPOSIT wallet hold (ledger ASSURED_DEPOSIT_HOLD) based on totalPublishedSeats × pricePerSeat × admin deposit %. driverId/status/availableSeats are server-controlled.',
+      'Creates a PUBLISHED REGULAR or Assured (ASSURANCE_ACTIVE / ASSURANCE_PENDING) ride after verification checks. ASSURED publishing atomically creates an ACTIVE driver ASSURED_DEPOSIT wallet hold (ledger ASSURED_DEPOSIT_HOLD) based on totalPublishedSeats × pricePerSeat × admin deposit %. Assured requires source/destination coordinates, resolvable route geometry, and Idempotency-Key. driverId/status/availableSeats are server-controlled.',
+  })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description:
+      'Strongly recommended for ASSURED publish (required to prevent double-tap duplicates). Safe to retry the same payload with the same key; reusing a key with a different payload returns 409. Regular rides ignore this header.',
   })
   @ApiCreatedResponse({ type: RideResponseDto })
-  @ApiBadRequestResponse({ description: 'Validation failed' })
+  @ApiBadRequestResponse({
+    description:
+      'Validation failed, or missing Assured coordinates/route geometry',
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Insufficient wallet balance for Assured driver deposit',
+  })
+  @ApiConflictResponse({
+    description:
+      'Idempotency key reused with a different Assured publish payload',
+  })
   @ApiForbiddenResponse({
     description: 'Driver or vehicle is not eligible to publish',
   })
   create(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Body() body: CreateRideDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.ridesService.create(currentUser.userId, body);
+    return this.ridesService.create(currentUser.userId, body, {
+      idempotencyKey,
+    });
   }
 
   @Get('search')
@@ -149,7 +171,7 @@ export class RidesController {
   @ApiOperation({
     summary: 'Complete a ride (owning driver only)',
     description:
-      'REGULAR: requires IN_PROGRESS and all active passengers PICKED_UP, then COMPLETED. ASSURED: PUBLISHED → COMPLETED with deposit release. Safe to retry when already COMPLETED. Cancelled/draft rides return 409. Status cannot be set via PATCH.',
+      'Trip-lifecycle rides (REGULAR and ASSURED): requires IN_PROGRESS and all active passengers PICKED_UP, then COMPLETED. ASSURED also releases ACTIVE deposit holds and may apply partial-fill compensation. Safe to retry when already COMPLETED. Cancelled/draft rides return 409. Status cannot be set via PATCH.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: CompleteRideResponseDto })
@@ -170,9 +192,9 @@ export class RidesController {
   @Post(':id/start')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Start a Regular ride (owning driver only)',
+    summary: 'Start a trip-lifecycle ride (owning driver only)',
     description:
-      'PUBLISHED → IN_PROGRESS for REGULAR rides only. Ensures pickup OTPs exist for confirmed passengers. Zero passengers is allowed. Assured rides cannot use this endpoint. Status cannot be set via PATCH.',
+      'PUBLISHED → IN_PROGRESS for REGULAR and ASSURED rides. Ensures pickup OTPs exist for confirmed passengers. Zero passengers is allowed. Status cannot be set via PATCH.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: RideResponseDto })
@@ -180,7 +202,7 @@ export class RidesController {
     description: 'Ride not found or not owned by the authenticated driver',
   })
   @ApiBadRequestResponse({
-    description: 'Ride is not Regular',
+    description: 'Ride type does not support trip start',
   })
   @ApiConflictResponse({
     description: 'Already in progress, cancelled, completed, or invalid status',

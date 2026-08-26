@@ -70,6 +70,16 @@ import {
   RideType,
 } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { ASSURED_TEST_ROUTE, withAssuredPublishHeaders } from '../rides/test/assured-ride-test.helpers';
+import { startRideAndVerifyAllPickups } from '../rides/test/ride-trip-test.helpers';
+
+function pickupOtpPepper(): string {
+  const secret = process.env.JWT_ACCESS_SECRET?.trim();
+  if (!secret || secret.length < 8) {
+    throw new Error('JWT_ACCESS_SECRET is required for pickup OTP tests');
+  }
+  return secret;
+}
 import { AssuredModule } from './assured.module';
 import { calculatePartialFillCompensation } from './assured-lifecycle.math';
 import { AssuredLifecycleEvent } from './entities/assured-lifecycle-event.entity';
@@ -275,7 +285,7 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
   ) {
     const response = await request(app.getHttpServer())
       .post('/rides')
-      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .set(withAssuredPublishHeaders(driver.login.accessToken))
       .send({
         rideType: RideType.ASSURED,
         vehicleId: driver.vehicle.id,
@@ -285,6 +295,7 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
         departureTime: FUTURE_TIME,
         totalSeats: 4,
         pricePerSeat: 500,
+        ...ASSURED_TEST_ROUTE,
         ...overrides,
       })
       .expect(201);
@@ -854,6 +865,7 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     const driver2 = await fundedDriver();
     const passenger2 = await fundedPassenger();
     const ride2 = await publishAssuredRide(driver2, {
+      departureTime: '15:00',
       source: 'Partial Fail Source',
       destination: 'Partial Fail Dest',
     });
@@ -1005,6 +1017,14 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
         ).walletHoldId!,
       });
     expect(consumedHold.status).toBe(WalletHoldStatus.CONSUMED);
+
+    await startRideAndVerifyAllPickups(
+      app,
+      dataSource,
+      driver.login.accessToken,
+      ride.id,
+      pickupOtpPepper(),
+    );
 
     const completed = await request(app.getHttpServer())
       .post(`/rides/${ride.id}/complete`)

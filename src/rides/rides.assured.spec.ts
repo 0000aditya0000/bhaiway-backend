@@ -46,6 +46,7 @@ import { SettingsService } from '../settings/settings.service';
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
 
 describe('Assured Ride Phase 1 (integration)', () => {
   let app: INestApplication;
@@ -236,6 +237,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
       noPets: true,
       luggageAllowed: true,
       notes: 'Assured ride',
+      ...ASSURED_TEST_ROUTE,
       ...overrides,
     };
   }
@@ -268,14 +270,19 @@ describe('Assured Ride Phase 1 (integration)', () => {
       // 3 × 300 × 5% = 45
       expect(response.body).toMatchObject({
         rideType: RideType.ASSURED,
-        status: RideStatus.PUBLISHED,
+        status: RideStatus.ASSURANCE_ACTIVE,
         availableSeats: 3,
         totalSeats: 3,
         pricePerSeat: '300',
         driverId: login.user.id,
         assuredDepositPercentage: 5,
         assuredDepositAmount: '45',
+        isBookable: true,
       });
+      expect(response.body.assuranceWindowStart).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+      expect(response.body.assuranceWindowEnd).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+      expect(response.body).not.toHaveProperty('assuredQueueId');
+      expect(response.body).not.toHaveProperty('routePolyline');
 
       const hold = await dataSource.getRepository(WalletHold).findOneByOrFail({
         walletId: wallet.id,

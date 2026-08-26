@@ -65,6 +65,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { ASSURED_TEST_ROUTE } from '../rides/test/assured-ride-test.helpers';
 
 describe('Financial audit hardening', () => {
   let app: INestApplication;
@@ -435,6 +436,7 @@ describe('Financial audit hardening', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
+        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Race Source',
         destination: 'Race Dest',

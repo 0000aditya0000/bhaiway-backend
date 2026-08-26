@@ -14,6 +14,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 import { RideType } from '../enums/ride.enums';
@@ -24,7 +25,7 @@ export class CreateRideDto {
     enumName: 'RideType',
     example: RideType.REGULAR,
     description:
-      'REGULAR or ASSURED. ASSURED publishing creates an atomic driver security-deposit hold using the admin deposit percentage.',
+      'REGULAR or ASSURED. ASSURED publishing creates an atomic driver security-deposit hold using the admin deposit percentage. Assured requires source/destination coordinates and Idempotency-Key.',
   })
   @IsEnum(RideType)
   rideType!: RideType;
@@ -47,10 +48,13 @@ export class CreateRideDto {
 
   @ApiPropertyOptional({
     description:
-      'WGS84 latitude of the published source. Provide all four coordinate fields to enable route-corridor search.',
+      'WGS84 latitude of the published source. Required for ASSURED. For REGULAR, provide all four coordinate fields to enable route-corridor search.',
     example: 28.5355,
   })
-  @IsOptional()
+  @ValidateIf(
+    (o: CreateRideDto) =>
+      o.rideType === RideType.ASSURED || o.sourceLatitude !== undefined,
+  )
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 8 })
   @Min(-90)
@@ -58,10 +62,14 @@ export class CreateRideDto {
   sourceLatitude?: number;
 
   @ApiPropertyOptional({
-    description: 'WGS84 longitude of the published source',
+    description:
+      'WGS84 longitude of the published source. Required for ASSURED.',
     example: 77.391,
   })
-  @IsOptional()
+  @ValidateIf(
+    (o: CreateRideDto) =>
+      o.rideType === RideType.ASSURED || o.sourceLongitude !== undefined,
+  )
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 8 })
   @Min(-180)
@@ -69,10 +77,14 @@ export class CreateRideDto {
   sourceLongitude?: number;
 
   @ApiPropertyOptional({
-    description: 'WGS84 latitude of the published destination',
+    description:
+      'WGS84 latitude of the published destination. Required for ASSURED.',
     example: 30.3165,
   })
-  @IsOptional()
+  @ValidateIf(
+    (o: CreateRideDto) =>
+      o.rideType === RideType.ASSURED || o.destinationLatitude !== undefined,
+  )
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 8 })
   @Min(-90)
@@ -80,10 +92,14 @@ export class CreateRideDto {
   destinationLatitude?: number;
 
   @ApiPropertyOptional({
-    description: 'WGS84 longitude of the published destination',
+    description:
+      'WGS84 longitude of the published destination. Required for ASSURED.',
     example: 78.0322,
   })
-  @IsOptional()
+  @ValidateIf(
+    (o: CreateRideDto) =>
+      o.rideType === RideType.ASSURED || o.destinationLongitude !== undefined,
+  )
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 8 })
   @Min(-180)

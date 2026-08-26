@@ -32,6 +32,12 @@ import {
   RideType,
 } from '../rides/enums/ride.enums';
 import {
+  isAssuredBookableStatus,
+  isAssuredPreTripOfferStatus,
+} from './assured-ride-status';
+import { AssuredQueueAdvanceReason } from './enums/assured-queue.enums';
+import { AssuredQueueService } from './assured-queue.service';
+import {
   WalletHold,
   WalletHoldStatus,
 } from '../wallet/entities/wallet-hold.entity';
@@ -79,6 +85,7 @@ export class AssuredLifecycleService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly walletService: WalletService,
+    private readonly assuredQueueService: AssuredQueueService,
     @InjectRepository(Ride)
     private readonly rideRepository: Repository<Ride>,
     @InjectRepository(Booking)
@@ -226,7 +233,7 @@ export class AssuredLifecycleService {
           );
         }
 
-        if (ride.status !== RideStatus.PUBLISHED) {
+        if (!isAssuredBookableStatus(ride.status)) {
           throw new ConflictException(
             `Cannot set regular seats policy from status ${ride.status}`,
           );
@@ -467,7 +474,7 @@ export class AssuredLifecycleService {
         return this.buildRideLifecycleResponse(manager, ride, true);
       }
 
-      if (ride.status !== RideStatus.PUBLISHED) {
+      if (!isAssuredBookableStatus(ride.status)) {
         throw new NotFoundException('Ride not found');
       }
 
@@ -498,11 +505,13 @@ export class AssuredLifecycleService {
       );
     }
 
-    if (ride.status !== RideStatus.PUBLISHED) {
+    if (!isAssuredPreTripOfferStatus(ride.status)) {
       throw new ConflictException(
         `Ride cannot be cancelled from status ${ride.status}`,
       );
     }
+
+    const wasActiveOffer = ride.status === RideStatus.ASSURANCE_ACTIVE;
 
     const now = new Date();
     if (params.timing === 'before_departure') {
@@ -743,6 +752,22 @@ export class AssuredLifecycleService {
     ride.cancelledAt = now;
     await manager.getRepository(Ride).save(ride);
 
+    if (
+      wasActiveOffer &&
+      ride.assuredQueueId &&
+      (params.eventType === AssuredLifecycleEventType.DRIVER_CANCEL ||
+        params.eventType === AssuredLifecycleEventType.DRIVER_NO_SHOW)
+    ) {
+      await this.assuredQueueService.advanceQueueInTransaction(manager, {
+        queueId: ride.assuredQueueId,
+        reason:
+          params.eventType === AssuredLifecycleEventType.DRIVER_CANCEL
+            ? AssuredQueueAdvanceReason.DRIVER_CANCELLED
+            : AssuredQueueAdvanceReason.DRIVER_NO_SHOW,
+        sourceRideId: ride.id,
+      });
+    }
+
     await manager.getRepository(AssuredLifecycleEvent).update(
       { idempotencyKey: params.idempotencyKey },
       {
@@ -855,7 +880,11 @@ export class AssuredLifecycleService {
 
       const now = new Date();
       const seatsRestored = booking.seats;
-      this.restoreSeats(ride, seatsRestored);
+      await this.restoreSeatsForRideInTransaction(
+        manager,
+        ride,
+        seatsRestored,
+      );
       booking.status = BookingStatus.CANCELLED;
       booking.cancellationReason = params.cancellationReason;
       booking.cancelledAt = now;
@@ -968,7 +997,11 @@ export class AssuredLifecycleService {
     }
 
     const seatsRestored = booking.seats;
-    this.restoreSeats(ride, seatsRestored);
+    await this.restoreSeatsForRideInTransaction(
+      manager,
+      ride,
+      seatsRestored,
+    );
     booking.status = BookingStatus.CANCELLED;
     booking.cancellationReason = params.cancellationReason;
     booking.cancelledAt = now;
@@ -1046,6 +1079,30 @@ export class AssuredLifecycleService {
       ride.totalSeats,
       ride.availableSeats + seats,
     );
+  }
+
+  /**
+   * Assured ACTIVE rides must not become a second bookable ACTIVE after seat
+   * restore when another bookable ACTIVE already exists in the geographic queue.
+   */
+  private async restoreSeatsForRideInTransaction(
+    manager: EntityManager,
+    ride: Ride,
+    seats: number,
+  ): Promise<void> {
+    if (
+      ride.rideType === RideType.ASSURED &&
+      ride.status === RideStatus.ASSURANCE_ACTIVE &&
+      ride.assuredQueueId
+    ) {
+      await this.assuredQueueService.restoreSeatsSafelyInTransaction(
+        manager,
+        ride,
+        seats,
+      );
+      return;
+    }
+    this.restoreSeats(ride, seats);
   }
 
   private async lockRide(

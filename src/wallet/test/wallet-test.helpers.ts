@@ -12,6 +12,10 @@ import {
 } from '../entities/wallet-point-lot.entity';
 import { WalletTransaction } from '../entities/wallet-transaction.entity';
 import { Wallet, WalletStatus } from '../entities/wallet.entity';
+import {
+  reconcileBalanceWithLots,
+  sumLotFieldAmounts,
+} from '../wallet-lot-balance.math';
 
 export interface TestWalletContext {
   userId: string;
@@ -156,15 +160,39 @@ export function sumLotAmounts(
   sourceType: WalletPointLot['sourceType'],
   field: 'availableAmount' | 'heldAmount',
 ): bigint {
-  return lots
-    .filter((lot) => lot.sourceType === sourceType)
-    .reduce((total, lot) => total + BigInt(lot[field]), 0n);
+  return sumLotFieldAmounts(lots, sourceType, field);
 }
 
-/** Assert wallet_balances buckets match Σ point-lot amounts per source. */
+/** Credit a test wallet so PAY_LATER / Assured fare settlement can succeed at ride completion. */
+export async function creditTestWalletPoints(
+  walletService: {
+    creditPoints(input: {
+      walletId: string;
+      userId: string;
+      amount: bigint;
+      sourceType: WalletPointSource;
+      idempotencyKey: string;
+    }): Promise<unknown>;
+  },
+  walletId: string,
+  userId: string,
+  amount: bigint,
+  prefix = 'test-fund',
+): Promise<void> {
+  await walletService.creditPoints({
+    walletId,
+    userId,
+    amount,
+    sourceType: WalletPointSource.PURCHASED,
+    idempotencyKey: uniqueIdempotencyKey(prefix),
+  });
+}
+
+/** Assert wallet_balances buckets match spendable lot totals per source. */
 export async function assertWalletBalanceMatchesLots(
   dataSource: DataSource,
   walletId: string,
+  now: Date = new Date(),
 ): Promise<void> {
   const balance = await dataSource
     .getRepository(WalletBalance)
@@ -173,22 +201,7 @@ export async function assertWalletBalanceMatchesLots(
     where: { walletId },
   });
 
-  expect(BigInt(balance.purchasedAvailable)).toBe(
-    sumLotAmounts(lots, WalletPointSource.PURCHASED, 'availableAmount'),
-  );
-  expect(BigInt(balance.promotionalAvailable)).toBe(
-    sumLotAmounts(lots, WalletPointSource.PROMOTIONAL, 'availableAmount'),
-  );
-  expect(BigInt(balance.driverEarnedAvailable)).toBe(
-    sumLotAmounts(lots, WalletPointSource.DRIVER_EARNED, 'availableAmount'),
-  );
-  expect(BigInt(balance.purchasedHeld)).toBe(
-    sumLotAmounts(lots, WalletPointSource.PURCHASED, 'heldAmount'),
-  );
-  expect(BigInt(balance.promotionalHeld)).toBe(
-    sumLotAmounts(lots, WalletPointSource.PROMOTIONAL, 'heldAmount'),
-  );
-  expect(BigInt(balance.driverEarnedHeld)).toBe(
-    sumLotAmounts(lots, WalletPointSource.DRIVER_EARNED, 'heldAmount'),
-  );
+  const result = reconcileBalanceWithLots(balance, lots, now);
+  expect(result.ok).toBe(true);
+  expect(result.drift).toEqual([]);
 }

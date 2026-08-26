@@ -26,9 +26,11 @@ import { VehiclesService } from '../vehicles/vehicles.service';
 import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { WalletModule } from '../wallet/wallet.module';
+import { WalletService } from '../wallet/wallet.service';
 import {
   assertSafeTestDatabaseUrl,
   cleanupTestWallet,
+  creditTestWalletPoints,
   TestWalletContext,
 } from '../wallet/test/wallet-test.helpers';
 import { Ride } from '../rides/entities/ride.entity';
@@ -44,6 +46,7 @@ describe('Tracking (integration — Redis)', () => {
   let authService: AuthService;
   let verificationService: VerificationService;
   let vehiclesService: VehiclesService;
+  let walletService: WalletService;
   let redis: Redis;
   const tracked: TestWalletContext[] = [];
   const rideIds: string[] = [];
@@ -95,6 +98,7 @@ describe('Tracking (integration — Redis)', () => {
     authService = moduleRef.get(AuthService);
     verificationService = moduleRef.get(VerificationService);
     vehiclesService = moduleRef.get(VehiclesService);
+    walletService = moduleRef.get(WalletService);
 
     redis = new Redis({
       host: process.env.REDIS_HOST ?? 'localhost',
@@ -222,6 +226,16 @@ describe('Tracking (integration — Redis)', () => {
   async function verifiedPassenger() {
     const login = await createAuthenticatedUser();
     await markVerified(login.user.id, VerificationType.IDENTITY);
+    const wallet = await dataSource.getRepository(Wallet).findOneByOrFail({
+      userId: login.user.id,
+    });
+    await creditTestWalletPoints(
+      walletService,
+      wallet.id,
+      login.user.id,
+      10000n,
+      'tracking-passenger',
+    );
     return login;
   }
 
