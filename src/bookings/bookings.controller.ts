@@ -56,18 +56,24 @@ export class BookingsController {
   @ApiOperation({
     summary: 'Create a booking (PAY_LATER, PAY_NOW, or ASSURED_DEPOSIT)',
     description:
-      'REGULAR rides: PAY_LATER or PAY_NOW. ASSURED rides: ASSURED_DEPOSIT creates an ACTIVE security-deposit hold (fare UNPAID). After ALLOW_REGULAR_RIDERS, remaining seats may use PAY_NOW/PAY_LATER without Assured deposit (bookingMode REGULAR). NEXT_ASSURED_DEPOSIT_FREE coupons make the next Assured deposit 0 atomically.',
+      'REGULAR rides: PAY_NOW or PAY_LATER (farePayment must be omitted). ' +
+      'ASSURED rides with paymentMethod=ASSURED_DEPOSIT: mandatory security-deposit wallet HOLD; ' +
+      'optional farePayment=PAY_NOW|PAY_LATER (defaults to PAY_LATER when omitted). ' +
+      'ASSURED_DEPOSIT + PAY_LATER → deposit held, fare UNPAID. ' +
+      'ASSURED_DEPOSIT + PAY_NOW → deposit held and fare debited atomically (fare PAID). ' +
+      'Assured rides cannot use PAY_NOW/PAY_LATER without deposit unless the driver has opened remaining seats (ALLOW_REGULAR_RIDERS). ' +
+      'Insufficient balance returns 422. Idempotency-Key is required for PAY_NOW and ASSURED_DEPOSIT.',
   })
   @ApiHeader({
     name: 'Idempotency-Key',
     required: false,
     description:
-      'Required for PAY_NOW and ASSURED_DEPOSIT. Reused safely on retries.',
+      'Required for PAY_NOW and ASSURED_DEPOSIT. Reused safely on retries. Changing farePayment with the same key is rejected.',
   })
   @ApiCreatedResponse({ type: BookingResponseDto })
   @ApiBadRequestResponse({
     description:
-      'Validation failed, ride not published, missing Idempotency-Key, or invalid payment method',
+      'Validation failed, ride not published, missing Idempotency-Key, invalid payment method, or farePayment used without ASSURED_DEPOSIT',
   })
   @ApiForbiddenResponse({
     description:
@@ -76,10 +82,11 @@ export class BookingsController {
   @ApiNotFoundResponse({ description: 'Ride or wallet not found' })
   @ApiConflictResponse({
     description:
-      'Insufficient seats, duplicate active booking, or Regular booking blocked before ALLOW_REGULAR_RIDERS',
+      'Insufficient seats, duplicate active booking, Regular booking blocked before ALLOW_REGULAR_RIDERS, or idempotency key reused with a different payload',
   })
   @ApiUnprocessableEntityResponse({
-    description: 'Insufficient wallet balance',
+    description:
+      'Insufficient wallet balance (deposit only for PAY_LATER; deposit + fare for PAY_NOW)',
   })
   create(
     @CurrentUser() currentUser: AuthenticatedUser,

@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { RideStatus, RideType } from '../../rides/enums/ride.enums';
 import {
+  BookingFarePayment,
   BookingPaymentMethod,
   BookingPaymentStatus,
   BookingPickupStatus,
@@ -96,8 +97,32 @@ export class BookingResponseDto {
   @ApiProperty({
     enum: BookingPaymentStatus,
     enumName: 'BookingPaymentStatus',
+    description: 'Fare payment status (deposit hold is independent)',
   })
   paymentStatus!: BookingPaymentStatus;
+
+  @ApiPropertyOptional({
+    enum: BookingFarePayment,
+    enumName: 'BookingFarePayment',
+    nullable: true,
+    description:
+      'Assured fare choice when paymentMethod=ASSURED_DEPOSIT. Null for Regular bookings.',
+  })
+  farePayment?: BookingFarePayment | null;
+
+  @ApiPropertyOptional({
+    enum: BookingPaymentStatus,
+    enumName: 'BookingPaymentStatus',
+    description:
+      'Explicit fare payment status (same as paymentStatus). Additive for mobile Assured deposit UX.',
+  })
+  farePaymentStatus?: BookingPaymentStatus;
+
+  @ApiPropertyOptional({
+    description: 'Ride fare amount in points (same as totalAmount)',
+    example: '700',
+  })
+  fareAmount?: string;
 
   @ApiProperty({
     description: 'Integer points per seat snapshot (1 point = ₹1)',
@@ -124,6 +149,14 @@ export class BookingResponseDto {
     example: 5,
   })
   securityDepositPercentage?: number | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Assured security deposit hold state. HELD when an ACTIVE wallet hold exists; NONE when Assured deposit was 0/waived; null for Regular.',
+    enum: ['HELD', 'NONE'],
+    nullable: true,
+  })
+  securityDepositStatus?: 'HELD' | 'NONE' | null;
 
   @ApiPropertyOptional({
     description: 'Whether Assured deposit rules or Regular fare rules applied',

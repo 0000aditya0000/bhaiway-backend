@@ -17,6 +17,7 @@ import { BookingsModule } from '../bookings/bookings.module';
 import { BookingsService } from '../bookings/bookings.service';
 import { Booking } from '../bookings/entities/booking.entity';
 import {
+  BookingFarePayment,
   BookingPaymentMethod,
   BookingPaymentStatus,
 } from '../bookings/enums/booking.enums';
@@ -57,7 +58,7 @@ import {
 import { WalletModule } from '../wallet/wallet.module';
 import { WalletService } from '../wallet/wallet.service';
 import { Ride } from './entities/ride.entity';
-import { RideType } from './enums/ride.enums';
+import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
 import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
 
@@ -471,9 +472,13 @@ describe('Assured deposit Phase 2 (integration)', () => {
     expect(ok.body).toMatchObject({
       paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
       paymentStatus: BookingPaymentStatus.UNPAID,
+      farePayment: BookingFarePayment.PAY_LATER,
+      farePaymentStatus: BookingPaymentStatus.UNPAID,
       securityDepositAmount: '25',
       securityDepositPercentage: 5,
+      securityDepositStatus: 'HELD',
       totalAmount: '500',
+      fareAmount: '500',
     });
 
     await settingsService.setAssuredRideDepositPercentage(7);
@@ -654,5 +659,441 @@ describe('Assured deposit Phase 2 (integration)', () => {
       id: ride.body.id,
     });
     expect(rideRow.availableSeats).toBe(0);
+  });
+
+  describe('Assured farePayment (deposit + fare)', () => {
+    async function publishAssuredRide(
+      driver: Awaited<ReturnType<typeof fundedDriver>>,
+      overrides: Record<string, unknown> = {},
+    ) {
+      const res = await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .send({
+          rideType: RideType.ASSURED,
+          ...ASSURED_TEST_ROUTE,
+          vehicleId: driver.vehicle.id,
+          source: 'FarePay Source',
+          destination: 'FarePay Dest',
+          departureDate: '2026-11-15',
+          departureTime: '10:00',
+          totalSeats: 2,
+          pricePerSeat: 500,
+          ...overrides,
+        })
+        .expect(201);
+      return res.body as { id: string; availableSeats: number };
+    }
+
+    it('ASSURED_DEPOSIT without farePayment defaults to PAY_LATER', async () => {
+      const driver = await fundedDriver();
+      const passenger = await fundedPassenger(500n);
+      const ride = await publishAssuredRide(driver);
+
+      const booked = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('fare-default'))
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+        })
+        .expect(201);
+
+      expect(booked.body.farePayment).toBe(BookingFarePayment.PAY_LATER);
+      expect(booked.body.paymentStatus).toBe(BookingPaymentStatus.UNPAID);
+      expect(booked.body.securityDepositStatus).toBe('HELD');
+      expect(
+        await dataSource.getRepository(WalletTransaction).count({
+          where: {
+            walletId: passenger.wallet.id,
+            transactionType: WalletTransactionType.BOOKING_PAYMENT,
+          },
+        }),
+      ).toBe(0);
+    });
+
+    it('ASSURED_DEPOSIT + PAY_LATER holds deposit and leaves fare UNPAID', async () => {
+      const driver = await fundedDriver();
+      const passenger = await fundedPassenger(500n);
+      const ride = await publishAssuredRide(driver);
+
+      const booked = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('fare-later'))
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+          farePayment: BookingFarePayment.PAY_LATER,
+        })
+        .expect(201);
+
+      expect(booked.body).toMatchObject({
+        farePayment: BookingFarePayment.PAY_LATER,
+        paymentStatus: BookingPaymentStatus.UNPAID,
+        farePaymentStatus: BookingPaymentStatus.UNPAID,
+        securityDepositAmount: '25',
+        securityDepositStatus: 'HELD',
+        fareAmount: '500',
+      });
+
+      const row = await dataSource.getRepository(Booking).findOneByOrFail({
+        id: booked.body.id,
+      });
+      expect(row.farePaymentMethod).toBe(BookingFarePayment.PAY_LATER);
+      expect(row.fareWalletTransactionId).toBeNull();
+      expect(row.walletHoldId).toBeTruthy();
+    });
+
+    it('ASSURED_DEPOSIT + PAY_NOW holds deposit and debits fare', async () => {
+      const driver = await fundedDriver();
+      const passenger = await fundedPassenger(600n);
+      const ride = await publishAssuredRide(driver);
+
+      const booked = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('fare-now'))
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+          farePayment: BookingFarePayment.PAY_NOW,
+        })
+        .expect(201);
+
+      expect(booked.body).toMatchObject({
+        farePayment: BookingFarePayment.PAY_NOW,
+        paymentStatus: BookingPaymentStatus.PAID,
+        farePaymentStatus: BookingPaymentStatus.PAID,
+        securityDepositAmount: '25',
+        securityDepositStatus: 'HELD',
+        fareAmount: '500',
+      });
+
+      expect(
+        await dataSource.getRepository(WalletHold).count({
+          where: { walletId: passenger.wallet.id },
+        }),
+      ).toBe(1);
+      expect(
+        await dataSource.getRepository(WalletTransaction).count({
+          where: {
+            walletId: passenger.wallet.id,
+            transactionType: WalletTransactionType.ASSURED_DEPOSIT_HOLD,
+          },
+        }),
+      ).toBe(1);
+      expect(
+        await dataSource.getRepository(WalletTransaction).count({
+          where: {
+            walletId: passenger.wallet.id,
+            transactionType: WalletTransactionType.BOOKING_PAYMENT,
+          },
+        }),
+      ).toBe(1);
+
+      const balance = await dataSource
+        .getRepository(WalletBalance)
+        .findOneByOrFail({ walletId: passenger.wallet.id });
+      // 600 - 25 hold - 500 fare = 75 available; 25 held
+      expect(balance.purchasedAvailable).toBe('75');
+      expect(balance.purchasedHeld).toBe('25');
+    });
+
+    it('rejects Assured PAY_NOW / PAY_LATER without deposit semantics', async () => {
+      const driver = await fundedDriver();
+      const passenger = await fundedPassenger(1000n);
+      const ride = await publishAssuredRide(driver);
+
+      await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('no-dep-now'))
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.PAY_NOW,
+        })
+        .expect(409);
+
+      await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.PAY_LATER,
+        })
+        .expect(409);
+    });
+
+    it('rejects farePayment on Regular payment methods', async () => {
+      const driver = await fundedDriver();
+      const passenger = await fundedPassenger(1000n);
+      const regular = await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .send({
+          rideType: RideType.REGULAR,
+          vehicleId: driver.vehicle.id,
+          source: 'Reg Source',
+          destination: 'Reg Dest',
+          departureDate: '2026-11-16',
+          departureTime: '11:00',
+          totalSeats: 3,
+          pricePerSeat: 200,
+        })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('reg-fare'))
+        .send({
+          rideId: regular.body.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.PAY_NOW,
+          farePayment: BookingFarePayment.PAY_NOW,
+        })
+        .expect(400);
+    });
+
+    it('insufficient balance for PAY_LATER deposit rejects without wallet mutation', async () => {
+      const driver = await fundedDriver();
+      const passenger = await fundedPassenger(10n);
+      const ride = await publishAssuredRide(driver);
+
+      await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('insuf-later'))
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+          farePayment: BookingFarePayment.PAY_LATER,
+        })
+        .expect(422);
+
+      expect(
+        await dataSource.getRepository(WalletHold).count({
+          where: { walletId: passenger.wallet.id },
+        }),
+      ).toBe(0);
+      expect(
+        await dataSource.getRepository(Booking).count({
+          where: { rideId: ride.id },
+        }),
+      ).toBe(0);
+    });
+
+    it('insufficient balance for PAY_NOW deposit+fare rejects without partial mutation', async () => {
+      const driver = await fundedDriver();
+      // Enough for deposit (25) but not deposit+fare (525)
+      const passenger = await fundedPassenger(100n);
+      const ride = await publishAssuredRide(driver);
+
+      await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('insuf-now'))
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+          farePayment: BookingFarePayment.PAY_NOW,
+        })
+        .expect(422);
+
+      expect(
+        await dataSource.getRepository(WalletHold).count({
+          where: { walletId: passenger.wallet.id },
+        }),
+      ).toBe(0);
+      expect(
+        await dataSource.getRepository(WalletTransaction).count({
+          where: { walletId: passenger.wallet.id },
+        }),
+      ).toBe(1); // only the initial credit
+      expect(
+        await dataSource.getRepository(Booking).count({
+          where: { rideId: ride.id },
+        }),
+      ).toBe(0);
+      const rideRow = await dataSource.getRepository(Ride).findOneByOrFail({
+        id: ride.id,
+      });
+      expect(rideRow.availableSeats).toBe(2);
+    });
+
+    it('idempotent Assured PAY_NOW retry does not double debit or hold', async () => {
+      const driver = await fundedDriver();
+      const passenger = await fundedPassenger(1000n);
+      const ride = await publishAssuredRide(driver);
+      const key = uniqueIdempotencyKey('idem-now');
+
+      const first = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', key)
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+          farePayment: BookingFarePayment.PAY_NOW,
+        })
+        .expect(201);
+
+      const retry = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', key)
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+          farePayment: BookingFarePayment.PAY_NOW,
+        })
+        .expect(201);
+
+      expect(retry.body.id).toBe(first.body.id);
+      expect(
+        await dataSource.getRepository(Booking).count({
+          where: { rideId: ride.id },
+        }),
+      ).toBe(1);
+      expect(
+        await dataSource.getRepository(WalletHold).count({
+          where: { walletId: passenger.wallet.id },
+        }),
+      ).toBe(1);
+      expect(
+        await dataSource.getRepository(WalletTransaction).count({
+          where: {
+            walletId: passenger.wallet.id,
+            transactionType: WalletTransactionType.BOOKING_PAYMENT,
+          },
+        }),
+      ).toBe(1);
+    });
+
+    it('same idempotency key with changed farePayment is rejected', async () => {
+      const driver = await fundedDriver();
+      const passenger = await fundedPassenger(1000n);
+      const ride = await publishAssuredRide(driver);
+      const key = uniqueIdempotencyKey('idem-change');
+
+      await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', key)
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+          farePayment: BookingFarePayment.PAY_LATER,
+        })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', key)
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+          farePayment: BookingFarePayment.PAY_NOW,
+        })
+        .expect(409);
+    });
+
+    it('final seat PAY_NOW still promotes next PENDING Assured ride', async () => {
+      const d1 = await fundedDriver();
+      const d2 = await fundedDriver();
+      const passenger = await fundedPassenger(2000n);
+
+      const active = await publishAssuredRide(d1, {
+        totalSeats: 1,
+        departureTime: '14:10',
+      });
+      const pending = await publishAssuredRide(d2, {
+        totalSeats: 2,
+        departureTime: '14:40',
+      });
+
+      const pendingBefore = await dataSource
+        .getRepository(Ride)
+        .findOneByOrFail({ id: pending.id });
+      expect(pendingBefore.status).toBe(RideStatus.ASSURANCE_PENDING);
+
+      await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('full-now'))
+        .send({
+          rideId: active.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+          farePayment: BookingFarePayment.PAY_NOW,
+        })
+        .expect(201);
+
+      const [activeAfter, pendingAfter] = await Promise.all([
+        dataSource.getRepository(Ride).findOneByOrFail({ id: active.id }),
+        dataSource.getRepository(Ride).findOneByOrFail({ id: pending.id }),
+      ]);
+      expect(activeAfter.availableSeats).toBe(0);
+      expect(pendingAfter.status).toBe(RideStatus.ASSURANCE_ACTIVE);
+    });
+
+    it('Regular PAY_NOW and PAY_LATER remain unchanged', async () => {
+      const driver = await fundedDriver();
+      const p1 = await fundedPassenger(1000n);
+      const p2 = await fundedPassenger(1000n);
+      const regular = await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .send({
+          rideType: RideType.REGULAR,
+          vehicleId: driver.vehicle.id,
+          source: 'Compat Source',
+          destination: 'Compat Dest',
+          departureDate: '2026-11-17',
+          departureTime: '12:00',
+          totalSeats: 3,
+          pricePerSeat: 200,
+        })
+        .expect(201);
+
+      const later = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${p1.login.accessToken}`)
+        .send({
+          rideId: regular.body.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.PAY_LATER,
+        })
+        .expect(201);
+      expect(later.body.paymentStatus).toBe(BookingPaymentStatus.UNPAID);
+      expect(later.body.farePayment).toBeNull();
+
+      const now = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${p2.login.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('reg-now-ok'))
+        .send({
+          rideId: regular.body.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.PAY_NOW,
+        })
+        .expect(201);
+      expect(now.body.paymentStatus).toBe(BookingPaymentStatus.PAID);
+      expect(now.body.farePayment).toBeNull();
+    });
   });
 });

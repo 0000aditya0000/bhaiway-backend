@@ -11,6 +11,15 @@ export enum BookingPaymentMethod {
   ASSURED_DEPOSIT = 'ASSURED_DEPOSIT',
 }
 
+/**
+ * Assured fare choice independent of the mandatory security deposit.
+ * Only meaningful when paymentMethod === ASSURED_DEPOSIT.
+ */
+export enum BookingFarePayment {
+  PAY_NOW = 'PAY_NOW',
+  PAY_LATER = 'PAY_LATER',
+}
+
 export enum BookingPaymentStatus {
   UNPAID = 'UNPAID',
   PAID = 'PAID',

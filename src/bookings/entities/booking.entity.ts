@@ -17,6 +17,7 @@ import { User } from '../../users/entities/user.entity';
 import { WalletTransaction } from '../../wallet/entities/wallet-transaction.entity';
 import {
   BookingCancellationReason,
+  BookingFarePayment,
   BookingMode,
   BookingPaymentMethod,
   BookingPaymentStatus,
@@ -98,6 +99,18 @@ export class Booking {
   })
   paymentStatus!: BookingPaymentStatus;
 
+  /**
+   * Assured fare choice (PAY_NOW | PAY_LATER) when paymentMethod is ASSURED_DEPOSIT.
+   * Null for Regular bookings.
+   */
+  @Column({
+    name: 'fare_payment_method',
+    type: 'enum',
+    enum: BookingFarePayment,
+    nullable: true,
+  })
+  farePaymentMethod!: BookingFarePayment | null;
+
   /** Ride price at booking time (integer points). */
   @Column({
     name: 'price_per_seat_snapshot',
@@ -161,6 +174,17 @@ export class Booking {
     nullable: true,
   })
   walletHoldId!: string | null;
+
+  /**
+   * Assured PAY_NOW fare debit ledger row. Distinct from wallet_transaction_id
+   * (which remains the Assured deposit-hold ledger for Assured bookings).
+   */
+  @Column({
+    name: 'fare_wallet_transaction_id',
+    type: 'uuid',
+    nullable: true,
+  })
+  fareWalletTransactionId!: string | null;
 
   /** Snapshot of Assured vs Regular rules that applied at booking time. */
   @Column({

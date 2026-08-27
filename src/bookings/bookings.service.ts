@@ -80,6 +80,7 @@ import {
 import { VerifyPickupResponseDto } from './dto/verify-pickup-response.dto';
 import { Booking } from './entities/booking.entity';
 import {
+  BookingFarePayment,
   BookingMode,
   BookingPaymentMethod,
   BookingPaymentStatus,
@@ -276,6 +277,7 @@ export class BookingsService {
     options: CreateBookingOptions = {},
   ): Promise<BookingResponseDto> {
     await this.assertPassengerCanBook(passengerId);
+    this.assertFarePaymentCompatibility(dto);
 
     const ridePreview = await this.rideRepository.findOne({
       where: { id: dto.rideId },
@@ -324,6 +326,27 @@ export class BookingsService {
     throw new BadRequestException('Invalid payment method');
   }
 
+  /**
+   * farePayment is only valid with Assured ASSURED_DEPOSIT bookings.
+   * Regular payment methods must not carry farePayment.
+   */
+  private assertFarePaymentCompatibility(dto: CreateBookingDto): void {
+    if (dto.farePayment === undefined) {
+      return;
+    }
+    if (dto.paymentMethod !== BookingPaymentMethod.ASSURED_DEPOSIT) {
+      throw new BadRequestException(
+        'farePayment is only allowed when paymentMethod is ASSURED_DEPOSIT',
+      );
+    }
+  }
+
+  private resolveAssuredFarePayment(
+    dto: CreateBookingDto,
+  ): BookingFarePayment {
+    return dto.farePayment ?? BookingFarePayment.PAY_LATER;
+  }
+
   private async createPayLater(
     passengerId: string,
     dto: CreateBookingDto,
@@ -365,6 +388,7 @@ export class BookingsService {
           status: BookingStatus.CONFIRMED,
           paymentMethod: BookingPaymentMethod.PAY_LATER,
           paymentStatus: BookingPaymentStatus.UNPAID,
+          farePaymentMethod: null,
           pricePerSeatSnapshot,
           totalAmount,
           idempotencyKey: null,
@@ -372,6 +396,7 @@ export class BookingsService {
           assuredDepositPercentage: null,
           assuredDepositAmount: null,
           walletHoldId: null,
+          fareWalletTransactionId: null,
           bookingMode: BookingMode.REGULAR,
           depositCouponId: null,
           ...(await pickupFields),
@@ -481,6 +506,7 @@ export class BookingsService {
           status: BookingStatus.CONFIRMED,
           paymentMethod: BookingPaymentMethod.PAY_NOW,
           paymentStatus: BookingPaymentStatus.PAID,
+          farePaymentMethod: null,
           pricePerSeatSnapshot,
           totalAmount,
           idempotencyKey: key,
@@ -488,6 +514,7 @@ export class BookingsService {
           assuredDepositPercentage: null,
           assuredDepositAmount: null,
           walletHoldId: null,
+          fareWalletTransactionId: null,
           bookingMode: BookingMode.REGULAR,
           depositCouponId: null,
           ...pickupFields,
@@ -534,8 +561,9 @@ export class BookingsService {
   }
 
   /**
-   * Assured rider deposit: Ride → Wallet → Balance → Lots → Booking.
-   * Fare remains UNPAID; security deposit is a separate ACTIVE hold.
+   * Assured rider booking: mandatory security-deposit HOLD, optional fare debit.
+   * ASSURED_DEPOSIT + PAY_LATER (default): hold only, fare UNPAID.
+   * ASSURED_DEPOSIT + PAY_NOW: hold then fare debit in the same wallet TX.
    */
   private async createAssuredDepositBooking(
     passengerId: string,
@@ -549,6 +577,7 @@ export class BookingsService {
     }
 
     const key = idempotencyKey.trim();
+    const farePayment = this.resolveAssuredFarePayment(dto);
 
     const existing = await this.bookingRepository.findOne({
       where: { idempotencyKey: key },
@@ -594,6 +623,7 @@ export class BookingsService {
           pricePerSeatSnapshot,
           dto.seats,
         );
+        const fareAmount = BigInt(totalAmount);
         const bookingId = randomUUID();
 
         const coupon = await this.lockUnusedDepositCoupon(
@@ -633,6 +663,27 @@ export class BookingsService {
           walletTransactionId = holdResult.transaction.id;
         }
 
+        let fareWalletTransactionId: string | null = null;
+        let paymentStatus = BookingPaymentStatus.UNPAID;
+        if (farePayment === BookingFarePayment.PAY_NOW) {
+          if (fareAmount > 0n) {
+            const debit = await this.walletService.debitPointsInTransaction(
+              manager,
+              {
+                walletId: wallet.id,
+                userId: passengerId,
+                amount: fareAmount,
+                referenceType: 'BOOKING',
+                referenceId: bookingId,
+                // Distinct from deposit hold key (unique wallet ledger constraint).
+                idempotencyKey: `${key}:fare`,
+              },
+            );
+            fareWalletTransactionId = debit.transaction.id;
+          }
+          paymentStatus = BookingPaymentStatus.PAID;
+        }
+
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
         await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
@@ -644,7 +695,8 @@ export class BookingsService {
           seats: dto.seats,
           status: BookingStatus.CONFIRMED,
           paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
-          paymentStatus: BookingPaymentStatus.UNPAID,
+          paymentStatus,
+          farePaymentMethod: farePayment,
           pricePerSeatSnapshot,
           totalAmount,
           idempotencyKey: key,
@@ -652,6 +704,7 @@ export class BookingsService {
           assuredDepositPercentage: percentage,
           assuredDepositAmount: depositAmount.toString(),
           walletHoldId,
+          fareWalletTransactionId,
           bookingMode: BookingMode.ASSURED,
           depositCouponId,
         });
@@ -1104,10 +1157,37 @@ export class BookingsService {
         'Idempotency key was reused for a different booking request',
       );
     }
+
+    if (dto.paymentMethod === BookingPaymentMethod.ASSURED_DEPOSIT) {
+      const requestedFare = this.resolveAssuredFarePayment(dto);
+      const existingFare =
+        existing.farePaymentMethod ?? BookingFarePayment.PAY_LATER;
+      if (existingFare !== requestedFare) {
+        throw new ConflictException(
+          'Idempotency key was reused for a different Assured farePayment choice',
+        );
+      }
+    } else if (dto.farePayment !== undefined) {
+      throw new ConflictException(
+        'Idempotency key was reused for a different booking request',
+      );
+    }
   }
 
   private multiplyPoints(pricePerSeat: string, seats: number): string {
     return (BigInt(pricePerSeat) * BigInt(seats)).toString();
+  }
+
+  private resolveSecurityDepositStatus(
+    booking: Booking,
+  ): 'HELD' | 'NONE' | null {
+    if (booking.bookingMode !== BookingMode.ASSURED) {
+      return null;
+    }
+    if (booking.walletHoldId) {
+      return 'HELD';
+    }
+    return 'NONE';
   }
 
   private async toResponseWithDriver(
@@ -1377,10 +1457,14 @@ export class BookingsService {
       status: booking.status,
       paymentMethod: booking.paymentMethod,
       paymentStatus: booking.paymentStatus,
+      farePayment: booking.farePaymentMethod,
+      farePaymentStatus: booking.paymentStatus,
+      fareAmount: booking.totalAmount,
       pricePerSeatSnapshot: booking.pricePerSeatSnapshot,
       totalAmount: booking.totalAmount,
       securityDepositAmount: booking.assuredDepositAmount,
       securityDepositPercentage: booking.assuredDepositPercentage,
+      securityDepositStatus: this.resolveSecurityDepositStatus(booking),
       bookingMode: booking.bookingMode,
       pickupStatus: booking.pickupStatus,
       pickupOtp: includeOtp
