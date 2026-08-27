@@ -594,6 +594,8 @@ describe('Rides search (integration)', () => {
     expect(publicView.body.id).toBe(ride.id);
     expect(publicView.body.driver.phone).toBeUndefined();
     expect(publicView.body.vehicle.documentUrl).toBeUndefined();
+    expect(publicView.body.assuredDepositAmount).toBeNull();
+    expect(publicView.body.assuredDepositPercentage).toBeNull();
 
     await dataSource.getRepository(Ride).update(
       { id: ride.id },

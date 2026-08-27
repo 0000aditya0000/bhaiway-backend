@@ -155,7 +155,7 @@ export class RidesController {
   @ApiOperation({
     summary: 'Passenger-facing public ride detail',
     description:
-      'Returns safe public fields for a passenger-visible ride (REGULAR: PUBLISHED; ASSURED: ASSURANCE_ACTIVE with seats). Does not change owner-only GET /rides/:id behavior. Does not expose phones, emails, wallet, or verification documents.',
+      'Returns safe public fields for a passenger-visible ride (REGULAR: PUBLISHED; ASSURED: ASSURANCE_ACTIVE with seats). Assured rides include assuredDepositAmount and assuredDepositPercentage from the publish-time snapshot. Does not change owner-only GET /rides/:id behavior. Does not expose phones, emails, wallet, or verification documents.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: RideSearchItemDto })

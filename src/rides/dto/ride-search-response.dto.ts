@@ -99,6 +99,22 @@ export class RideSearchItemDto {
   @ApiPropertyOptional({ nullable: true })
   notes!: string | null;
 
+  @ApiPropertyOptional({
+    description:
+      'Assured ride security-deposit percentage snapshot from publish. Null for Regular rides.',
+    nullable: true,
+    example: 5,
+  })
+  assuredDepositPercentage?: number | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Assured ride security-deposit amount in points from publish (totalSeats × pricePerSeat × percentage). Null for Regular rides. Rider booking deposit for N seats is computed separately at booking time.',
+    nullable: true,
+    example: '105',
+  })
+  assuredDepositAmount?: string | null;
+
   @ApiProperty({ type: RideSearchDriverDto })
   driver!: RideSearchDriverDto;
 

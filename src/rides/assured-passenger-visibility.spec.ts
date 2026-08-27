@@ -368,9 +368,10 @@ describe('Assured passenger search visibility', () => {
     expect(res.body.items[0].status).toBe(RideStatus.PUBLISHED);
   });
 
-  it('G: GET /rides/public/:id returns Assured ACTIVE details', async () => {
+  it('G: GET /rides/public/:id returns Assured ACTIVE details with deposit snapshot', async () => {
     const passenger = await verifiedPassenger(0n);
     const { login, vehicle } = await publishableDriver();
+    // Default payload: totalSeats=4, pricePerSeat=300 → 4×300×5% = 60
     const created = await publishAssured(login.accessToken, vehicle.id);
 
     const detail = await request(app.getHttpServer())
@@ -380,6 +381,74 @@ describe('Assured passenger search visibility', () => {
 
     expect(detail.body.id).toBe(created.body.id);
     expect(detail.body.status).toBe(RideStatus.ASSURANCE_ACTIVE);
+    expect(detail.body.assuredDepositPercentage).toBe(5);
+    expect(detail.body.assuredDepositAmount).toBe('60');
+  });
+
+  it('G2: public Assured detail returns ₹5 deposit for ₹100 fare (1 seat, 5%)', async () => {
+    const passenger = await verifiedPassenger(0n);
+    const { login, vehicle } = await publishableDriver();
+    const created = await publishAssured(login.accessToken, vehicle.id, {
+      totalSeats: 1,
+      pricePerSeat: 100,
+      departureTime: '10:00',
+    });
+
+    const detail = await request(app.getHttpServer())
+      .get(`/rides/public/${created.body.id}`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+
+    expect(detail.body.assuredDepositPercentage).toBe(5);
+    expect(detail.body.assuredDepositAmount).toBe('5');
+    expect(detail.body.pricePerSeat).toBe('100');
+  });
+
+  it('G3: public Assured detail returns ₹105 deposit for ₹700 × 3 seats at 5%', async () => {
+    const passenger = await verifiedPassenger(0n);
+    const { login, vehicle } = await publishableDriver();
+    const created = await publishAssured(login.accessToken, vehicle.id, {
+      totalSeats: 3,
+      pricePerSeat: 700,
+      departureTime: '11:00',
+    });
+
+    const detail = await request(app.getHttpServer())
+      .get(`/rides/public/${created.body.id}`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+
+    expect(detail.body.assuredDepositPercentage).toBe(5);
+    expect(detail.body.assuredDepositAmount).toBe('105');
+  });
+
+  it('G4: Regular public detail does not expose Assured deposit amounts', async () => {
+    const passenger = await verifiedPassenger(0n);
+    const { login, vehicle } = await publishableDriver();
+
+    const regular = await request(app.getHttpServer())
+      .post('/rides')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        rideType: RideType.REGULAR,
+        vehicleId: vehicle.id,
+        source: 'Noida Visibility Hub',
+        destination: 'Delhi Visibility Dest',
+        departureDate: '2026-12-01',
+        departureTime: '07:30',
+        totalSeats: 3,
+        pricePerSeat: 200,
+      })
+      .expect(201);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/rides/public/${regular.body.id}`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+
+    expect(detail.body.rideType).toBe(RideType.REGULAR);
+    expect(detail.body.assuredDepositAmount).toBeNull();
+    expect(detail.body.assuredDepositPercentage).toBeNull();
   });
 
   it('H: GET /rides/public/:id for Assured PENDING returns 404', async () => {

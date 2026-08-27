@@ -1918,6 +1918,14 @@ export class RidesService {
           luggageAllowed: ride.luggageAllowed,
         },
         notes: ride.notes,
+        assuredDepositPercentage:
+          ride.rideType === RideType.ASSURED
+            ? ride.assuredDepositPercentage
+            : null,
+        assuredDepositAmount:
+          ride.rideType === RideType.ASSURED
+            ? ride.assuredDepositAmount
+            : null,
         driver: {
           id: ride.driverId,
           displayName: profile?.displayName ?? profile?.firstName ?? null,
