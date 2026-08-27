@@ -25,6 +25,7 @@ import { AssuredLifecycleService } from '../assured/assured-lifecycle.service';
 import { AssuredQueueService } from '../assured/assured-queue.service';
 import {
   assertRideStartableForType,
+  isAssuredBookableStatus,
   isAssuredPreTripOfferStatus,
   isAssuredSearchVisibleOffer,
   isRegularPublishedStatus,
@@ -1062,10 +1063,10 @@ export class RidesService {
             },
           )
           .orWhere(
-            '(ride.ride_type = :assuredType AND ride.status = :assuranceActiveStatus AND ride.available_seats > 0)',
+            '(ride.ride_type = :assuredType AND ride.status = :assuredActiveStatus AND ride.available_seats > 0)',
             {
               assuredType: RideType.ASSURED,
-              assuranceActiveStatus: RideStatus.ASSURANCE_ACTIVE,
+              assuredActiveStatus: RideStatus.ASSURANCE_ACTIVE,
             },
           );
       }),
@@ -1902,6 +1903,7 @@ export class RidesService {
       return {
         id: ride.id,
         rideType: ride.rideType,
+        status: ride.status,
         source: ride.source,
         destination: ride.destination,
         departureDate: ride.departureDate,
@@ -2203,7 +2205,7 @@ export class RidesService {
   private toResponse(ride: Ride): RideResponseDto {
     const isAssured = ride.rideType === RideType.ASSURED;
     const isBookable = isAssured
-      ? isAssuredSearchVisibleOffer(ride.status, ride.availableSeats)
+      ? isAssuredBookableStatus(ride.status) && ride.availableSeats > 0
       : isRegularPublishedStatus(ride.status) && ride.availableSeats > 0;
 
     return {

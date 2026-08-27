@@ -101,7 +101,7 @@ export class RidesController {
   @ApiOperation({
     summary: 'Search published rides (passenger discovery)',
     description:
-      'Read-only search of PUBLISHED rides. Optional rideType filters REGULAR or ASSURED; when omitted, both types are returned. With pickup/dropoff coordinates, matching uses a 50km route-corridor along the published polyline (direction-aware). Without coordinates, filters by source/destination place-name contains. Also filters by date, optional time (at/after), and seats. Paginated.',
+      'Read-only search of passenger-visible rides. REGULAR: status PUBLISHED. ASSURED: status ASSURANCE_ACTIVE with available seats (ASSURANCE_PENDING is excluded; PUBLISHED is not used as the Assured visibility gate). Optional rideType filters REGULAR or ASSURED; when omitted, both types are returned. With pickup/dropoff coordinates, matching uses a 50km route-corridor along the published polyline (direction-aware). Without coordinates, filters by source/destination place-name contains. Also filters by date, optional time (at/after), and seats. Paginated.',
   })
   @ApiOkResponse({ type: RideSearchPageDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
@@ -153,14 +153,14 @@ export class RidesController {
 
   @Get('public/:id')
   @ApiOperation({
-    summary: 'Passenger-facing published ride detail',
+    summary: 'Passenger-facing public ride detail',
     description:
-      'Returns safe public fields for a PUBLISHED REGULAR or ASSURED ride. Does not change owner-only GET /rides/:id behavior. Does not expose phones, emails, wallet, or verification documents.',
+      'Returns safe public fields for a passenger-visible ride (REGULAR: PUBLISHED; ASSURED: ASSURANCE_ACTIVE with seats). Does not change owner-only GET /rides/:id behavior. Does not expose phones, emails, wallet, or verification documents.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: RideSearchItemDto })
   @ApiNotFoundResponse({
-    description: 'Published ride not found',
+    description: 'Passenger-visible ride not found',
   })
   findPublishedPublic(@Param('id', ParseUUIDPipe) id: string) {
     return this.ridesService.findPublishedPublic(id);

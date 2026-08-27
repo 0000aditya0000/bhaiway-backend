@@ -5,12 +5,12 @@ export function isRegularPublishedStatus(status: RideStatus): boolean {
   return status === RideStatus.PUBLISHED;
 }
 
-/** Assured rides visible in passenger search (must also have seats). */
+/** Assured rides visible in passenger search (must also have seats for offer display). */
 export function isAssuredSearchVisibleStatus(status: RideStatus): boolean {
   return status === RideStatus.ASSURANCE_ACTIVE;
 }
 
-/** Assured offer is search-visible only when ACTIVE and bookable seats remain. */
+/** Assured offer is search-visible only when ACTIVE and seats remain. */
 export function isAssuredSearchVisibleOffer(
   status: RideStatus,
   availableSeats: number,
@@ -18,7 +18,7 @@ export function isAssuredSearchVisibleOffer(
   return isAssuredSearchVisibleStatus(status) && availableSeats > 0;
 }
 
-/** Assured rides that accept new bookings. */
+/** Assured rides that accept new passenger bookings. */
 export function isAssuredBookableStatus(status: RideStatus): boolean {
   return status === RideStatus.ASSURANCE_ACTIVE;
 }

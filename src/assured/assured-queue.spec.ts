@@ -505,6 +505,69 @@ describe('Assured Queue Engine (integration)', () => {
     expect(pendingRow.status).toBe(RideStatus.ASSURANCE_ACTIVE);
   });
 
+  it('13: driver no-show of sole ACTIVE promotes next PENDING', async () => {
+    const d1 = await publishableDriver();
+    const d2 = await publishableDriver();
+    const passenger = await verifiedPassenger();
+    const pastDate = '2020-01-01';
+
+    const active = await publishAssured(d1.login.accessToken, d1.vehicle.id, {
+      departureDate: pastDate,
+      departureTime: '13:10',
+      totalSeats: 2,
+    });
+    const pending = await publishAssured(d2.login.accessToken, d2.vehicle.id, {
+      departureDate: pastDate,
+      departureTime: '13:40',
+      totalSeats: 2,
+    });
+    expect(pending.status).toBe(RideStatus.ASSURANCE_PENDING);
+
+    await bookAssured(passenger.login.accessToken, active.id).expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${active.id}/driver-no-show`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+
+    const [activeAfter, pendingAfter] = await Promise.all([
+      dataSource.getRepository(Ride).findOneByOrFail({ id: active.id }),
+      dataSource.getRepository(Ride).findOneByOrFail({ id: pending.id }),
+    ]);
+    expect(activeAfter.status).toBe(RideStatus.CANCELLED);
+    expect(pendingAfter.status).toBe(RideStatus.ASSURANCE_ACTIVE);
+  });
+
+  it('13b: COMPLETE of ACTIVE does not promote PENDING siblings', async () => {
+    const d1 = await publishableDriver();
+    const d2 = await publishableDriver();
+
+    const active = await publishAssured(d1.login.accessToken, d1.vehicle.id, {
+      departureTime: '15:10',
+    });
+    const pending = await publishAssured(d2.login.accessToken, d2.vehicle.id, {
+      departureTime: '15:40',
+    });
+    expect(pending.status).toBe(RideStatus.ASSURANCE_PENDING);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${active.id}/start`)
+      .set('Authorization', `Bearer ${d1.login.accessToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${active.id}/complete`)
+      .set('Authorization', `Bearer ${d1.login.accessToken}`)
+      .expect(200);
+
+    const [activeAfter, pendingAfter] = await Promise.all([
+      dataSource.getRepository(Ride).findOneByOrFail({ id: active.id }),
+      dataSource.getRepository(Ride).findOneByOrFail({ id: pending.id }),
+    ]);
+    expect(activeAfter.status).toBe(RideStatus.COMPLETED);
+    expect(pendingAfter.status).toBe(RideStatus.ASSURANCE_PENDING);
+  });
+
   it('14–15: FORCE_PUBLISH promotes at most one eligible PENDING ride', async () => {
     const d1 = await publishableDriver();
     const d2 = await publishableDriver();
@@ -658,5 +721,20 @@ describe('Assured Queue Engine (integration)', () => {
 
     expect(results[0].promotedRide?.id).toBe(pending.id);
     expect(results[1].alreadyApplied).toBe(true);
+  });
+
+  it('22: forcePublish is not exposed as an HTTP route', async () => {
+    const d1 = await publishableDriver();
+    const ride = await publishAssured(d1.login.accessToken, d1.vehicle.id);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.id}/force-publish`)
+      .set('Authorization', `Bearer ${d1.login.accessToken}`)
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .post(`/assured/queues/${ride.id}/force-publish`)
+      .set('Authorization', `Bearer ${d1.login.accessToken}`)
+      .expect(404);
   });
 });

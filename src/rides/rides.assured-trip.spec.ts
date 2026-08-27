@@ -285,6 +285,35 @@ describe('Assured ride trip lifecycle (integration)', () => {
     expect(driverHold.status).toBe(WalletHoldStatus.ACTIVE);
   });
 
+  it('ASSURANCE_PENDING Assured ride cannot be started', async () => {
+    const driverA = await fundedDriver();
+    const driverB = await fundedDriver();
+
+    await publishAssured(driverA);
+    const pendingRide = await request(app.getHttpServer())
+      .post('/rides')
+      .set('Authorization', `Bearer ${driverB.login.accessToken}`)
+      .send({
+        rideType: RideType.ASSURED,
+        vehicleId: driverB.vehicle.id,
+        source: 'Assured Trip Source',
+        destination: 'Assured Trip Dest',
+        departureDate: '2026-12-10',
+        departureTime: '09:30',
+        totalSeats: 4,
+        pricePerSeat: 500,
+        ...ASSURED_TEST_ROUTE,
+      })
+      .expect(201);
+
+    expect(pendingRide.body.status).toBe(RideStatus.ASSURANCE_PENDING);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${pendingRide.body.id}/start`)
+      .set('Authorization', `Bearer ${driverB.login.accessToken}`)
+      .expect(409);
+  });
+
   it('Assured booking gets pickup OTP after start and verify-pickup works', async () => {
     const driver = await fundedDriver();
     const passenger = await fundedPassenger();

@@ -1,7 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { VehicleType } from '../../vehicles/enums/vehicle-type.enum';
-import { RideType } from '../enums/ride.enums';
+import { RideStatus, RideType } from '../enums/ride.enums';
 
 export class RideSearchPreferencesDto {
   @ApiProperty()
@@ -60,6 +60,14 @@ export class RideSearchItemDto {
 
   @ApiProperty({ enum: RideType, enumName: 'RideType' })
   rideType!: RideType;
+
+  @ApiProperty({
+    enum: RideStatus,
+    enumName: 'RideStatus',
+    description:
+      'Backend lifecycle status. Assured passenger search includes only ASSURANCE_ACTIVE.',
+  })
+  status!: RideStatus;
 
   @ApiProperty()
   source!: string;

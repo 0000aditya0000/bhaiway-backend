@@ -620,6 +620,39 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
     ).rejects.toThrow(/CHK_rides_assured_queue_membership|check constraint/i);
   });
 
+  it('HIGH: unique index rejects second bookable ASSURANCE_ACTIVE in same queue', async () => {
+    const d1 = await publishableDriver();
+    const d2 = await publishableDriver();
+
+    const active = await publishAssured(d1.login.accessToken, d1.vehicle.id, {
+      departureTime: '12:10',
+    });
+    const pending = await publishAssured(d2.login.accessToken, d2.vehicle.id, {
+      departureTime: '12:40',
+    });
+    expect(pending.status).toBe(RideStatus.ASSURANCE_PENDING);
+
+    const queueId = (
+      await dataSource.getRepository(Ride).findOneByOrFail({ id: active.id })
+    ).assuredQueueId!;
+    expect(
+      (
+        await dataSource.getRepository(Ride).findOneByOrFail({ id: pending.id })
+      ).assuredQueueId,
+    ).toBe(queueId);
+
+    await expect(
+      dataSource.query(
+        `UPDATE rides
+         SET status = 'ASSURANCE_ACTIVE', available_seats = GREATEST(available_seats, 1)
+         WHERE id = $1`,
+        [pending.id],
+      ),
+    ).rejects.toThrow(
+      /UQ_rides_assured_active_bookable_queue|unique constraint|duplicate key/i,
+    );
+  });
+
   it('MEDIUM: FULL ACTIVE rides are excluded from rider search', async () => {
     const { a, b, passenger } = await setupFullWithSibling();
 
