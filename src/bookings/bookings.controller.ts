@@ -229,6 +229,8 @@ export class BookingsController {
   @Get(':id')
   @ApiOperation({
     summary: 'Get a booking by id (booking owner only)',
+    description:
+      'Includes coPassengers: other active passengers on the same ride with safe public profile fields. The booking owner is excluded from coPassengers.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: BookingResponseDto })

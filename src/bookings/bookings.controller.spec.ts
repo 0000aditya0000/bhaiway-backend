@@ -228,9 +228,27 @@ describe('BookingsController (integration)', () => {
     return { login, vehicle, ride: rideResponse.body };
   }
 
-  async function verifiedPassenger() {
+  async function verifiedPassenger(
+    options: {
+      displayName?: string;
+      profilePhoto?: string | null;
+      firstName?: string;
+    } = {},
+  ) {
     const login = await createAuthenticatedUser();
     await markVerified(login.user.id, VerificationType.IDENTITY);
+    await dataSource.getRepository(UserProfile).save(
+      dataSource.getRepository(UserProfile).create({
+        userId: login.user.id,
+        firstName: options.firstName ?? 'Passenger',
+        lastName: null,
+        displayName: options.displayName ?? null,
+        gender: null,
+        dateOfBirth: null,
+        profilePhoto:
+          options.profilePhoto === undefined ? null : options.profilePhoto,
+      }),
+    );
     return login;
   }
 
@@ -320,6 +338,147 @@ describe('BookingsController (integration)', () => {
       .expect(200);
 
     expect(one.body.driver).toEqual(created.body.driver);
+  });
+
+  it('GET /bookings/:id includes coPassengers excluding the booking owner', async () => {
+    const { ride } = await publishableDriver(4);
+    const amit = await verifiedPassenger({
+      displayName: 'Amit S.',
+      profilePhoto: 'https://cdn.example.com/amit.jpg',
+    });
+    const priya = await verifiedPassenger({
+      displayName: 'Priya S.',
+      profilePhoto: 'https://cdn.example.com/priya.jpg',
+    });
+    const solo = await verifiedPassenger();
+
+    const amitBooking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${amit.accessToken}`)
+      .send({ rideId: ride.id, seats: 1, paymentMethod: 'PAY_LATER' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${priya.accessToken}`)
+      .send({ rideId: ride.id, seats: 2, paymentMethod: 'PAY_LATER' })
+      .expect(201);
+
+    const soloBooking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${solo.accessToken}`)
+      .send({ rideId: ride.id, seats: 1, paymentMethod: 'PAY_LATER' })
+      .expect(201);
+
+    const amitDetail = await request(app.getHttpServer())
+      .get(`/bookings/${amitBooking.body.id}`)
+      .set('Authorization', `Bearer ${amit.accessToken}`)
+      .expect(200);
+
+    expect(amitDetail.body.coPassengers).toEqual([
+      {
+        passengerId: priya.user.id,
+        displayName: 'Priya S.',
+        profilePhoto: 'https://cdn.example.com/priya.jpg',
+        seats: 2,
+      },
+      {
+        passengerId: solo.user.id,
+        displayName: 'Passenger',
+        profilePhoto: null,
+        seats: 1,
+      },
+    ]);
+    expect(amitDetail.body.coPassengers[0].phone).toBeUndefined();
+    expect(amitDetail.body.coPassengers[0].email).toBeUndefined();
+
+    const priyaMine = await request(app.getHttpServer())
+      .get('/bookings/my')
+      .set('Authorization', `Bearer ${priya.accessToken}`)
+      .expect(200);
+
+    const priyaDetail = await request(app.getHttpServer())
+      .get(`/bookings/${priyaMine.body[0].id}`)
+      .set('Authorization', `Bearer ${priya.accessToken}`)
+      .expect(200);
+
+    expect(priyaDetail.body.coPassengers).toEqual([
+      {
+        passengerId: amit.user.id,
+        displayName: 'Amit S.',
+        profilePhoto: 'https://cdn.example.com/amit.jpg',
+        seats: 1,
+      },
+      {
+        passengerId: solo.user.id,
+        displayName: 'Passenger',
+        profilePhoto: null,
+        seats: 1,
+      },
+    ]);
+
+    const soloDetail = await request(app.getHttpServer())
+      .get(`/bookings/${soloBooking.body.id}`)
+      .set('Authorization', `Bearer ${solo.accessToken}`)
+      .expect(200);
+
+    expect(soloDetail.body.coPassengers).toEqual([
+      {
+        passengerId: amit.user.id,
+        displayName: 'Amit S.',
+        profilePhoto: 'https://cdn.example.com/amit.jpg',
+        seats: 1,
+      },
+      {
+        passengerId: priya.user.id,
+        displayName: 'Priya S.',
+        profilePhoto: 'https://cdn.example.com/priya.jpg',
+        seats: 2,
+      },
+    ]);
+
+    const mine = await request(app.getHttpServer())
+      .get('/bookings/my')
+      .set('Authorization', `Bearer ${amit.accessToken}`)
+      .expect(200);
+
+    expect(mine.body[0]).not.toHaveProperty('coPassengers');
+  });
+
+  it('cancelled bookings are excluded from coPassengers', async () => {
+    const { ride } = await publishableDriver(4);
+    const first = await verifiedPassenger({
+      displayName: 'First Rider',
+      profilePhoto: null,
+    });
+    const second = await verifiedPassenger({
+      displayName: 'Second Rider',
+      profilePhoto: null,
+    });
+
+    const firstBooking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${first.accessToken}`)
+      .send({ rideId: ride.id, seats: 1, paymentMethod: 'PAY_LATER' })
+      .expect(201);
+
+    const secondBooking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${second.accessToken}`)
+      .send({ rideId: ride.id, seats: 1, paymentMethod: 'PAY_LATER' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/bookings/${firstBooking.body.id}/cancel`)
+      .set('Authorization', `Bearer ${first.accessToken}`)
+      .expect(200);
+
+    const secondDetail = await request(app.getHttpServer())
+      .get(`/bookings/${secondBooking.body.id}`)
+      .set('Authorization', `Bearer ${second.accessToken}`)
+      .expect(200);
+
+    expect(secondDetail.body.coPassengers).toEqual([]);
   });
 
   it('driver.profilePhoto is null when missing; isVerified reflects IDENTITY state', async () => {

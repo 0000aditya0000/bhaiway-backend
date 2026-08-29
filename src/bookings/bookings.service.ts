@@ -58,6 +58,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import {
+  BookingCoPassengerDto,
   BookingDriverDto,
   BookingResponseDto,
   BookingVehicleSnapshotDto,
@@ -943,11 +944,17 @@ export class BookingsService {
           ])
         : [new Map<string, BookingDriverDto>(), new Map<string, BookingVehicleSnapshotDto>()];
 
+    const coPassengers = await this.resolveCoPassengers(
+      booking.rideId,
+      booking.passengerId,
+    );
+
     return this.toResponse(
       booking,
       ride ?? undefined,
       ride != null ? driverById.get(ride.driverId) : undefined,
       ride != null ? vehicleById.get(ride.vehicleId) : undefined,
+      coPassengers,
     );
   }
 
@@ -1211,6 +1218,45 @@ export class BookingsService {
     );
   }
 
+  /** Other active passengers on the same ride; excludes the requesting passenger. */
+  private async resolveCoPassengers(
+    rideId: string,
+    excludePassengerId: string,
+  ): Promise<BookingCoPassengerDto[]> {
+    const peerBookings = await this.bookingRepository.find({
+      where: {
+        rideId,
+        status: In([BookingStatus.PENDING, BookingStatus.CONFIRMED]),
+      },
+      order: { createdAt: 'ASC', id: 'ASC' },
+    });
+
+    const others = peerBookings.filter(
+      (peer) => peer.passengerId !== excludePassengerId,
+    );
+    if (others.length === 0) {
+      return [];
+    }
+
+    const passengerIds = [...new Set(others.map((peer) => peer.passengerId))];
+    const profiles = await this.userProfileRepository.find({
+      where: { userId: In(passengerIds) },
+    });
+    const profileByUserId = new Map(
+      profiles.map((profile) => [profile.userId, profile] as const),
+    );
+
+    return others.map((peer) => {
+      const profile = profileByUserId.get(peer.passengerId);
+      return {
+        passengerId: peer.passengerId,
+        displayName: profile?.displayName ?? profile?.firstName ?? null,
+        profilePhoto: profile?.profilePhoto ?? null,
+        seats: peer.seats,
+      };
+    });
+  }
+
   private async resolveDrivers(
     driverIds: string[],
   ): Promise<Map<string, BookingDriverDto>> {
@@ -1444,6 +1490,7 @@ export class BookingsService {
     ride?: Ride,
     driver?: BookingDriverDto,
     vehicle?: BookingVehicleSnapshotDto,
+    coPassengers?: BookingCoPassengerDto[],
   ): BookingResponseDto {
     const includeOtp =
       booking.pickupStatus === BookingPickupStatus.WAITING_FOR_PICKUP &&
@@ -1488,6 +1535,7 @@ export class BookingsService {
         : undefined,
       driver,
       vehicle,
+      ...(coPassengers !== undefined ? { coPassengers } : {}),
       createdAt: booking.createdAt.toISOString(),
       updatedAt: booking.updatedAt.toISOString(),
     };

@@ -9,6 +9,25 @@ import {
   BookingStatus,
 } from '../enums/booking.enums';
 
+/** Safe co-passenger fields for the Review Booking screen. Never includes phone, email, or wallet. */
+export class BookingCoPassengerDto {
+  @ApiProperty({ format: 'uuid' })
+  passengerId!: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Profile displayName when set; otherwise firstName; null when no profile exists',
+  })
+  displayName!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  profilePhoto!: string | null;
+
+  @ApiProperty({ example: 1 })
+  seats!: number;
+}
+
 /** Safe passenger-facing driver fields. Never includes phone, email, wallet, or documents. */
 export class BookingDriverDto {
   @ApiProperty({ format: 'uuid' })
@@ -209,6 +228,14 @@ export class BookingResponseDto {
       'Vehicle snapshot for the booked ride (make/model/color/registration).',
   })
   vehicle?: BookingVehicleSnapshotDto;
+
+  @ApiPropertyOptional({
+    type: BookingCoPassengerDto,
+    isArray: true,
+    description:
+      'Other active passengers on the same ride (GET /bookings/:id only). Excludes the booking owner. Safe public fields only.',
+  })
+  coPassengers?: BookingCoPassengerDto[];
 
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;
