@@ -1693,6 +1693,10 @@ export class RidesService {
             ride.availableSeats,
             'completion',
           );
+          await this.assuredLifecycleService.clearPassengerDepositPenaltiesOnRideComplete(
+            manager,
+            ride.id,
+          );
         }
 
         ride.status = RideStatus.COMPLETED;

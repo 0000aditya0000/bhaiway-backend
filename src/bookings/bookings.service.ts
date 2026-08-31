@@ -16,6 +16,10 @@ import {
   Repository,
 } from 'typeorm';
 
+import {
+  SECURITY_DEPOSIT_REASON_PREVIOUS_CANCELLATION,
+  PassengerAssuredDepositPenaltyService,
+} from '../assured/passenger-assured-deposit-penalty.service';
 import { AssuredLifecycleService } from '../assured/assured-lifecycle.service';
 import { AssuredQueueService } from '../assured/assured-queue.service';
 import {
@@ -133,6 +137,7 @@ export class BookingsService {
     private readonly settingsService: SettingsService,
     private readonly assuredLifecycleService: AssuredLifecycleService,
     private readonly assuredQueueService: AssuredQueueService,
+    private readonly passengerDepositPenaltyService: PassengerAssuredDepositPenaltyService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -616,6 +621,13 @@ export class BookingsService {
           return { booking: existingAfterRideLock, ride };
         }
 
+        const depositQuote =
+          await this.passengerDepositPenaltyService.getDepositQuote(
+            passengerId,
+            manager,
+          );
+        const effectivePercentage = depositQuote.percentage;
+
         const wallet = await this.lockWalletForUpdate(manager, passengerId);
         this.assertWalletAllowsPayment(wallet);
 
@@ -634,7 +646,7 @@ export class BookingsService {
         let depositAmount = calculateRiderAssuredDeposit(
           dto.seats,
           BigInt(pricePerSeatSnapshot),
-          percentage,
+          effectivePercentage,
         );
         let depositCouponId: string | null = null;
         if (coupon) {
@@ -702,7 +714,8 @@ export class BookingsService {
           totalAmount,
           idempotencyKey: key,
           walletTransactionId,
-          assuredDepositPercentage: percentage,
+          assuredDepositPercentage: effectivePercentage,
+          assuredDepositReason: depositQuote.reason,
           assuredDepositAmount: depositAmount.toString(),
           walletHoldId,
           fareWalletTransactionId,
@@ -711,6 +724,16 @@ export class BookingsService {
         });
 
         const saved = await manager.getRepository(Booking).save(booking);
+        if (
+          depositQuote.elevated &&
+          depositQuote.reason === SECURITY_DEPOSIT_REASON_PREVIOUS_CANCELLATION
+        ) {
+          await this.passengerDepositPenaltyService.markConsumedOnBooking(
+            manager,
+            passengerId,
+            saved.id,
+          );
+        }
         return { booking: saved, ride };
       });
       return this.toResponseWithDriver(result.booking, result.ride);
@@ -1511,6 +1534,7 @@ export class BookingsService {
       totalAmount: booking.totalAmount,
       securityDepositAmount: booking.assuredDepositAmount,
       securityDepositPercentage: booking.assuredDepositPercentage,
+      securityDepositReason: booking.assuredDepositReason,
       securityDepositStatus: this.resolveSecurityDepositStatus(booking),
       bookingMode: booking.bookingMode,
       pickupStatus: booking.pickupStatus,

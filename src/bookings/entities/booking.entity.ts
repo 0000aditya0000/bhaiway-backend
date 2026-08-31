@@ -160,6 +160,14 @@ export class Booking {
   })
   assuredDepositPercentage!: number | null;
 
+  @Column({
+    name: 'assured_deposit_reason',
+    type: 'varchar',
+    length: 50,
+    nullable: true,
+  })
+  assuredDepositReason!: string | null;
+
   /** Rider Assured deposit amount in points. Null for Regular. */
   @Column({
     name: 'assured_deposit_amount',

@@ -2,6 +2,8 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import {
   BookingCancellationReason,
+  BookingFarePayment,
+  BookingPaymentStatus,
   BookingStatus,
 } from '../../bookings/enums/booking.enums';
 import {
@@ -101,6 +103,45 @@ export class AssuredBookingLifecycleResponseDto {
     description: 'True when a next-Assured-deposit-free coupon was issued',
   })
   couponIssued?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Assured security deposit forfeited on passenger cancellation (points)',
+    example: '35',
+  })
+  securityDepositForfeited?: string | null;
+
+  @ApiPropertyOptional({
+    enum: BookingFarePayment,
+    enumName: 'BookingFarePayment',
+    nullable: true,
+    description: 'Assured fare choice when applicable',
+  })
+  farePayment?: BookingFarePayment | null;
+
+  @ApiPropertyOptional({
+    description: 'Fare refunded to passenger on cancellation (always 0 for Phase 1)',
+    example: '0',
+  })
+  fareRefunded?: string;
+
+  @ApiPropertyOptional({
+    description: 'Total credited to the ride driver (deposit + fare share)',
+    example: '245',
+  })
+  driverCompensation?: string;
+
+  @ApiPropertyOptional({
+    description: 'Platform share from passenger cancellation (fare only)',
+    example: '490',
+  })
+  platformAmount?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Elevated Assured deposit percentage for the passenger next booking after self-cancel',
+    example: 10,
+  })
+  nextAssuredDepositPercentage?: number | null;
 
   @ApiProperty({
     description: 'True when the action was already applied (idempotent retry)',

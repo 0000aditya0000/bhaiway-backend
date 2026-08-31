@@ -62,4 +62,18 @@ export class GetMeResponseDto {
     example: false,
   })
   profileCompleted!: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Active Assured deposit penalty for the passenger (elevated rate after self-cancel)',
+    nullable: true,
+    example: {
+      percentage: 10,
+      reason: 'PREVIOUS_ASSURED_CANCELLATION',
+    },
+  })
+  assuredDepositPenalty?: {
+    percentage: number;
+    reason: string;
+  } | null;
 }

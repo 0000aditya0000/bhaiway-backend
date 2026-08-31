@@ -11,6 +11,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UserProfile } from './entities/user-profile.entity';
 import { User } from './entities/user.entity';
 import { isProfileCompleted } from './profile-completion';
+import { PassengerAssuredDepositPenaltyService } from '../assured/passenger-assured-deposit-penalty.service';
 
 @Injectable()
 export class UsersService {
@@ -19,6 +20,7 @@ export class UsersService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(UserProfile)
     private readonly userProfileRepository: Repository<UserProfile>,
+    private readonly passengerDepositPenaltyService: PassengerAssuredDepositPenaltyService,
   ) {}
 
   async getMe(userId: string) {
@@ -28,6 +30,8 @@ export class UsersService {
     }
 
     const profile = await this.getProfileEntity(userId);
+    const depositQuote =
+      await this.passengerDepositPenaltyService.getDepositQuote(userId);
 
     return {
       user: {
@@ -40,6 +44,12 @@ export class UsersService {
       },
       profile: profile ? this.toProfileResponse(profile) : null,
       profileCompleted: isProfileCompleted(profile),
+      assuredDepositPenalty: depositQuote.elevated
+        ? {
+            percentage: depositQuote.percentage,
+            reason: depositQuote.reason!,
+          }
+        : null,
     };
   }
 

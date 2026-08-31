@@ -16,6 +16,11 @@ describe('assured-lifecycle.math', () => {
     expect(distributeEvenlyWithRemainder(100n, 0)).toEqual([]);
   });
 
+  it('computes 30% passenger-cancel fare driver share with HALF UP', () => {
+    expect(percentOfAmountHalfUp(700n, 30)).toBe(210n);
+    expect(700n - percentOfAmountHalfUp(700n, 30)).toBe(490n);
+  });
+
   it('calculates partial-fill with seat cap and ₹700 max', () => {
     expect(calculatePartialFillCompensation(1, 500n)).toBe(250n);
     expect(calculatePartialFillCompensation(2, 500n)).toBe(500n);

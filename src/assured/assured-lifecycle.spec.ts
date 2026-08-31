@@ -27,6 +27,7 @@ import {
 import { SettingsModule } from '../settings/settings.module';
 import { SettingsService } from '../settings/settings.service';
 import { UserProfile } from '../users/entities/user-profile.entity';
+import { UsersModule } from '../users/users.module';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import {
   VerificationStatus,
@@ -84,7 +85,9 @@ function pickupOtpPepper(): string {
 }
 import { AssuredModule } from './assured.module';
 import { calculatePartialFillCompensation } from './assured-lifecycle.math';
+import { AssuredGeographicQueue } from './entities/assured-geographic-queue.entity';
 import { AssuredLifecycleEvent } from './entities/assured-lifecycle-event.entity';
+import { PassengerAssuredDepositPenalty } from './entities/passenger-assured-deposit-penalty.entity';
 import { calculateAssuredHalfTime } from './assured-timing';
 
 const FUTURE_DATE = '2099-06-15';
@@ -128,6 +131,7 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
         RidesModule,
         BookingsModule,
         AssuredModule,
+        UsersModule,
       ],
     })
       .overrideProvider(OTP_PROVIDER)
@@ -157,7 +161,54 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     originalPercentage =
       await settingsService.getAssuredRideDepositPercentage();
     await settingsService.setAssuredRideDepositPercentage(5);
+    await purgeStaleAssuredTestCorridorRides();
   });
+
+  async function purgeStaleAssuredTestCorridorRides(): Promise<void> {
+    const staleRides = await dataSource.getRepository(Ride).find({
+      where: {
+        rideType: RideType.ASSURED,
+        sourceLatitude: ASSURED_TEST_ROUTE.sourceLatitude,
+        sourceLongitude: ASSURED_TEST_ROUTE.sourceLongitude,
+        destinationLatitude: ASSURED_TEST_ROUTE.destinationLatitude,
+        destinationLongitude: ASSURED_TEST_ROUTE.destinationLongitude,
+      },
+    });
+    if (staleRides.length === 0) {
+      return;
+    }
+    const rideIds = staleRides.map((ride) => ride.id);
+    const queueIds = [
+      ...new Set(
+        staleRides
+          .map((ride) => ride.assuredQueueId)
+          .filter((id): id is string => id != null),
+      ),
+    ];
+    await dataSource.getRepository(AssuredLifecycleEvent).delete({
+      rideId: In(rideIds),
+    });
+    await dataSource.getRepository(Booking).delete({ rideId: In(rideIds) });
+    for (const ride of staleRides) {
+      if (ride.assuredQueueKey) {
+        await dataSource.query(
+          `DELETE FROM assured_queue_events WHERE queue_key = $1`,
+          [ride.assuredQueueKey],
+        );
+      }
+    }
+    await dataSource.getRepository(Ride).delete({ id: In(rideIds) });
+    for (const queueId of queueIds) {
+      const remaining = await dataSource.getRepository(Ride).count({
+        where: { assuredQueueId: queueId },
+      });
+      if (remaining === 0) {
+        await dataSource
+          .getRepository(AssuredGeographicQueue)
+          .delete({ id: queueId });
+      }
+    }
+  }
 
   afterEach(async () => {
     await settingsService.setAssuredRideDepositPercentage(5);
@@ -167,10 +218,20 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
         await dataSource.getRepository(UserCoupon).delete({
           userId: ctx.userId,
         });
+        await dataSource.getRepository(PassengerAssuredDepositPenalty).delete({
+          userId: ctx.userId,
+        });
 
         const rides = await dataSource.getRepository(Ride).find({
           where: { driverId: ctx.userId },
         });
+        const queueIds = [
+          ...new Set(
+            rides
+              .map((ride) => ride.assuredQueueId)
+              .filter((id): id is string => id != null),
+          ),
+        ];
         if (rides.length > 0) {
           await dataSource.getRepository(AssuredLifecycleEvent).delete({
             rideId: In(rides.map((r) => r.id)),
@@ -182,8 +243,24 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
         });
         for (const ride of rides) {
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
+          if (ride.assuredQueueKey) {
+            await dataSource.query(
+              `DELETE FROM assured_queue_events WHERE queue_key = $1`,
+              [ride.assuredQueueKey],
+            );
+          }
         }
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
+        for (const queueId of queueIds) {
+          const remaining = await dataSource.getRepository(Ride).count({
+            where: { assuredQueueId: queueId },
+          });
+          if (remaining === 0) {
+            await dataSource
+              .getRepository(AssuredGeographicQueue)
+              .delete({ id: queueId });
+          }
+        }
         await dataSource.getRepository(Vehicle).delete({ userId: ctx.userId });
         await dataSource.getRepository(UserVerification).delete({
           userId: ctx.userId,
@@ -206,11 +283,12 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
   });
 
   async function createAuthenticatedUser() {
-    const phone = `+91${Date.now().toString().slice(-9)}${Math.floor(
-      Math.random() * 10,
-    )}`;
+    const phone = `+91${Date.now()}${Math.floor(Math.random() * 1_000_000)}`
+      .replace(/\D/g, '')
+      .slice(-10)
+      .padStart(10, '0');
     const login = await authService.loginOrRegisterWithVerifiedIdentity({
-      phone,
+      phone: `+91${phone}`,
       verified: true,
     });
     const wallet = await dataSource.getRepository(Wallet).findOneByOrFail({
@@ -518,7 +596,7 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     });
   });
 
-  it('rider cancel: deposit CONSUMED to platform, seats restored, IDOR 404, KEEP partial-fill, deposit not credited to driver', async () => {
+  it('rider cancel PAY_LATER: deposit to driver, no platform share, 10% penalty, seats restored', async () => {
     const driver = await fundedDriver();
     const passenger = await fundedPassenger();
     const other = await fundedPassenger();
@@ -550,59 +628,31 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       status: BookingStatus.CANCELLED,
       cancellationReason: BookingCancellationReason.RIDER_CANCELLED,
       seatsRestored: 1,
-      partialFillCompensation: '250',
+      securityDepositForfeited: '25',
+      farePayment: BookingFarePayment.PAY_LATER,
+      fareRefunded: '0',
+      driverCompensation: '25',
+      platformAmount: '0',
+      nextAssuredDepositPercentage: 10,
+      partialFillCompensation: null,
       alreadyApplied: false,
     });
 
-    const bookingRow = await dataSource
-      .getRepository(Booking)
-      .findOneByOrFail({ id: booking.id });
-    expect(bookingRow.status).toBe(BookingStatus.CANCELLED);
-    const riderHold = await dataSource
-      .getRepository(WalletHold)
-      .findOneByOrFail({ id: bookingRow.walletHoldId! });
-    expect(riderHold.status).toBe(WalletHoldStatus.CONSUMED);
-
-    const platformForfeit = await dataSource
-      .getRepository(WalletTransaction)
-      .findOneByOrFail({
-        walletId: PLATFORM_WALLET_ID,
-        transactionType: WalletTransactionType.ASSURED_PLATFORM_FORFEITURE,
-        referenceId: booking.id,
-      });
-    expect(platformForfeit.amount).toBe('25');
-    expect(platformForfeit.direction).toBe(WalletTransactionDirection.CREDIT);
-
-    const rideAfter = await dataSource
-      .getRepository(Ride)
-      .findOneByOrFail({ id: ride.id });
-    expect(rideAfter.availableSeats).toBe(seatsBeforeCancel + 1);
-    expect(rideAfter.regularSeatsPolicy).toBeNull();
-
-    const partialFill = await dataSource
+    const depositDriverTx = await dataSource
       .getRepository(WalletTransaction)
       .findOneByOrFail({
         walletId: driver.wallet.id,
         transactionType:
-          WalletTransactionType.ASSURED_PARTIAL_FILL_COMPENSATION,
+          WalletTransactionType.ASSURED_PASSENGER_CANCEL_DEPOSIT_DRIVER,
+        referenceId: booking.id,
       });
-    expect(partialFill.amount).toBe('250');
-    expect(partialFill.direction).toBe(WalletTransactionDirection.CREDIT);
+    expect(depositDriverTx.amount).toBe('25');
 
     expect(
       await dataSource.getRepository(WalletTransaction).count({
         where: {
-          walletId: driver.wallet.id,
-          transactionType: WalletTransactionType.ASSURED_PLATFORM_FORFEITURE,
-        },
-      }),
-    ).toBe(0);
-    expect(
-      await dataSource.getRepository(WalletTransaction).count({
-        where: {
-          walletId: driver.wallet.id,
-          amount: '25',
-          direction: WalletTransactionDirection.CREDIT,
+          walletId: PLATFORM_WALLET_ID,
+          referenceId: booking.id,
         },
       }),
     ).toBe(0);
@@ -611,8 +661,258 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       .getRepository(WalletBalance)
       .findOneByOrFail({ walletId: driver.wallet.id });
     expect(BigInt(driverBalanceAfter.driverEarnedAvailable)).toBe(
-      BigInt(driverBalanceBefore.driverEarnedAvailable) + 250n,
+      BigInt(driverBalanceBefore.driverEarnedAvailable) + 25n,
     );
+
+    const rideAfter = await dataSource
+      .getRepository(Ride)
+      .findOneByOrFail({ id: ride.id });
+    expect(rideAfter.availableSeats).toBe(seatsBeforeCancel + 1);
+    expect(rideAfter.status).toBe(RideStatus.ASSURANCE_ACTIVE);
+  });
+
+  it('rider cancel PAY_NOW: deposit and fare split separately (30/70), no fare refund', async () => {
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger(5000n);
+    const ride = await publishAssuredRide(driver, { pricePerSeat: 700, totalSeats: 2 });
+
+    const booked = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .set('Idempotency-Key', uniqueIdempotencyKey('lc-paynow-cancel'))
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+        farePayment: BookingFarePayment.PAY_NOW,
+      })
+      .expect(201);
+    expect(booked.body.totalAmount).toBe('700');
+    expect(booked.body.securityDepositAmount).toBe('35');
+
+    const cancelled = await request(app.getHttpServer())
+      .post(`/bookings/${booked.body.id}/cancel`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+
+    expect(cancelled.body).toMatchObject({
+      securityDepositForfeited: '35',
+      fareRefunded: '0',
+      driverCompensation: '245',
+      platformAmount: '490',
+      nextAssuredDepositPercentage: 10,
+    });
+
+    const depositTx = await dataSource
+      .getRepository(WalletTransaction)
+      .findOneByOrFail({
+        walletId: driver.wallet.id,
+        transactionType:
+          WalletTransactionType.ASSURED_PASSENGER_CANCEL_DEPOSIT_DRIVER,
+        referenceId: booked.body.id,
+      });
+    expect(depositTx.amount).toBe('35');
+
+    const fareDriverTx = await dataSource
+      .getRepository(WalletTransaction)
+      .findOneByOrFail({
+        walletId: driver.wallet.id,
+        transactionType:
+          WalletTransactionType.ASSURED_PASSENGER_CANCEL_FARE_DRIVER,
+        referenceId: booked.body.id,
+      });
+    expect(fareDriverTx.amount).toBe('210');
+
+    const platformTx = await dataSource
+      .getRepository(WalletTransaction)
+      .findOneByOrFail({
+        walletId: PLATFORM_WALLET_ID,
+        transactionType:
+          WalletTransactionType.ASSURED_PASSENGER_CANCEL_FARE_PLATFORM,
+        referenceId: booked.body.id,
+      });
+    expect(platformTx.amount).toBe('490');
+
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: {
+          walletId: passenger.wallet.id,
+          transactionType: WalletTransactionType.REFUND,
+        },
+      }),
+    ).toBe(0);
+  });
+
+  it('rider cancel idempotent retry: no duplicate wallet credits or penalty', async () => {
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger();
+    const ride = await publishAssuredRide(driver);
+    const booking = await bookAssured(passenger, ride.id, 1);
+
+    const first = await request(app.getHttpServer())
+      .post(`/bookings/${booking.id}/cancel`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(first.body.alreadyApplied).toBe(false);
+
+    const retry = await request(app.getHttpServer())
+      .post(`/bookings/${booking.id}/cancel`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(retry.body.alreadyApplied).toBe(true);
+    expect(retry.body.driverCompensation).toBe(first.body.driverCompensation);
+
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: {
+          walletId: driver.wallet.id,
+          transactionType:
+            WalletTransactionType.ASSURED_PASSENGER_CANCEL_DEPOSIT_DRIVER,
+          referenceId: booking.id,
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await dataSource.getRepository(PassengerAssuredDepositPenalty).count({
+        where: { userId: passenger.login.user.id },
+      }),
+    ).toBe(1);
+  });
+
+  it('driver cannot invoke passenger cancellation endpoint', async () => {
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger();
+    const ride = await publishAssuredRide(driver);
+    const booking = await bookAssured(passenger, ride.id, 1);
+
+    await request(app.getHttpServer())
+      .post(`/bookings/${booking.id}/cancel`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(404);
+
+    const row = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking.id });
+    expect(row.status).toBe(BookingStatus.CONFIRMED);
+  });
+
+  it('completed booking cannot receive passenger cancel compensation', async () => {
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger();
+    const ride = await publishAssuredRide(driver);
+    const booking = await bookAssured(passenger, ride.id, 1);
+
+    await dataSource
+      .getRepository(Booking)
+      .update({ id: booking.id }, { status: BookingStatus.COMPLETED });
+
+    await request(app.getHttpServer())
+      .post(`/bookings/${booking.id}/cancel`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(409);
+  });
+
+  it('elevated 10% deposit after cancel resets to 5% after next Assured ride completes', async () => {
+    const driver1 = await fundedDriver();
+    const passenger = await fundedPassenger(20000n);
+    const ride1 = await publishAssuredRide(driver1, {
+      pricePerSeat: 500,
+      source: 'Penalty Ride One',
+      destination: 'Penalty Ride One Dest',
+    });
+    const booking1 = await bookAssured(passenger, ride1.id, 1);
+    await request(app.getHttpServer())
+      .post(`/bookings/${booking1.id}/cancel`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+
+    const me = await request(app.getHttpServer())
+      .get('/users/me')
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(me.body.assuredDepositPenalty).toMatchObject({
+      percentage: 10,
+      reason: 'PREVIOUS_ASSURED_CANCELLATION',
+    });
+
+    const booking2 = await bookAssured(passenger, ride1.id, 1);
+    expect(booking2.securityDepositAmount).toBe('50');
+
+    const booking2Row = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking2.id });
+    expect(booking2Row.assuredDepositReason).toBe(
+      'PREVIOUS_ASSURED_CANCELLATION',
+    );
+
+    await startRideAndVerifyAllPickups(
+      app,
+      dataSource,
+      driver1.login.accessToken,
+      ride1.id,
+      pickupOtpPepper(),
+    );
+    await request(app.getHttpServer())
+      .post(`/rides/${ride1.id}/complete`)
+      .set('Authorization', `Bearer ${driver1.login.accessToken}`)
+      .expect(200);
+
+    const meAfter = await request(app.getHttpServer())
+      .get('/users/me')
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(meAfter.body.assuredDepositPenalty).toBeNull();
+
+    const driver3 = await fundedDriver();
+    const ride3 = await publishAssuredRide(driver3, {
+      pricePerSeat: 500,
+      source: 'Penalty Ride Three',
+      destination: 'Penalty Ride Three Dest',
+    });
+    const booking3 = await bookAssured(passenger, ride3.id, 1);
+    expect(booking3.securityDepositAmount).toBe('25');
+  });
+
+  it('passenger cancel rollback when wallet credit fails', async () => {
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger();
+    const ride = await publishAssuredRide(driver);
+    const booking = await bookAssured(passenger, ride.id, 1);
+
+    let depositCreditCalls = 0;
+    const originalCredit = walletService.creditPointsInTransaction.bind(
+      walletService,
+    );
+    const spy = jest
+      .spyOn(walletService, 'creditPointsInTransaction')
+      .mockImplementation(async (manager, input) => {
+        if (
+          input.transactionType ===
+          WalletTransactionType.ASSURED_PASSENGER_CANCEL_DEPOSIT_DRIVER
+        ) {
+          depositCreditCalls += 1;
+          throw new Error('simulated passenger cancel credit failure');
+        }
+        return originalCredit(manager, input);
+      });
+
+    await request(app.getHttpServer())
+      .post(`/bookings/${booking.id}/cancel`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(500);
+
+    expect(depositCreditCalls).toBe(1);
+    const row = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking.id });
+    expect(row.status).toBe(BookingStatus.CONFIRMED);
+    expect(
+      await dataSource.getRepository(PassengerAssuredDepositPenalty).count({
+        where: { userId: passenger.login.user.id },
+      }),
+    ).toBe(0);
+
+    spy.mockRestore();
   });
 
   it('driver no-show: before departure 409; after departure by passenger works once; same money as cancel', async () => {
@@ -851,7 +1151,7 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     expect(stillUnused.status).toBe(UserCouponStatus.UNUSED);
   });
 
-  it('partial-fill integration: 1 empty seat capped at 700; insufficient platform funds fail safely', async () => {
+  it('partial-fill integration: rider no-show 1 empty seat capped at 700; insufficient platform funds fail safely', async () => {
     expect(calculatePartialFillCompensation(1, 2000n)).toBe(700n);
 
     const driver = await fundedDriver();
@@ -859,6 +1159,8 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     const ride = await publishAssuredRide(driver, {
       totalSeats: 2,
       pricePerSeat: 2000,
+      departureDate: PAST_DATE,
+      departureTime: PAST_TIME,
       source: 'Partial Cap Source',
       destination: 'Partial Cap Dest',
     });
@@ -867,14 +1169,15 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     expect(booking.securityDepositAmount).toBe('100');
 
     const capped = await request(app.getHttpServer())
-      .post(`/bookings/${booking.id}/cancel`)
-      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .post(`/bookings/${booking.id}/rider-no-show`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .expect(200);
     expect(capped.body.partialFillCompensation).toBe('700');
 
     const driver2 = await fundedDriver();
     const passenger2 = await fundedPassenger();
     const ride2 = await publishAssuredRide(driver2, {
+      departureDate: PAST_DATE,
       departureTime: '15:00',
       source: 'Partial Fail Source',
       destination: 'Partial Fail Dest',
@@ -893,8 +1196,8 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
 
     await withZeroedPlatformFunds(async () => {
       await request(app.getHttpServer())
-        .post(`/bookings/${booking2.id}/cancel`)
-        .set('Authorization', `Bearer ${passenger2.login.accessToken}`)
+        .post(`/bookings/${booking2.id}/rider-no-show`)
+        .set('Authorization', `Bearer ${driver2.login.accessToken}`)
         .expect(422);
     });
 
@@ -994,7 +1297,12 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       .post(`/bookings/${keepBooking.id}/cancel`)
       .set('Authorization', `Bearer ${keepPassenger.login.accessToken}`)
       .expect(200);
-    expect(keepCancel.body.partialFillCompensation).toBe('250');
+    expect(keepCancel.body).toMatchObject({
+      partialFillCompensation: null,
+      driverCompensation: '25',
+      platformAmount: '0',
+      nextAssuredDepositPercentage: 10,
+    });
     const keepRideRow = await dataSource
       .getRepository(Ride)
       .findOneByOrFail({ id: keepRide.id });
@@ -1413,7 +1721,8 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       });
 
       const bookingB = await dataSource.getRepository(Booking).findOneByOrFail({
-        where: { rideId: ride.id, passengerId: passengerB.login.user.id },
+        rideId: ride.id,
+        passengerId: passengerB.login.user.id,
       });
 
       let refundCalls = 0;

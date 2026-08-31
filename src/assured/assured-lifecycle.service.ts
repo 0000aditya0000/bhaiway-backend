@@ -54,10 +54,12 @@ import { WalletService } from '../wallet/wallet.service';
 import {
   DRIVER_FORFEIT_RIDER_SHARE_PERCENT,
   PARTIAL_FILL_MAX_SEATS,
+  PASSENGER_CANCEL_FARE_DRIVER_SHARE_PERCENT,
   calculatePartialFillCompensation,
   distributeEvenlyWithRemainder,
   percentOfAmountHalfUp,
 } from './assured-lifecycle.math';
+import { PassengerAssuredDepositPenaltyService } from './passenger-assured-deposit-penalty.service';
 import {
   calculateAssuredHalfTime,
   isAtOrAfterDeparture,
@@ -79,6 +81,8 @@ const REF_DRIVER_FORFEIT_COMP = 'ASSURED_DRIVER_FORFEIT_COMP';
 const REF_PLATFORM_FORFEITURE = 'ASSURED_PLATFORM_FORFEITURE';
 const REF_PARTIAL_FILL = 'ASSURED_PARTIAL_FILL_COMPENSATION';
 const REF_FARE_REFUND = 'ASSURED_DRIVER_CANCEL_FARE_REFUND';
+const REF_PASSENGER_CANCEL_DEPOSIT = 'ASSURED_PASSENGER_CANCEL_DEPOSIT';
+const REF_PASSENGER_CANCEL_FARE = 'ASSURED_PASSENGER_CANCEL_FARE';
 
 type DriverForfeitEvent =
   | AssuredLifecycleEventType.DRIVER_CANCEL
@@ -90,6 +94,7 @@ export class AssuredLifecycleService {
     private readonly dataSource: DataSource,
     private readonly walletService: WalletService,
     private readonly assuredQueueService: AssuredQueueService,
+    private readonly passengerDepositPenaltyService: PassengerAssuredDepositPenaltyService,
     @InjectRepository(Ride)
     private readonly rideRepository: Repository<Ride>,
     @InjectRepository(Booking)
@@ -167,7 +172,7 @@ export class AssuredLifecycleService {
           timing: 'before_departure',
           requirePassengerOwnership: true,
           requireDriverOwnership: false,
-          requireConfirmed: false,
+          requireConfirmed: true,
           issueNoShowCoupon: false,
           partialFillSuffix: `rider-cancel:${bookingId}`,
         }),
@@ -974,6 +979,31 @@ export class AssuredLifecycleService {
 
     if (params.requireConfirmed && booking.status !== BookingStatus.CONFIRMED) {
       throw new ConflictException(
+        'Assured passenger cancellation requires a CONFIRMED booking',
+      );
+    }
+
+    if (
+      params.eventType === AssuredLifecycleEventType.RIDER_CANCEL &&
+      booking.bookingMode === BookingMode.ASSURED
+    ) {
+      return this.executeAssuredPassengerCancellation(
+        manager,
+        {
+          actorUserId: params.actorUserId,
+          bookingId: params.bookingId,
+          eventType: AssuredLifecycleEventType.RIDER_CANCEL,
+          cancellationReason: params.cancellationReason,
+          idempotencyKey: params.idempotencyKey,
+          timing: params.timing,
+        },
+        ride,
+        booking,
+      );
+    }
+
+    if (params.requireConfirmed && booking.status !== BookingStatus.CONFIRMED) {
+      throw new ConflictException(
         'Rider no-show requires a CONFIRMED Assured booking',
       );
     }
@@ -1100,6 +1130,211 @@ export class AssuredLifecycleService {
       couponIssued: params.issueNoShowCoupon ? couponIssued : undefined,
       alreadyApplied: false,
     };
+  }
+
+  private async executeAssuredPassengerCancellation(
+    manager: EntityManager,
+    params: {
+      actorUserId: string;
+      bookingId: string;
+      eventType: AssuredLifecycleEventType.RIDER_CANCEL;
+      cancellationReason: BookingCancellationReason;
+      idempotencyKey: string;
+      timing: 'before_departure' | 'at_or_after_departure';
+    },
+    ride: Ride,
+    booking: Booking,
+  ): Promise<AssuredBookingLifecycleResponseDto> {
+    const now = new Date();
+    if (params.timing === 'before_departure') {
+      if (!isBeforeDeparture(now, ride.departureDate, ride.departureTime)) {
+        throw new ConflictException(
+          'Assured riders cannot cancel after departure; use no-show flow',
+        );
+      }
+    }
+
+    const existingEvent = await manager
+      .getRepository(AssuredLifecycleEvent)
+      .findOne({ where: { idempotencyKey: params.idempotencyKey } });
+    if (existingEvent) {
+      return this.buildBookingLifecycleResponse(manager, booking, true);
+    }
+
+    await this.passengerDepositPenaltyService.reopenIfConsumedBookingCancelled(
+      manager,
+      booking.passengerId,
+      booking.id,
+    );
+
+    let securityDepositForfeited = 0n;
+    let driverDepositCompensation = 0n;
+    let driverFareCompensation = 0n;
+    let platformFareAmount = 0n;
+
+    const driverWallet = await manager.getRepository(Wallet).findOne({
+      where: { userId: ride.driverId },
+    });
+    if (!driverWallet) {
+      throw new NotFoundException('Driver wallet not found');
+    }
+
+    await this.insertLifecycleEvent(manager, {
+      eventType: params.eventType,
+      rideId: ride.id,
+      bookingId: booking.id,
+      actorUserId: params.actorUserId,
+      idempotencyKey: params.idempotencyKey,
+      amount: booking.assuredDepositAmount,
+      metadata: null,
+    });
+
+    if (booking.walletHoldId) {
+      const hold = await manager.getRepository(WalletHold).findOne({
+        where: { id: booking.walletHoldId },
+      });
+      if (
+        hold &&
+        hold.status === WalletHoldStatus.ACTIVE &&
+        BigInt(hold.amount) > 0n
+      ) {
+        const consumeResult =
+          await this.walletService.consumeHoldInTransaction(manager, {
+            holdId: hold.id,
+            idempotencyKey: `assured-deposit-consume:${hold.id}`,
+          });
+        securityDepositForfeited = BigInt(
+          consumeResult.hold?.amount ?? hold.amount,
+        );
+        if (securityDepositForfeited > 0n) {
+          await this.walletService.creditPointsInTransaction(manager, {
+            walletId: driverWallet.id,
+            userId: ride.driverId,
+            amount: securityDepositForfeited,
+            sourceType: WalletPointSource.DRIVER_EARNED,
+            referenceType: REF_PASSENGER_CANCEL_DEPOSIT,
+            referenceId: booking.id,
+            idempotencyKey: `assured:passenger-cancel:deposit-driver:${booking.id}`,
+            transactionType:
+              WalletTransactionType.ASSURED_PASSENGER_CANCEL_DEPOSIT_DRIVER,
+          });
+          driverDepositCompensation = securityDepositForfeited;
+        }
+      }
+    }
+
+    const isPayNow =
+      booking.farePaymentMethod === BookingFarePayment.PAY_NOW &&
+      booking.paymentStatus === BookingPaymentStatus.PAID;
+    const fareAmount = isPayNow ? BigInt(booking.totalAmount) : 0n;
+    if (fareAmount > 0n) {
+      driverFareCompensation = percentOfAmountHalfUp(
+        fareAmount,
+        PASSENGER_CANCEL_FARE_DRIVER_SHARE_PERCENT,
+      );
+      platformFareAmount = fareAmount - driverFareCompensation;
+
+      if (driverFareCompensation > 0n) {
+        await this.walletService.creditPointsInTransaction(manager, {
+          walletId: driverWallet.id,
+          userId: ride.driverId,
+          amount: driverFareCompensation,
+          sourceType: WalletPointSource.DRIVER_EARNED,
+          referenceType: REF_PASSENGER_CANCEL_FARE,
+          referenceId: booking.id,
+          idempotencyKey: `assured:passenger-cancel:fare-driver:${booking.id}`,
+          transactionType:
+            WalletTransactionType.ASSURED_PASSENGER_CANCEL_FARE_DRIVER,
+        });
+      }
+      if (platformFareAmount > 0n) {
+        await this.walletService.creditPointsInTransaction(manager, {
+          walletId: PLATFORM_WALLET_ID,
+          userId: PLATFORM_USER_ID,
+          amount: platformFareAmount,
+          sourceType: WalletPointSource.PURCHASED,
+          referenceType: REF_PASSENGER_CANCEL_FARE,
+          referenceId: booking.id,
+          idempotencyKey: `assured:passenger-cancel:fare-platform:${booking.id}`,
+          transactionType:
+            WalletTransactionType.ASSURED_PASSENGER_CANCEL_FARE_PLATFORM,
+          allowPlatformOperations: true,
+        });
+      }
+    }
+
+    const nextAssuredDepositPercentage =
+      await this.passengerDepositPenaltyService.applyCancellationPenalty(
+        manager,
+        booking.passengerId,
+        booking.id,
+      );
+
+    const seatsRestored = booking.seats;
+    await this.restoreSeatsForRideInTransaction(manager, ride, seatsRestored);
+    booking.status = BookingStatus.CANCELLED;
+    booking.cancellationReason = params.cancellationReason;
+    booking.cancelledAt = now;
+    await manager.getRepository(Booking).save(booking);
+    await manager.getRepository(Ride).save(ride);
+
+    const driverCompensationTotal =
+      driverDepositCompensation + driverFareCompensation;
+
+    await manager.getRepository(AssuredLifecycleEvent).update(
+      { idempotencyKey: params.idempotencyKey },
+      {
+        metadata: {
+          securityDepositForfeited: securityDepositForfeited.toString(),
+          fareRefunded: '0',
+          driverCompensation: driverCompensationTotal.toString(),
+          platformAmount: platformFareAmount.toString(),
+          nextAssuredDepositPercentage,
+          ...(booking.farePaymentMethod
+            ? { farePayment: booking.farePaymentMethod }
+            : {}),
+        },
+      },
+    );
+
+    return {
+      bookingId: booking.id,
+      rideId: ride.id,
+      status: booking.status,
+      cancellationReason: booking.cancellationReason,
+      seatsRestored,
+      partialFillCompensation: null,
+      securityDepositForfeited:
+        securityDepositForfeited > 0n
+          ? securityDepositForfeited.toString()
+          : null,
+      farePayment: booking.farePaymentMethod,
+      fareRefunded: '0',
+      driverCompensation: driverCompensationTotal.toString(),
+      platformAmount: platformFareAmount.toString(),
+      nextAssuredDepositPercentage,
+      alreadyApplied: false,
+    };
+  }
+
+  async clearPassengerDepositPenaltiesOnRideComplete(
+    manager: EntityManager,
+    rideId: string,
+  ): Promise<void> {
+    const completedBookings = await manager.getRepository(Booking).find({
+      where: {
+        rideId,
+        status: BookingStatus.COMPLETED,
+        bookingMode: BookingMode.ASSURED,
+      },
+    });
+    for (const booking of completedBookings) {
+      await this.passengerDepositPenaltyService.clearOnCompletedAssuredBooking(
+        manager,
+        booking.passengerId,
+        booking.id,
+      );
+    }
   }
 
   private async issueDriverCancelCoupon(
@@ -1327,6 +1562,21 @@ export class AssuredLifecycleService {
       couponIssued = Boolean(coupon);
     }
 
+    const lifecycleEvent = await manager
+      .getRepository(AssuredLifecycleEvent)
+      .findOne({
+        where: { idempotencyKey: `assured:rider-cancel:${booking.id}` },
+      });
+
+    const cancelMetadata = (lifecycleEvent?.metadata ?? {}) as {
+      securityDepositForfeited?: string;
+      fareRefunded?: string;
+      driverCompensation?: string;
+      platformAmount?: string;
+      nextAssuredDepositPercentage?: number;
+      farePayment?: BookingFarePayment | null;
+    };
+
     const partialEvent = await manager
       .getRepository(AssuredLifecycleEvent)
       .findOne({
@@ -1340,14 +1590,35 @@ export class AssuredLifecycleService {
         ],
       });
 
+    const isPassengerCancel =
+      booking.cancellationReason === BookingCancellationReason.RIDER_CANCELLED &&
+      booking.bookingMode === BookingMode.ASSURED;
+
     return {
       bookingId: booking.id,
       rideId: booking.rideId,
       status: booking.status,
       cancellationReason: booking.cancellationReason,
       seatsRestored: booking.seats,
-      partialFillCompensation: partialEvent?.amount ?? null,
+      partialFillCompensation: isPassengerCancel
+        ? null
+        : partialEvent?.amount ?? null,
       couponIssued,
+      ...(isPassengerCancel
+        ? {
+            securityDepositForfeited:
+              cancelMetadata.securityDepositForfeited ??
+              lifecycleEvent?.amount ??
+              null,
+            farePayment:
+              cancelMetadata.farePayment ?? booking.farePaymentMethod,
+            fareRefunded: cancelMetadata.fareRefunded ?? '0',
+            driverCompensation: cancelMetadata.driverCompensation ?? '0',
+            platformAmount: cancelMetadata.platformAmount ?? '0',
+            nextAssuredDepositPercentage:
+              cancelMetadata.nextAssuredDepositPercentage ?? null,
+          }
+        : {}),
       alreadyApplied,
     };
   }

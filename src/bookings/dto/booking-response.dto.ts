@@ -171,6 +171,13 @@ export class BookingResponseDto {
 
   @ApiPropertyOptional({
     description:
+      'Why an elevated Assured deposit applies (e.g. PREVIOUS_ASSURED_CANCELLATION)',
+    nullable: true,
+  })
+  securityDepositReason?: string | null;
+
+  @ApiPropertyOptional({
+    description:
       'Assured security deposit hold state. HELD when an ACTIVE wallet hold exists; NONE when Assured deposit was 0/waived; null for Regular.',
     enum: ['HELD', 'NONE'],
     nullable: true,

@@ -103,7 +103,10 @@ export class BookingsController {
   @ApiOperation({
     summary: 'Cancel own booking (passenger only)',
     description:
-      'Assured-mode before departure: consume rider deposit (100% platform), restore seats, optional platform-funded partial-fill under KEEP_ASSURED_ONLY. Regular-mode: restore seats only. After departure use no-show. Drivers cannot use this endpoint.',
+      'REGULAR bookings: cancel and restore seats only (no wallet movements). ' +
+      'ASSURED CONFIRMED bookings before departure: forfeits security deposit (100% to driver on PAY_LATER; separate deposit + 30/70 fare split on PAY_NOW with no fare refund), restores seats, sets next Assured deposit to 10% for the passenger. ' +
+      'Ride remains active when other passengers remain. Idempotent via assured:rider-cancel:{bookingId}. ' +
+      'After departure use rider no-show (driver only). Drivers cannot use this endpoint.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: AssuredBookingLifecycleResponseDto })
