@@ -260,6 +260,8 @@ export class RidesService {
             driverDepositForfeited: null,
             riderCompensationTotal: '0',
             platformForfeiture: '0',
+            fareRefundedTotal: '0',
+            couponsIssuedCount: 0,
             alreadyApplied: true,
           };
         }
@@ -305,6 +307,8 @@ export class RidesService {
         driverDepositForfeited: null,
         riderCompensationTotal: '0',
         platformForfeiture: '0',
+        fareRefundedTotal: '0',
+        couponsIssuedCount: 0,
         alreadyApplied: false,
       };
     });

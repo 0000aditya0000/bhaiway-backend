@@ -50,6 +50,20 @@ export class AssuredRideLifecycleResponseDto {
   platformForfeiture!: string;
 
   @ApiProperty({
+    description:
+      'Total Assured PAY_NOW fare refunded to passengers on driver cancellation (points). Zero for driver no-show or when no PAY_NOW bookings existed.',
+    example: '500',
+  })
+  fareRefundedTotal!: string;
+
+  @ApiProperty({
+    description:
+      'Number of NEXT_ASSURED_DEPOSIT_FREE coupons issued to confirmed passengers (driver cancellation only).',
+    example: 2,
+  })
+  couponsIssuedCount!: number;
+
+  @ApiProperty({
     description: 'True when the action was already applied (idempotent retry)',
   })
   alreadyApplied!: boolean;

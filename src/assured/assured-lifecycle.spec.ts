@@ -13,8 +13,10 @@ import { BookingsModule } from '../bookings/bookings.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import {
   BookingCancellationReason,
+  BookingFarePayment,
   BookingMode,
   BookingPaymentMethod,
+  BookingPaymentStatus,
   BookingStatus,
 } from '../bookings/enums/booking.enums';
 import {
@@ -306,6 +308,9 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     passenger: Awaited<ReturnType<typeof fundedPassenger>>,
     rideId: string,
     seats = 1,
+    options: {
+      farePayment?: BookingFarePayment;
+    } = {},
   ) {
     const response = await request(app.getHttpServer())
       .post('/bookings')
@@ -315,6 +320,9 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
         rideId,
         seats,
         paymentMethod: BookingPaymentMethod.ASSURED_DEPOSIT,
+        ...(options.farePayment
+          ? { farePayment: options.farePayment }
+          : {}),
       })
       .expect(201);
     return response.body as {
@@ -322,6 +330,8 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       securityDepositAmount: string | null;
       totalAmount: string;
       bookingMode: BookingMode;
+      farePayment?: BookingFarePayment | null;
+      farePaymentStatus?: BookingPaymentStatus;
     };
   }
 
@@ -1144,6 +1154,313 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       .post(`/bookings/${idorBooking.id}/cancel`)
       .set('Authorization', `Bearer ${idorOther.login.accessToken}`)
       .expect(404);
+  });
+
+  describe('Phase 1 driver cancellation (fare refund, coupons, settlement)', () => {
+    it('refunds PAY_NOW fare separately from deposit release and compensation', async () => {
+      const driver = await fundedDriver();
+      const payNowPassenger = await fundedPassenger(5000n);
+      const payLaterPassenger = await fundedPassenger(5000n);
+      const ride = await publishAssuredRide(driver);
+
+      const payNowBooking = await bookAssured(payNowPassenger, ride.id, 1, {
+        farePayment: BookingFarePayment.PAY_NOW,
+      });
+      const payLaterBooking = await bookAssured(
+        payLaterPassenger,
+        ride.id,
+        1,
+        { farePayment: BookingFarePayment.PAY_LATER },
+      );
+      expect(payNowBooking.totalAmount).toBe('500');
+      expect(payNowBooking.farePaymentStatus).toBe(BookingPaymentStatus.PAID);
+      expect(payLaterBooking.farePaymentStatus).toBe(
+        BookingPaymentStatus.UNPAID,
+      );
+
+      const payNowBalanceBefore = await dataSource
+        .getRepository(WalletBalance)
+        .findOneByOrFail({ walletId: payNowPassenger.wallet.id });
+
+      const cancelled = await request(app.getHttpServer())
+        .post(`/rides/${ride.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .expect(200);
+
+      expect(cancelled.body).toMatchObject({
+        fareRefundedTotal: '500',
+        couponsIssuedCount: 2,
+        riderCompensationTotal: '60',
+        platformForfeiture: '40',
+      });
+
+      const payNowHoldRelease = await dataSource
+        .getRepository(WalletTransaction)
+        .findOne({
+          where: {
+            walletId: payNowPassenger.wallet.id,
+            transactionType: WalletTransactionType.HOLD_RELEASE,
+          },
+        });
+      const payNowComp = await dataSource
+        .getRepository(WalletTransaction)
+        .findOne({
+          where: {
+            walletId: payNowPassenger.wallet.id,
+            transactionType: WalletTransactionType.ASSURED_RIDER_COMPENSATION,
+          },
+        });
+      const payNowFareRefund = await dataSource
+        .getRepository(WalletTransaction)
+        .findOne({
+          where: {
+            walletId: payNowPassenger.wallet.id,
+            transactionType: WalletTransactionType.REFUND,
+          },
+        });
+
+      expect(payNowHoldRelease?.amount).toBe('25');
+      expect(payNowComp?.amount).toBe('30');
+      expect(payNowFareRefund?.amount).toBe('500');
+      expect(payNowHoldRelease?.id).not.toBe(payNowComp?.id);
+      expect(payNowHoldRelease?.id).not.toBe(payNowFareRefund?.id);
+      expect(payNowComp?.id).not.toBe(payNowFareRefund?.id);
+
+      const payLaterRefund = await dataSource
+        .getRepository(WalletTransaction)
+        .count({
+          where: {
+            walletId: payLaterPassenger.wallet.id,
+            transactionType: WalletTransactionType.REFUND,
+          },
+        });
+      expect(payLaterRefund).toBe(0);
+
+      const payNowBalanceAfter = await dataSource
+        .getRepository(WalletBalance)
+        .findOneByOrFail({ walletId: payNowPassenger.wallet.id });
+      expect(
+        BigInt(payNowBalanceAfter.purchasedAvailable) -
+          BigInt(payNowBalanceBefore.purchasedAvailable),
+      ).toBe(25n + 30n + 500n);
+
+      const payNowCoupon = await dataSource
+        .getRepository(UserCoupon)
+        .findOneByOrFail({
+          userId: payNowPassenger.login.user.id,
+          sourceReferenceType: 'ASSURED_DRIVER_CANCEL',
+          sourceReferenceId: payNowBooking.id,
+        });
+      expect(payNowCoupon.couponType).toBe(
+        UserCouponType.NEXT_ASSURED_DEPOSIT_FREE,
+      );
+      expect(payNowCoupon.status).toBe(UserCouponStatus.UNUSED);
+
+      const payLaterCoupon = await dataSource
+        .getRepository(UserCoupon)
+        .findOneByOrFail({
+          userId: payLaterPassenger.login.user.id,
+          sourceReferenceType: 'ASSURED_DRIVER_CANCEL',
+          sourceReferenceId: payLaterBooking.id,
+        });
+      expect(payLaterCoupon.status).toBe(UserCouponStatus.UNUSED);
+
+      const payNowRow = await dataSource
+        .getRepository(Booking)
+        .findOneByOrFail({ id: payNowBooking.id });
+      expect(payNowRow.paymentStatus).toBe(BookingPaymentStatus.PAID);
+      expect(payNowRow.fareWalletTransactionId).not.toBeNull();
+      expect(payNowRow.totalAmount).toBe('500');
+      expect(payNowRow.assuredDepositAmount).toBe('25');
+    });
+
+    it('splits compensation evenly among three passengers with remainder to first', async () => {
+      const driver = await fundedDriver();
+      const passengers = await Promise.all([
+        fundedPassenger(),
+        fundedPassenger(),
+        fundedPassenger(),
+      ]);
+      const ride = await publishAssuredRide(driver);
+
+      for (const passenger of passengers) {
+        await bookAssured(passenger, ride.id, 1);
+      }
+
+      const cancelled = await request(app.getHttpServer())
+        .post(`/rides/${ride.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .expect(200);
+
+      expect(cancelled.body).toMatchObject({
+        driverDepositForfeited: '100',
+        riderCompensationTotal: '60',
+        platformForfeiture: '40',
+        couponsIssuedCount: 3,
+      });
+
+      const comps = await dataSource.getRepository(WalletTransaction).find({
+        where: {
+          transactionType: WalletTransactionType.ASSURED_RIDER_COMPENSATION,
+          referenceId: ride.id,
+        },
+        order: { createdAt: 'ASC' },
+      });
+      expect(comps).toHaveLength(3);
+      expect(comps.map((tx) => tx.amount).sort()).toEqual(['20', '20', '20']);
+    });
+
+    it('idempotent retry does not double-refund fare, compensate, or issue coupons', async () => {
+      const driver = await fundedDriver();
+      const passenger = await fundedPassenger(5000n);
+      const ride = await publishAssuredRide(driver);
+      await bookAssured(passenger, ride.id, 1, {
+        farePayment: BookingFarePayment.PAY_NOW,
+      });
+
+      await request(app.getHttpServer())
+        .post(`/rides/${ride.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .expect(200);
+
+      const retry = await request(app.getHttpServer())
+        .post(`/rides/${ride.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .expect(200);
+      expect(retry.body.alreadyApplied).toBe(true);
+
+      expect(
+        await dataSource.getRepository(WalletTransaction).count({
+          where: {
+            walletId: passenger.wallet.id,
+            transactionType: WalletTransactionType.REFUND,
+          },
+        }),
+      ).toBe(1);
+      expect(
+        await dataSource.getRepository(WalletTransaction).count({
+          where: {
+            walletId: passenger.wallet.id,
+            transactionType: WalletTransactionType.ASSURED_RIDER_COMPENSATION,
+          },
+        }),
+      ).toBe(1);
+      expect(
+        await dataSource.getRepository(UserCoupon).count({
+          where: {
+            userId: passenger.login.user.id,
+            sourceReferenceType: 'ASSURED_DRIVER_CANCEL',
+          },
+        }),
+      ).toBe(1);
+      expect(
+        await dataSource.getRepository(WalletTransaction).count({
+          where: {
+            walletId: PLATFORM_WALLET_ID,
+            transactionType: WalletTransactionType.ASSURED_PLATFORM_FORFEITURE,
+            referenceId: ride.id,
+          },
+        }),
+      ).toBe(1);
+    });
+
+    it('driver no-show does not refund PAY_NOW fare or issue driver-cancel coupons', async () => {
+      const driver = await fundedDriver();
+      const passenger = await fundedPassenger(5000n);
+      const ride = await publishAssuredRide(driver, {
+        departureDate: PAST_DATE,
+        departureTime: PAST_TIME,
+        source: 'NoShow Fare Source',
+        destination: 'NoShow Fare Dest',
+      });
+      await bookAssured(passenger, ride.id, 1, {
+        farePayment: BookingFarePayment.PAY_NOW,
+      });
+
+      await request(app.getHttpServer())
+        .post(`/rides/${ride.id}/driver-no-show`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .expect(200);
+
+      expect(
+        await dataSource.getRepository(WalletTransaction).count({
+          where: {
+            walletId: passenger.wallet.id,
+            transactionType: WalletTransactionType.REFUND,
+          },
+        }),
+      ).toBe(0);
+      expect(
+        await dataSource.getRepository(UserCoupon).count({
+          where: {
+            userId: passenger.login.user.id,
+            sourceReferenceType: 'ASSURED_DRIVER_CANCEL',
+          },
+        }),
+      ).toBe(0);
+    });
+
+    it('rolls back when a downstream fare refund fails', async () => {
+      const driver = await fundedDriver();
+      const passengerA = await fundedPassenger(5000n);
+      const passengerB = await fundedPassenger(5000n);
+      const ride = await publishAssuredRide(driver);
+      await bookAssured(passengerA, ride.id, 1, {
+        farePayment: BookingFarePayment.PAY_NOW,
+      });
+      await bookAssured(passengerB, ride.id, 1, {
+        farePayment: BookingFarePayment.PAY_NOW,
+      });
+
+      const bookingB = await dataSource.getRepository(Booking).findOneByOrFail({
+        where: { rideId: ride.id, passengerId: passengerB.login.user.id },
+      });
+
+      let refundCalls = 0;
+      const originalCredit = walletService.creditPointsInTransaction.bind(
+        walletService,
+      );
+      const spy = jest
+        .spyOn(walletService, 'creditPointsInTransaction')
+        .mockImplementation(async (manager, input) => {
+          if (
+            input.transactionType === WalletTransactionType.REFUND &&
+            input.referenceId === bookingB.id
+          ) {
+            refundCalls += 1;
+            throw new Error('simulated fare refund failure');
+          }
+          return originalCredit(manager, input);
+        });
+
+      await request(app.getHttpServer())
+        .post(`/rides/${ride.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .expect(500);
+
+      expect(refundCalls).toBe(1);
+
+      const rideRow = await dataSource
+        .getRepository(Ride)
+        .findOneByOrFail({ id: ride.id });
+      expect(rideRow.status).toBe(RideStatus.ASSURANCE_ACTIVE);
+
+      expect(
+        await dataSource.getRepository(WalletTransaction).count({
+          where: {
+            walletId: passengerA.wallet.id,
+            transactionType: WalletTransactionType.REFUND,
+          },
+        }),
+      ).toBe(0);
+      expect(
+        await dataSource.getRepository(UserCoupon).count({
+          where: { sourceReferenceType: 'ASSURED_DRIVER_CANCEL' },
+        }),
+      ).toBe(0);
+
+      spy.mockRestore();
+    });
   });
 });
 

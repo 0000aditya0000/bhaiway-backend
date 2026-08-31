@@ -219,7 +219,7 @@ export class RidesController {
   @ApiOperation({
     summary: 'Cancel a published ride (owning driver only)',
     description:
-      'REGULAR: cancels the ride and all active passenger bookings (RIDE_CANCELLED). No wallet deposit/refund processing. ASSURED: before scheduled departure consumes driver ASSURED_DEPOSIT, releases affected rider deposits, distributes 60/40 compensation, cancels bookings. Idempotent when already cancelled with the same reason. Status cannot be set via PATCH.',
+      'REGULAR: cancels the ride and all active passenger bookings (RIDE_CANCELLED). No wallet deposit/refund processing. ASSURED: before scheduled departure consumes driver ASSURED_DEPOSIT, releases affected rider deposits, distributes 60/40 compensation, refunds Assured PAY_NOW fares separately, issues NEXT_ASSURED_DEPOSIT_FREE coupons, cancels bookings, and advances the queue when applicable. Idempotent when already cancelled with the same reason. Status cannot be set via PATCH.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: AssuredRideLifecycleResponseDto })

@@ -16,7 +16,9 @@ import {
 import { Booking } from '../bookings/entities/booking.entity';
 import {
   BookingCancellationReason,
+  BookingFarePayment,
   BookingMode,
+  BookingPaymentStatus,
   BookingStatus,
 } from '../bookings/enums/booking.enums';
 import {
@@ -72,9 +74,11 @@ import {
 } from './entities/assured-lifecycle-event.entity';
 
 const COUPON_SOURCE_RIDER_NO_SHOW = 'ASSURED_RIDER_NO_SHOW';
+const COUPON_SOURCE_DRIVER_CANCEL = 'ASSURED_DRIVER_CANCEL';
 const REF_DRIVER_FORFEIT_COMP = 'ASSURED_DRIVER_FORFEIT_COMP';
 const REF_PLATFORM_FORFEITURE = 'ASSURED_PLATFORM_FORFEITURE';
 const REF_PARTIAL_FILL = 'ASSURED_PARTIAL_FILL_COMPENSATION';
+const REF_FARE_REFUND = 'ASSURED_DRIVER_CANCEL_FARE_REFUND';
 
 type DriverForfeitEvent =
   | AssuredLifecycleEventType.DRIVER_CANCEL
@@ -555,6 +559,9 @@ export class AssuredLifecycleService {
       },
       order: { createdAt: 'ASC', id: 'ASC' },
     });
+    const confirmedAssuredBookings = assuredBookings.filter(
+      (booking) => booking.status === BookingStatus.CONFIRMED,
+    );
 
     const allActiveBookings = await manager.getRepository(Booking).find({
       where: {
@@ -630,9 +637,24 @@ export class AssuredLifecycleService {
 
     let riderCompensationTotal = 0n;
     let platformForfeiture = 0n;
+    let fareRefundedTotal = 0n;
+    let couponsIssuedCount = 0;
+
+    const passengerIds = [
+      ...new Set(confirmedAssuredBookings.map((b) => b.passengerId)),
+    ];
+    const wallets =
+      passengerIds.length === 0
+        ? []
+        : await manager.getRepository(Wallet).find({
+            where: { userId: In(passengerIds) },
+          });
+    const walletByUserId = new Map(
+      wallets.map((w) => [w.userId, w] as const),
+    );
 
     if (driverHoldAmount > 0n) {
-      if (assuredBookings.length === 0) {
+      if (confirmedAssuredBookings.length === 0) {
         // CRITICAL: zero affected riders → 100% platform (not 60/40).
         platformForfeiture = driverHoldAmount;
         await this.walletService.creditPointsInTransaction(manager, {
@@ -654,17 +676,7 @@ export class AssuredLifecycleService {
         platformForfeiture = driverHoldAmount - riderShare;
         const shares = distributeEvenlyWithRemainder(
           riderShare,
-          assuredBookings.length,
-        );
-
-        const passengerIds = [
-          ...new Set(assuredBookings.map((b) => b.passengerId)),
-        ];
-        const wallets = await manager.getRepository(Wallet).find({
-          where: { userId: In(passengerIds) },
-        });
-        const walletByUserId = new Map(
-          wallets.map((w) => [w.userId, w] as const),
+          confirmedAssuredBookings.length,
         );
 
         const creditPlan: Array<{
@@ -675,8 +687,8 @@ export class AssuredLifecycleService {
           kind: 'rider' | 'platform';
         }> = [];
 
-        for (let i = 0; i < assuredBookings.length; i += 1) {
-          const booking = assuredBookings[i];
+        for (let i = 0; i < confirmedAssuredBookings.length; i += 1) {
+          const booking = confirmedAssuredBookings[i];
           const share = shares[i] ?? 0n;
           if (share <= 0n) {
             continue;
@@ -738,6 +750,54 @@ export class AssuredLifecycleService {
       }
     }
 
+    if (params.eventType === AssuredLifecycleEventType.DRIVER_CANCEL) {
+      const payNowBookings = confirmedAssuredBookings
+        .filter(
+          (booking) =>
+            booking.farePaymentMethod === BookingFarePayment.PAY_NOW &&
+            booking.paymentStatus === BookingPaymentStatus.PAID &&
+            booking.fareWalletTransactionId,
+        )
+        .sort((a, b) => {
+          const walletA = walletByUserId.get(a.passengerId)?.id ?? '';
+          const walletB = walletByUserId.get(b.passengerId)?.id ?? '';
+          return walletA.localeCompare(walletB);
+        });
+
+      for (const booking of payNowBookings) {
+        const fareAmount = BigInt(booking.totalAmount);
+        if (fareAmount <= 0n) {
+          continue;
+        }
+        const wallet = walletByUserId.get(booking.passengerId);
+        if (!wallet) {
+          throw new NotFoundException('Rider wallet not found');
+        }
+        await this.walletService.creditPointsInTransaction(manager, {
+          walletId: wallet.id,
+          userId: booking.passengerId,
+          amount: fareAmount,
+          sourceType: WalletPointSource.PURCHASED,
+          referenceType: REF_FARE_REFUND,
+          referenceId: booking.id,
+          idempotencyKey: `assured:fare-refund:${ride.id}:${booking.id}`,
+          transactionType: WalletTransactionType.REFUND,
+        });
+        fareRefundedTotal += fareAmount;
+      }
+
+      for (const booking of confirmedAssuredBookings) {
+        const issued = await this.issueDriverCancelCoupon(
+          manager,
+          booking.passengerId,
+          booking.id,
+        );
+        if (issued) {
+          couponsIssuedCount += 1;
+        }
+      }
+    }
+
     for (const booking of allActiveBookings) {
       this.restoreSeats(ride, booking.seats);
       booking.status = BookingStatus.CANCELLED;
@@ -776,6 +836,8 @@ export class AssuredLifecycleService {
           riderCompensationTotal: riderCompensationTotal.toString(),
           platformForfeiture: platformForfeiture.toString(),
           cancelledBookingCount: allActiveBookings.length,
+          fareRefundedTotal: fareRefundedTotal.toString(),
+          couponsIssuedCount,
         },
       },
     );
@@ -789,6 +851,8 @@ export class AssuredLifecycleService {
         driverHoldAmount > 0n ? driverHoldAmount.toString() : null,
       riderCompensationTotal: riderCompensationTotal.toString(),
       platformForfeiture: platformForfeiture.toString(),
+      fareRefundedTotal: fareRefundedTotal.toString(),
+      couponsIssuedCount,
       alreadyApplied: false,
     };
   }
@@ -1038,6 +1102,42 @@ export class AssuredLifecycleService {
     };
   }
 
+  private async issueDriverCancelCoupon(
+    manager: EntityManager,
+    userId: string,
+    bookingId: string,
+  ): Promise<boolean> {
+    const existing = await manager.getRepository(UserCoupon).findOne({
+      where: {
+        sourceReferenceType: COUPON_SOURCE_DRIVER_CANCEL,
+        sourceReferenceId: bookingId,
+      },
+    });
+    if (existing) {
+      return true;
+    }
+
+    try {
+      const coupon = manager.getRepository(UserCoupon).create({
+        userId,
+        couponType: UserCouponType.NEXT_ASSURED_DEPOSIT_FREE,
+        status: UserCouponStatus.UNUSED,
+        sourceReferenceType: COUPON_SOURCE_DRIVER_CANCEL,
+        sourceReferenceId: bookingId,
+        usedAt: null,
+        usedBookingId: null,
+        expiresAt: null,
+      });
+      await manager.getRepository(UserCoupon).save(coupon);
+      return true;
+    } catch (error) {
+      if (this.isUniqueViolation(error, 'UQ_user_coupons_source')) {
+        return true;
+      }
+      throw error;
+    }
+  }
+
   private async issueRiderNoShowCoupon(
     manager: EntityManager,
     userId: string,
@@ -1170,6 +1270,8 @@ export class AssuredLifecycleService {
       riderCompensationTotal?: string;
       platformForfeiture?: string;
       cancelledBookingCount?: number;
+      fareRefundedTotal?: string;
+      couponsIssuedCount?: number;
     };
 
     const cancelledCount =
@@ -1189,6 +1291,8 @@ export class AssuredLifecycleService {
       driverDepositForfeited: event?.amount ?? ride.assuredDepositAmount,
       riderCompensationTotal: metadata.riderCompensationTotal ?? '0',
       platformForfeiture: metadata.platformForfeiture ?? '0',
+      fareRefundedTotal: metadata.fareRefundedTotal ?? '0',
+      couponsIssuedCount: metadata.couponsIssuedCount ?? 0,
       alreadyApplied,
     };
   }
