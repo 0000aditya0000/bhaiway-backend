@@ -42,6 +42,7 @@ import { DriverBookingsQueryDto } from './dto/driver-bookings-query.dto';
 import { DriverBookingPageDto } from './dto/driver-booking-response.dto';
 import { VerifyPickupDto } from './dto/verify-pickup.dto';
 import { VerifyPickupResponseDto } from './dto/verify-pickup-response.dto';
+import { CommuteBookingDriverActionResponseDto } from './dto/commute-booking-action-response.dto';
 import { BookingsService } from './bookings.service';
 
 @ApiTags('Bookings')
@@ -54,15 +55,17 @@ export class BookingsController {
 
   @Post()
   @ApiOperation({
-    summary: 'Create a booking (PAY_LATER, PAY_NOW, or ASSURED_DEPOSIT)',
+    summary: 'Create a booking (PAY_LATER, PAY_NOW, ASSURED_DEPOSIT, or COMMUTE request)',
     description:
       'REGULAR rides: PAY_NOW or PAY_LATER (farePayment must be omitted). ' +
+      'COMMUTE rides: mandatory upfront rider fare debit; booking starts PENDING until the driver accepts. ' +
+      'Pending Commute requests do not reduce availableSeats. Idempotency-Key required for Commute. ' +
       'ASSURED rides with paymentMethod=ASSURED_DEPOSIT: mandatory security-deposit wallet HOLD; ' +
       'optional farePayment=PAY_NOW|PAY_LATER (defaults to PAY_LATER when omitted). ' +
       'ASSURED_DEPOSIT + PAY_LATER → deposit held, fare UNPAID. ' +
       'ASSURED_DEPOSIT + PAY_NOW → deposit held and fare debited atomically (fare PAID). ' +
       'Assured rides cannot use PAY_NOW/PAY_LATER without deposit unless the driver has opened remaining seats (ALLOW_REGULAR_RIDERS). ' +
-      'Insufficient balance returns 422. Idempotency-Key is required for PAY_NOW and ASSURED_DEPOSIT.',
+      'Insufficient balance returns 422. Idempotency-Key is required for PAY_NOW, ASSURED_DEPOSIT, and COMMUTE.',
   })
   @ApiHeader({
     name: 'Idempotency-Key',
@@ -104,6 +107,7 @@ export class BookingsController {
     summary: 'Cancel own booking (passenger only)',
     description:
       'REGULAR bookings: cancel and restore seats only (no wallet movements). ' +
+      'COMMUTE bookings: passenger cancellation is not yet available (returns 400). ' +
       'ASSURED CONFIRMED bookings before departure: forfeits security deposit (100% to driver on PAY_LATER; separate deposit + 30/70 fare split on PAY_NOW with no fare refund), restores seats, sets next Assured deposit to 10% for the passenger. ' +
       'Ride remains active when other passengers remain. Idempotent via assured:rider-cancel:{bookingId}. ' +
       'After departure use rider no-show (driver only). Drivers cannot use this endpoint.',
@@ -119,6 +123,57 @@ export class BookingsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.bookingsService.cancelByPassenger(currentUser.userId, id);
+  }
+
+  @Post(':id/accept')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Accept a PENDING Commute booking request (owning driver only)',
+    description:
+      'COMMUTE only. Atomically verifies available seats, decrements availableSeats, and moves PENDING → CONFIRMED. ' +
+      'No additional wallet movement (rider fare was debited at request time). Idempotent when already CONFIRMED. ' +
+      'Pending requests never reserved seats; acceptance is when seats are consumed.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOkResponse({ type: CommuteBookingDriverActionResponseDto })
+  @ApiNotFoundResponse({
+    description: 'Booking not found for this driver',
+  })
+  @ApiConflictResponse({
+    description: 'Insufficient seats or invalid booking status',
+  })
+  acceptCommuteBooking(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.bookingsService.acceptCommuteBookingByDriver(
+      currentUser.userId,
+      id,
+    );
+  }
+
+  @Post(':id/reject')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reject a PENDING Commute booking request (owning driver only)',
+    description:
+      'COMMUTE only. Moves PENDING → CANCELLED with DRIVER_REJECTED and refunds the full rider-paid amount. ' +
+      'availableSeats is unchanged (pending requests never reserved seats). Idempotent via commute:reject:{bookingId}.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOkResponse({ type: CommuteBookingDriverActionResponseDto })
+  @ApiNotFoundResponse({
+    description: 'Booking not found for this driver',
+  })
+  @ApiConflictResponse({ description: 'Invalid booking status' })
+  rejectCommuteBooking(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.bookingsService.rejectCommuteBookingByDriver(
+      currentUser.userId,
+      id,
+    );
   }
 
   @Post(':id/rider-no-show')
@@ -178,7 +233,9 @@ export class BookingsController {
   @ApiOperation({
     summary: 'List bookings for rides owned by the authenticated driver',
     description:
-      'Returns paginated bookings where ride.driverId matches the JWT subject only. Optional rideId/status filters. When rideId is set, results are ordered by pickupOrder ASC for sequential boarding. Includes pickupStatus (never OTP). Read-only: never mutates wallets, holds, seats, or booking state. Client-supplied driverId/userId are rejected.',
+      'Returns paginated bookings where ride.driverId matches the JWT subject only. Optional rideId/status filters (use status=PENDING for Commute requests). ' +
+      'When rideId is set, results are ordered by pickupOrder ASC for trip-lifecycle rides; Commute PENDING requests order by createdAt. ' +
+      'Includes pickupStatus (never OTP). Read-only: never mutates wallets, holds, seats, or booking state.',
   })
   @ApiOkResponse({ type: DriverBookingPageDto })
   @ApiBadRequestResponse({

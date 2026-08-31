@@ -25,7 +25,9 @@ export class CreateRideDto {
     enumName: 'RideType',
     example: RideType.REGULAR,
     description:
-      'REGULAR or ASSURED. ASSURED publishing creates an atomic driver security-deposit hold using the admin deposit percentage. Assured requires source/destination coordinates and Idempotency-Key.',
+      'REGULAR, ASSURED, or COMMUTE. ASSURED publishing creates an atomic driver security-deposit hold. ' +
+      'COMMUTE: pricePerSeat is the driver-published base fare; passengers see +10% via riderPricePerSeat in search/public APIs. ' +
+      'Assured requires source/destination coordinates and Idempotency-Key.',
   })
   @IsEnum(RideType)
   rideType!: RideType;

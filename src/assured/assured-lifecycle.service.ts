@@ -939,6 +939,12 @@ export class AssuredLifecycleService {
 
     // Regular bookings on Assured (or Regular) rides: cancel + restore seats only.
     if (booking.bookingMode !== BookingMode.ASSURED) {
+      if (booking.bookingMode === BookingMode.COMMUTE) {
+        throw new BadRequestException(
+          'Commute passenger cancellation is not yet available',
+        );
+      }
+
       if (
         params.eventType === AssuredLifecycleEventType.RIDER_NO_SHOW
       ) {

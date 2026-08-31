@@ -185,10 +185,42 @@ export class BookingResponseDto {
   securityDepositStatus?: 'HELD' | 'NONE' | null;
 
   @ApiPropertyOptional({
-    description: 'Whether Assured deposit rules or Regular fare rules applied',
-    enum: ['ASSURED', 'REGULAR'],
+    description:
+      'Whether Assured deposit rules, Regular fare rules, or Commute request flow applied',
+    enum: ['ASSURED', 'REGULAR', 'COMMUTE'],
   })
   bookingMode?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'COMMUTE only: rider fare per seat snapshot (passenger-paid amount per seat)',
+    nullable: true,
+    example: '110',
+  })
+  riderPricePerSeatSnapshot?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'COMMUTE only: driver-published fare per seat snapshot',
+    nullable: true,
+    example: '100',
+  })
+  driverPricePerSeatSnapshot?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'COMMUTE only: eventual driver share (driver fare × seats). Not credited until trip completion.',
+    nullable: true,
+    example: '200',
+  })
+  driverShareAmount?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'COMMUTE only: eventual BhaiWay margin (rider paid − driver share). Not a separate platform fee.',
+    nullable: true,
+    example: '20',
+  })
+  platformShareAmount?: string | null;
 
   @ApiPropertyOptional({
     enum: BookingPickupStatus,

@@ -23,6 +23,27 @@ export class ReleasedDepositsDto {
   riderCount!: number;
 }
 
+export class CommuteSettlementSummaryDto {
+  @ApiProperty({
+    description: 'Number of CONFIRMED Commute bookings settled at completion',
+    example: 2,
+  })
+  settledBookingCount!: number;
+
+  @ApiProperty({
+    description: 'Total driver share credited (integer points)',
+    example: '300',
+  })
+  driverSettlementTotal!: string;
+
+  @ApiProperty({
+    description:
+      'Total BhaiWay margin credited (integer points; not a separate platform fee)',
+    example: '30',
+  })
+  platformMarginTotal!: string;
+}
+
 export class CompleteRideResponseDto {
   @ApiProperty({ format: 'uuid' })
   rideId!: string;
@@ -38,6 +59,13 @@ export class CompleteRideResponseDto {
     description: 'Present for Assured rides (amounts only; no wallet internals)',
   })
   releasedDeposits?: ReleasedDepositsDto;
+
+  @ApiPropertyOptional({
+    type: CommuteSettlementSummaryDto,
+    description:
+      'Present for Commute rides after completion settlement. Rider fare was already paid at request time.',
+  })
+  commuteSettlement?: CommuteSettlementSummaryDto;
 
   @ApiProperty({
     description: 'True when the ride was already COMPLETED (idempotent retry)',

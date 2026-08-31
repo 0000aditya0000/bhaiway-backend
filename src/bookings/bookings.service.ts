@@ -24,6 +24,7 @@ import { AssuredLifecycleService } from '../assured/assured-lifecycle.service';
 import { AssuredQueueService } from '../assured/assured-queue.service';
 import {
   isAssuredBookableStatus,
+  isCommutePublishedStatus,
   isRegularPublishedStatus,
 } from '../assured/assured-ride-status';
 import {
@@ -45,6 +46,7 @@ import {
   RideType,
 } from '../rides/enums/ride.enums';
 import { supportsTripLifecycle } from '../rides/ride-trip-lifecycle';
+import { computeCommuteBookingFareSnapshots } from '../rides/commute-fare.math';
 import { SettingsService } from '../settings/settings.service';
 import { User } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
@@ -57,6 +59,8 @@ import {
   WalletOperationConflictError,
 } from '../wallet/errors/wallet.errors';
 import { WalletHoldType } from '../wallet/entities/wallet-hold.entity';
+import { WalletPointSource } from '../wallet/entities/wallet-point-lot.entity';
+import { WalletTransactionType } from '../wallet/entities/wallet-transaction.entity';
 import { Wallet, WalletStatus } from '../wallet/entities/wallet.entity';
 import { WalletService } from '../wallet/wallet.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
@@ -82,6 +86,7 @@ import {
   DriverBookingItemDto,
   DriverBookingPageDto,
 } from './dto/driver-booking-response.dto';
+import { CommuteBookingDriverActionResponseDto } from './dto/commute-booking-action-response.dto';
 import { VerifyPickupResponseDto } from './dto/verify-pickup-response.dto';
 import { Booking } from './entities/booking.entity';
 import {
@@ -91,6 +96,7 @@ import {
   BookingPaymentStatus,
   BookingPickupStatus,
   BookingStatus,
+  BookingCancellationReason,
 } from './enums/booking.enums';
 import {
   decryptPickupOtp,
@@ -290,6 +296,24 @@ export class BookingsService {
       select: { id: true, rideType: true },
     });
 
+    if (ridePreview?.rideType === RideType.COMMUTE) {
+      if (dto.paymentMethod === BookingPaymentMethod.ASSURED_DEPOSIT) {
+        throw new BadRequestException(
+          'ASSURED_DEPOSIT is not valid for Commute rides',
+        );
+      }
+      if (dto.farePayment !== undefined) {
+        throw new BadRequestException(
+          'farePayment is not allowed for Commute bookings',
+        );
+      }
+      return this.createCommuteBooking(
+        passengerId,
+        dto,
+        options.idempotencyKey,
+      );
+    }
+
     if (ridePreview?.rideType === RideType.ASSURED) {
       if (dto.paymentMethod === BookingPaymentMethod.ASSURED_DEPOSIT) {
         return this.createAssuredDepositBooking(
@@ -332,6 +356,195 @@ export class BookingsService {
     throw new BadRequestException('Invalid payment method');
   }
 
+  async acceptCommuteBookingByDriver(
+    driverId: string,
+    bookingId: string,
+  ): Promise<CommuteBookingDriverActionResponseDto> {
+    return this.dataSource.transaction(async (manager) => {
+      const bookingPeek = await manager.getRepository(Booking).findOne({
+        where: { id: bookingId },
+      });
+      if (!bookingPeek) {
+        throw new NotFoundException('Booking not found');
+      }
+
+      const ride = await this.lockRideForUpdate(manager, bookingPeek.rideId);
+      if (ride.driverId !== driverId) {
+        throw new NotFoundException('Booking not found');
+      }
+
+      if (ride.rideType !== RideType.COMMUTE) {
+        throw new BadRequestException(
+          'Accept applies only to Commute bookings',
+        );
+      }
+
+      const booking = await this.lockBookingForUpdate(manager, bookingId);
+      if (!booking) {
+        throw new NotFoundException('Booking not found');
+      }
+
+      if (booking.bookingMode !== BookingMode.COMMUTE) {
+        throw new BadRequestException(
+          'Accept applies only to Commute bookings',
+        );
+      }
+
+      if (booking.status === BookingStatus.CONFIRMED) {
+        return this.toCommuteDriverActionResponse(
+          booking,
+          ride,
+          null,
+          true,
+        );
+      }
+
+      if (booking.status !== BookingStatus.PENDING) {
+        throw new ConflictException(
+          `Booking cannot be accepted from status ${booking.status}`,
+        );
+      }
+
+      this.assertCommuteRideAcceptable(ride);
+
+      if (ride.availableSeats < booking.seats) {
+        throw new ConflictException('Insufficient available seats');
+      }
+
+      ride.availableSeats -= booking.seats;
+      await manager.getRepository(Ride).save(ride);
+
+      booking.status = BookingStatus.CONFIRMED;
+      await manager.getRepository(Booking).save(booking);
+
+      return this.toCommuteDriverActionResponse(
+        booking,
+        ride,
+        null,
+        false,
+      );
+    });
+  }
+
+  async rejectCommuteBookingByDriver(
+    driverId: string,
+    bookingId: string,
+  ): Promise<CommuteBookingDriverActionResponseDto> {
+    const refundIdempotencyKey = `commute:reject:${bookingId}`;
+
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const bookingPeek = await manager.getRepository(Booking).findOne({
+          where: { id: bookingId },
+        });
+        if (!bookingPeek) {
+          throw new NotFoundException('Booking not found');
+        }
+
+        const ride = await this.lockRideForUpdate(manager, bookingPeek.rideId);
+        if (ride.driverId !== driverId) {
+          throw new NotFoundException('Booking not found');
+        }
+
+        if (ride.rideType !== RideType.COMMUTE) {
+          throw new BadRequestException(
+            'Reject applies only to Commute bookings',
+          );
+        }
+
+        const booking = await this.lockBookingForUpdate(manager, bookingId);
+        if (!booking) {
+          throw new NotFoundException('Booking not found');
+        }
+
+        if (booking.bookingMode !== BookingMode.COMMUTE) {
+          throw new BadRequestException(
+            'Reject applies only to Commute bookings',
+          );
+        }
+
+        if (booking.status === BookingStatus.CANCELLED) {
+          if (
+            booking.cancellationReason ===
+            BookingCancellationReason.DRIVER_REJECTED
+          ) {
+            return this.toCommuteDriverActionResponse(
+              booking,
+              ride,
+              null,
+              true,
+            );
+          }
+          throw new ConflictException(
+            `Booking is already cancelled (${booking.cancellationReason})`,
+          );
+        }
+
+        if (booking.status !== BookingStatus.PENDING) {
+          throw new ConflictException(
+            `Booking cannot be rejected from status ${booking.status}`,
+          );
+        }
+
+        if (
+          booking.paymentStatus === BookingPaymentStatus.PAID &&
+          BigInt(booking.totalAmount) > 0n
+        ) {
+          const wallet = await this.lockWalletForUpdate(
+            manager,
+            booking.passengerId,
+          );
+          await this.walletService.creditPointsInTransaction(manager, {
+            walletId: wallet.id,
+            userId: booking.passengerId,
+            amount: BigInt(booking.totalAmount),
+            sourceType: WalletPointSource.PURCHASED,
+            referenceType: 'BOOKING',
+            referenceId: booking.id,
+            idempotencyKey: refundIdempotencyKey,
+            transactionType: WalletTransactionType.REFUND,
+          });
+        }
+
+        const now = new Date();
+        booking.status = BookingStatus.CANCELLED;
+        booking.cancellationReason = BookingCancellationReason.DRIVER_REJECTED;
+        booking.cancelledAt = now;
+        await manager.getRepository(Booking).save(booking);
+
+        return this.toCommuteDriverActionResponse(
+          booking,
+          ride,
+          null,
+          false,
+        );
+      });
+    } catch (error) {
+      if (this.walletService.isIdempotencyKeyConflict(error)) {
+        const booking = await this.bookingRepository.findOne({
+          where: { id: bookingId },
+          relations: { ride: true },
+        });
+        if (
+          booking &&
+          booking.ride.driverId === driverId &&
+          booking.status === BookingStatus.CANCELLED &&
+          booking.cancellationReason ===
+            BookingCancellationReason.DRIVER_REJECTED
+        ) {
+          return this.toCommuteDriverActionResponse(
+            booking,
+            booking.ride,
+            null,
+            true,
+          );
+        }
+      }
+      this.rethrowWalletHttpErrors(error);
+      throw error;
+    }
+  }
+
   /**
    * farePayment is only valid with Assured ASSURED_DEPOSIT bookings.
    * Regular payment methods must not carry farePayment.
@@ -351,6 +564,149 @@ export class BookingsService {
     dto: CreateBookingDto,
   ): BookingFarePayment {
     return dto.farePayment ?? BookingFarePayment.PAY_LATER;
+  }
+
+  private async createCommuteBooking(
+    passengerId: string,
+    dto: CreateBookingDto,
+    idempotencyKey: string | null | undefined,
+  ): Promise<BookingResponseDto> {
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException(
+        'Idempotency-Key header is required for Commute bookings',
+      );
+    }
+
+    const key = idempotencyKey.trim();
+
+    const existing = await this.bookingRepository.findOne({
+      where: { idempotencyKey: key },
+    });
+    if (existing) {
+      this.assertCommuteIdempotentRequestMatches(existing, passengerId, dto);
+      const ride = await this.rideRepository.findOne({
+        where: { id: existing.rideId },
+      });
+      return this.toResponseWithDriver(existing, ride ?? undefined);
+    }
+
+    try {
+      const result = await this.dataSource.transaction(async (manager) => {
+        const ride = await this.lockRideForUpdate(manager, dto.rideId);
+        this.assertCommuteRideBookable(ride, passengerId);
+        this.assertCommuteRequestSeats(ride, dto.seats);
+        await this.assertNoActiveBooking(manager, passengerId, ride.id);
+
+        const existingAfterRideLock = await manager
+          .getRepository(Booking)
+          .findOne({ where: { idempotencyKey: key } });
+        if (existingAfterRideLock) {
+          this.assertCommuteIdempotentRequestMatches(
+            existingAfterRideLock,
+            passengerId,
+            dto,
+          );
+          return { booking: existingAfterRideLock, ride };
+        }
+
+        const wallet = await this.lockWalletForUpdate(manager, passengerId);
+        this.assertWalletAllowsPayment(wallet);
+
+        const fare = computeCommuteBookingFareSnapshots(
+          ride.pricePerSeat,
+          dto.seats,
+        );
+        const amount = BigInt(fare.totalAmount);
+        const bookingId = randomUUID();
+
+        let walletTransactionId: string | null = null;
+        if (amount > 0n) {
+          const debit = await this.walletService.debitPointsInTransaction(
+            manager,
+            {
+              walletId: wallet.id,
+              userId: passengerId,
+              amount,
+              referenceType: 'BOOKING',
+              referenceId: bookingId,
+              idempotencyKey: key,
+            },
+          );
+          walletTransactionId = debit.transaction.id;
+        }
+
+        const booking = manager.getRepository(Booking).create({
+          id: bookingId,
+          rideId: ride.id,
+          passengerId,
+          seats: dto.seats,
+          status: BookingStatus.PENDING,
+          paymentMethod: BookingPaymentMethod.PAY_NOW,
+          paymentStatus: BookingPaymentStatus.PAID,
+          farePaymentMethod: null,
+          pricePerSeatSnapshot: fare.riderPricePerSeatSnapshot,
+          totalAmount: fare.totalAmount,
+          driverPricePerSeatSnapshot: fare.driverPricePerSeatSnapshot,
+          riderPricePerSeatSnapshot: fare.riderPricePerSeatSnapshot,
+          driverShareAmount: fare.driverShareAmount,
+          platformShareAmount: fare.platformShareAmount,
+          idempotencyKey: key,
+          walletTransactionId,
+          assuredDepositPercentage: null,
+          assuredDepositAmount: null,
+          walletHoldId: null,
+          fareWalletTransactionId: null,
+          bookingMode: BookingMode.COMMUTE,
+          depositCouponId: null,
+        });
+
+        const saved = await manager.getRepository(Booking).save(booking);
+        return { booking: saved, ride };
+      });
+
+      return this.toResponseWithDriver(result.booking, result.ride);
+    } catch (error) {
+      if (this.walletService.isIdempotencyKeyConflict(error)) {
+        const recovered = await this.bookingRepository.findOne({
+          where: { idempotencyKey: key },
+        });
+        if (recovered) {
+          this.assertCommuteIdempotentRequestMatches(
+            recovered,
+            passengerId,
+            dto,
+          );
+          const ride = await this.rideRepository.findOne({
+            where: { id: recovered.rideId },
+          });
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
+        }
+        throw new WalletOperationConflictError(
+          'Idempotency conflict could not be resolved; existing booking not found',
+        );
+      }
+
+      if (this.isBookingIdempotencyUniqueViolation(error)) {
+        const recovered = await this.bookingRepository.findOne({
+          where: { idempotencyKey: key },
+        });
+        if (recovered) {
+          this.assertCommuteIdempotentRequestMatches(
+            recovered,
+            passengerId,
+            dto,
+          );
+          const ride = await this.rideRepository.findOne({
+            where: { id: recovered.rideId },
+          });
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
+        }
+      }
+
+      this.rethrowDuplicateActiveBooking(error);
+      this.rethrowWalletHttpErrors(error);
+      throw error;
+    }
   }
 
   private async createPayLater(
@@ -1121,7 +1477,11 @@ export class BookingsService {
   }
 
   private assertRideBookable(ride: Ride, passengerId: string): void {
-    if (ride.rideType === RideType.ASSURED) {
+    if (ride.rideType === RideType.COMMUTE) {
+      if (!isCommutePublishedStatus(ride.status)) {
+        throw new BadRequestException('Only published Commute rides can be booked');
+      }
+    } else if (ride.rideType === RideType.ASSURED) {
       if (!isAssuredBookableStatus(ride.status)) {
         throw new BadRequestException('Only active Assured rides can be booked');
       }
@@ -1132,6 +1492,89 @@ export class BookingsService {
     if (ride.driverId === passengerId) {
       throw new ForbiddenException('Drivers cannot book their own ride');
     }
+  }
+
+  private assertCommuteRideBookable(ride: Ride, passengerId: string): void {
+    if (ride.rideType !== RideType.COMMUTE) {
+      throw new BadRequestException('Ride is not a Commute ride');
+    }
+    if (!isCommutePublishedStatus(ride.status)) {
+      throw new BadRequestException('Only published Commute rides can be booked');
+    }
+    if (ride.driverId === passengerId) {
+      throw new ForbiddenException('Drivers cannot book their own ride');
+    }
+  }
+
+  private assertCommuteRideAcceptable(ride: Ride): void {
+    if (ride.rideType !== RideType.COMMUTE) {
+      throw new BadRequestException('Ride is not a Commute ride');
+    }
+    if (!isCommutePublishedStatus(ride.status)) {
+      throw new ConflictException('Commute ride is no longer available');
+    }
+    if (ride.status === RideStatus.CANCELLED) {
+      throw new ConflictException('Commute ride is cancelled');
+    }
+  }
+
+  private assertCommuteRequestSeats(ride: Ride, seats: number): void {
+    if (seats > ride.totalSeats) {
+      throw new BadRequestException(
+        'Requested seats exceed the ride total capacity',
+      );
+    }
+  }
+
+  private assertCommuteIdempotentRequestMatches(
+    existing: Booking,
+    passengerId: string,
+    dto: CreateBookingDto,
+  ): void {
+    if (existing.bookingMode !== BookingMode.COMMUTE) {
+      throw new ConflictException(
+        'Idempotency key was reused for a different booking request',
+      );
+    }
+    if (
+      existing.passengerId !== passengerId ||
+      existing.rideId !== dto.rideId ||
+      existing.seats !== dto.seats
+    ) {
+      throw new ConflictException(
+        'Idempotency key was reused for a different booking request',
+      );
+    }
+  }
+
+  private async lockBookingForUpdate(
+    manager: EntityManager,
+    bookingId: string,
+  ): Promise<Booking | null> {
+    return manager
+      .getRepository(Booking)
+      .createQueryBuilder('booking')
+      .setLock('pessimistic_write')
+      .where('booking.id = :bookingId', { bookingId })
+      .getOne();
+  }
+
+  private async toCommuteDriverActionResponse(
+    booking: Booking,
+    ride: Ride,
+    profile: UserProfile | null,
+    alreadyApplied: boolean,
+  ): Promise<CommuteBookingDriverActionResponseDto> {
+    if (!profile) {
+      const loaded = await this.userProfileRepository.findOne({
+        where: { userId: booking.passengerId },
+      });
+      profile = loaded;
+    }
+    return {
+      ...this.toDriverBookingItem(booking, ride, profile),
+      alreadyApplied,
+    };
   }
 
   private async maybeAdvanceAssuredQueueAfterBooking(
@@ -1532,6 +1975,14 @@ export class BookingsService {
       fareAmount: booking.totalAmount,
       pricePerSeatSnapshot: booking.pricePerSeatSnapshot,
       totalAmount: booking.totalAmount,
+      ...(booking.bookingMode === BookingMode.COMMUTE
+        ? {
+            riderPricePerSeatSnapshot: booking.riderPricePerSeatSnapshot,
+            driverPricePerSeatSnapshot: booking.driverPricePerSeatSnapshot,
+            driverShareAmount: booking.driverShareAmount,
+            platformShareAmount: booking.platformShareAmount,
+          }
+        : {}),
       securityDepositAmount: booking.assuredDepositAmount,
       securityDepositPercentage: booking.assuredDepositPercentage,
       securityDepositReason: booking.assuredDepositReason,
@@ -1590,6 +2041,14 @@ export class BookingsService {
       paymentStatus: booking.paymentStatus,
       pricePerSeatSnapshot: booking.pricePerSeatSnapshot,
       totalAmount: booking.totalAmount,
+      ...(booking.bookingMode === BookingMode.COMMUTE
+        ? {
+            riderPricePerSeatSnapshot: booking.riderPricePerSeatSnapshot,
+            driverPricePerSeatSnapshot: booking.driverPricePerSeatSnapshot,
+            driverShareAmount: booking.driverShareAmount,
+            platformShareAmount: booking.platformShareAmount,
+          }
+        : {}),
       ride: {
         id: ride.id,
         source: ride.source,

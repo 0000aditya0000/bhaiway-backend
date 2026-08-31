@@ -31,7 +31,8 @@ export class CreateBookingDto {
     enumName: 'BookingPaymentMethod',
     example: BookingPaymentMethod.PAY_LATER,
     description:
-      'REGULAR: PAY_NOW or PAY_LATER. ASSURED deposit booking: ASSURED_DEPOSIT (mandatory). After ALLOW_REGULAR_RIDERS, remaining Assured seats may use PAY_NOW/PAY_LATER without deposit.',
+      'REGULAR: PAY_NOW or PAY_LATER. COMMUTE: always charged upfront (send PAY_NOW; paymentMethod is ignored except ASSURED_DEPOSIT is rejected). ' +
+      'ASSURED deposit booking: ASSURED_DEPOSIT (mandatory). After ALLOW_REGULAR_RIDERS, remaining Assured seats may use PAY_NOW/PAY_LATER without deposit.',
   })
   @IsEnum(BookingPaymentMethod)
   paymentMethod!: BookingPaymentMethod;

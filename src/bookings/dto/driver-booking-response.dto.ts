@@ -106,16 +106,45 @@ export class DriverBookingItemDto {
   paymentStatus!: BookingPaymentStatus;
 
   @ApiProperty({
-    description: 'Integer points per seat snapshot (1 point = ₹1)',
+    description:
+      'Integer points per seat snapshot (1 point = ₹1). COMMUTE: rider fare per seat.',
     example: '250',
   })
   pricePerSeatSnapshot!: string;
 
   @ApiProperty({
-    description: 'Integer points total (snapshot × seats)',
+    description: 'Integer points total paid or owed (snapshot × seats)',
     example: '500',
   })
   totalAmount!: string;
+
+  @ApiPropertyOptional({
+    description: 'COMMUTE only: rider fare per seat snapshot',
+    nullable: true,
+    example: '110',
+  })
+  riderPricePerSeatSnapshot?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'COMMUTE only: driver-published fare per seat snapshot',
+    nullable: true,
+    example: '100',
+  })
+  driverPricePerSeatSnapshot?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'COMMUTE only: eventual driver share for this request',
+    nullable: true,
+    example: '200',
+  })
+  driverShareAmount?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'COMMUTE only: eventual BhaiWay margin for this request',
+    nullable: true,
+    example: '20',
+  })
+  platformShareAmount?: string | null;
 
   @ApiProperty({ type: DriverBookingRideDto })
   ride!: DriverBookingRideDto;

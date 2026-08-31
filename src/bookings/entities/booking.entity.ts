@@ -125,6 +125,46 @@ export class Booking {
   })
   totalAmount!: string;
 
+  /** COMMUTE: driver-published fare per seat at booking time. Null for Regular/Assured. */
+  @Column({
+    name: 'driver_price_per_seat_snapshot',
+    type: 'bigint',
+    nullable: true,
+  })
+  driverPricePerSeatSnapshot!: string | null;
+
+  /** COMMUTE: passenger-facing fare per seat at booking time. Null for Regular/Assured. */
+  @Column({
+    name: 'rider_price_per_seat_snapshot',
+    type: 'bigint',
+    nullable: true,
+  })
+  riderPricePerSeatSnapshot!: string | null;
+
+  /** COMMUTE: eventual driver share (driver fare × seats). Null until settlement phase. */
+  @Column({
+    name: 'driver_share_amount',
+    type: 'bigint',
+    nullable: true,
+  })
+  driverShareAmount!: string | null;
+
+  /** COMMUTE: eventual BhaiWay margin (rider paid − driver share). Not a separate platform fee. */
+  @Column({
+    name: 'platform_share_amount',
+    type: 'bigint',
+    nullable: true,
+  })
+  platformShareAmount!: string | null;
+
+  /** COMMUTE: timestamp when driver/platform shares were credited at ride completion. */
+  @Column({
+    name: 'settled_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  settledAt!: Date | null;
+
   /**
    * Client Idempotency-Key for PAY_NOW (also used as wallet ledger key).
    * Null for PAY_LATER.

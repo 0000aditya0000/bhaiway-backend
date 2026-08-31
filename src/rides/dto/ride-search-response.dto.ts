@@ -93,6 +93,16 @@ export class RideSearchItemDto {
   })
   pricePerSeat!: string;
 
+  @ApiPropertyOptional({
+    description:
+      'COMMUTE only: passenger-facing fare per seat (driver price + 10% markup). ' +
+      'Not a separate platform fee — this is the ride price riders pay. ' +
+      'Null for REGULAR and ASSURED.',
+    nullable: true,
+    example: '110',
+  })
+  riderPricePerSeat?: string | null;
+
   @ApiProperty({ type: RideSearchPreferencesDto })
   preferences!: RideSearchPreferencesDto;
 

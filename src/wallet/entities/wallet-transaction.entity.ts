@@ -19,6 +19,8 @@ export enum WalletTransactionType {
   PROMOTIONAL_CREDIT = 'PROMOTIONAL_CREDIT',
   DRIVER_EARNING = 'DRIVER_EARNING',
   BOOKING_PAYMENT = 'BOOKING_PAYMENT',
+  /** Commute completion: BhaiWay margin from rider upfront payment (not a separate platform fee). */
+  COMMUTE_PLATFORM_MARGIN = 'COMMUTE_PLATFORM_MARGIN',
   ASSURED_DEPOSIT_HOLD = 'ASSURED_DEPOSIT_HOLD',
   HOLD_RELEASE = 'HOLD_RELEASE',
   HOLD_CONSUMED = 'HOLD_CONSUMED',

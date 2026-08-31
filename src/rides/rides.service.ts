@@ -28,6 +28,7 @@ import {
   isAssuredBookableStatus,
   isAssuredPreTripOfferStatus,
   isAssuredSearchVisibleOffer,
+  isCommutePublishedStatus,
   isRegularPublishedStatus,
 } from '../assured/assured-ride-status';
 import {
@@ -37,10 +38,12 @@ import {
 import { Booking } from '../bookings/entities/booking.entity';
 import {
   BookingCancellationReason,
+  BookingMode,
   BookingPickupStatus,
   BookingStatus,
 } from '../bookings/enums/booking.enums';
 import { BookingsService } from '../bookings/bookings.service';
+import { CommuteSettlementService } from '../fare/commute-settlement.service';
 import { FareSettlementService } from '../fare/fare-settlement.service';
 import { SettingsService } from '../settings/settings.service';
 import { TrackingService } from '../tracking/tracking.service';
@@ -93,6 +96,7 @@ import {
   RideType,
 } from './enums/ride.enums';
 import { supportsTripLifecycle } from './ride-trip-lifecycle';
+import { computeCommuteRiderPricePerSeat } from './commute-fare.math';
 import { RideDirectionsService } from './route/ride-directions.service';
 import {
   decodePolyline,
@@ -129,6 +133,7 @@ export class RidesService {
     private readonly assuredQueueService: AssuredQueueService,
     private readonly assuredGeographicQueueService: AssuredGeographicQueueService,
     private readonly fareSettlementService: FareSettlementService,
+    private readonly commuteSettlementService: CommuteSettlementService,
     private readonly bookingsService: BookingsService,
     private readonly trackingService: TrackingService,
     private readonly rideDirectionsService: RideDirectionsService,
@@ -347,6 +352,17 @@ export class RidesService {
       return this.createAssuredRide(driverId, dto, options?.idempotencyKey);
     }
 
+    if (dto.rideType === RideType.COMMUTE) {
+      return this.createCommuteRide(driverId, dto);
+    }
+
+    return this.createRegularRide(driverId, dto);
+  }
+
+  private async createRegularRide(
+    driverId: string,
+    dto: CreateRideDto,
+  ): Promise<RideResponseDto> {
     const routeFields = await this.buildRouteFieldsFromDto({
       source: dto.source,
       destination: dto.destination,
@@ -360,6 +376,47 @@ export class RidesService {
       driverId,
       vehicleId: dto.vehicleId,
       rideType: RideType.REGULAR,
+      status: RideStatus.PUBLISHED,
+      source: dto.source.trim(),
+      destination: dto.destination.trim(),
+      departureDate: dto.departureDate,
+      departureTime: this.normalizeTime(dto.departureTime),
+      totalSeats: dto.totalSeats,
+      availableSeats: dto.totalSeats,
+      pricePerSeat: String(dto.pricePerSeat),
+      maxTwoInBackSeat: dto.maxTwoInBackSeat ?? false,
+      noSmoking: dto.noSmoking ?? false,
+      noPets: dto.noPets ?? false,
+      luggageAllowed: dto.luggageAllowed ?? true,
+      notes: dto.notes?.trim() ?? null,
+      assuredDepositPercentage: null,
+      assuredDepositAmount: null,
+      driverDepositHoldId: null,
+      publishIdempotencyKey: null,
+      ...routeFields,
+    });
+
+    const saved = await this.rideRepository.save(ride);
+    return this.toResponse(saved);
+  }
+
+  private async createCommuteRide(
+    driverId: string,
+    dto: CreateRideDto,
+  ): Promise<RideResponseDto> {
+    const routeFields = await this.buildRouteFieldsFromDto({
+      source: dto.source,
+      destination: dto.destination,
+      sourceLatitude: dto.sourceLatitude,
+      sourceLongitude: dto.sourceLongitude,
+      destinationLatitude: dto.destinationLatitude,
+      destinationLongitude: dto.destinationLongitude,
+    });
+
+    const ride = this.rideRepository.create({
+      driverId,
+      vehicleId: dto.vehicleId,
+      rideType: RideType.COMMUTE,
       status: RideStatus.PUBLISHED,
       source: dto.source.trim(),
       destination: dto.destination.trim(),
@@ -878,7 +935,7 @@ export class RidesService {
         throw new NotFoundException('Ride not found');
       }
 
-      if (ride.rideType === RideType.REGULAR) {
+      if (ride.rideType === RideType.REGULAR || ride.rideType === RideType.COMMUTE) {
         await this.applyRegularRideUpdate(manager, driverId, ride, dto);
       } else {
         await this.applyAssuredRideUpdate(manager, driverId, ride, dto);
@@ -1050,6 +1107,9 @@ export class RidesService {
     if (ride.rideType === RideType.ASSURED) {
       return isAssuredSearchVisibleOffer(ride.status, ride.availableSeats);
     }
+    if (ride.rideType === RideType.COMMUTE) {
+      return isCommutePublishedStatus(ride.status);
+    }
     return isRegularPublishedStatus(ride.status);
   }
 
@@ -1064,6 +1124,13 @@ export class RidesService {
             {
               regularType: RideType.REGULAR,
               publishedStatus: RideStatus.PUBLISHED,
+            },
+          )
+          .orWhere(
+            '(ride.ride_type = :commuteType AND ride.status = :commutePublishedStatus)',
+            {
+              commuteType: RideType.COMMUTE,
+              commutePublishedStatus: RideStatus.PUBLISHED,
             },
           )
           .orWhere(
@@ -1594,6 +1661,10 @@ export class RidesService {
           throw new ConflictException('Draft rides cannot be completed');
         }
 
+        if (ride.rideType === RideType.COMMUTE) {
+          return this.completeCommuteRideInTransaction(manager, ride);
+        }
+
         if (!supportsTripLifecycle(ride.rideType)) {
           throw new BadRequestException(
             `Ride type ${ride.rideType} cannot be completed via this endpoint`,
@@ -1744,6 +1815,65 @@ export class RidesService {
     }
   }
 
+  private async completeCommuteRideInTransaction(
+    manager: EntityManager,
+    ride: Ride,
+  ): Promise<CompleteRideResponseDto> {
+    if (
+      ride.status !== RideStatus.PUBLISHED &&
+      ride.status !== RideStatus.IN_PROGRESS
+    ) {
+      throw new ConflictException(
+        'Commute rides must be PUBLISHED or IN_PROGRESS before completion',
+      );
+    }
+
+    const confirmedBookings = await manager
+      .getRepository(Booking)
+      .createQueryBuilder('booking')
+      .setLock('pessimistic_write')
+      .where('booking.ride_id = :rideId', { rideId: ride.id })
+      .andWhere('booking.booking_mode = :mode', { mode: BookingMode.COMMUTE })
+      .andWhere('booking.status = :status', {
+        status: BookingStatus.CONFIRMED,
+      })
+      .orderBy('booking.id', 'ASC')
+      .getMany();
+
+    const commuteSettlement =
+      await this.commuteSettlementService.settleCommuteRideInTransaction(
+        manager,
+        {
+          ride,
+          driverId: ride.driverId,
+          bookings: confirmedBookings,
+        },
+      );
+
+    if (confirmedBookings.length > 0) {
+      await manager
+        .getRepository(Booking)
+        .createQueryBuilder()
+        .update(Booking)
+        .set({ status: BookingStatus.COMPLETED })
+        .where('ride_id = :rideId', { rideId: ride.id })
+        .andWhere('booking_mode = :mode', { mode: BookingMode.COMMUTE })
+        .andWhere('status = :status', { status: BookingStatus.CONFIRMED })
+        .execute();
+    }
+
+    ride.status = RideStatus.COMPLETED;
+    await manager.getRepository(Ride).save(ride);
+
+    return {
+      rideId: ride.id,
+      status: RideStatus.COMPLETED,
+      rideType: ride.rideType,
+      alreadyCompleted: false,
+      commuteSettlement,
+    };
+  }
+
   private async collectAssuredReleaseTargets(
     manager: EntityManager,
     ride: Ride,
@@ -1827,6 +1957,10 @@ export class RidesService {
     ride: Ride,
     alreadyCompleted: boolean,
   ): Promise<CompleteRideResponseDto> {
+    if (ride.rideType === RideType.COMMUTE) {
+      return this.buildCommuteCompleteResponse(manager, ride, alreadyCompleted);
+    }
+
     if (ride.rideType !== RideType.ASSURED) {
       return {
         rideId: ride.id,
@@ -1875,6 +2009,50 @@ export class RidesService {
     };
   }
 
+  private async buildCommuteCompleteResponse(
+    manager: EntityManager,
+    ride: Ride,
+    alreadyCompleted: boolean,
+  ): Promise<CompleteRideResponseDto> {
+    const settledBookings = await manager.getRepository(Booking).find({
+      where: {
+        rideId: ride.id,
+        bookingMode: BookingMode.COMMUTE,
+        status: BookingStatus.COMPLETED,
+      },
+      order: { id: 'ASC' },
+    });
+
+    let driverSettlementTotal = 0n;
+    let platformMarginTotal = 0n;
+    let settledBookingCount = 0;
+
+    for (const booking of settledBookings) {
+      if (!booking.settledAt) {
+        continue;
+      }
+      settledBookingCount += 1;
+      if (booking.driverShareAmount) {
+        driverSettlementTotal += BigInt(booking.driverShareAmount);
+      }
+      if (booking.platformShareAmount) {
+        platformMarginTotal += BigInt(booking.platformShareAmount);
+      }
+    }
+
+    return {
+      rideId: ride.id,
+      status: RideStatus.COMPLETED,
+      rideType: ride.rideType,
+      alreadyCompleted,
+      commuteSettlement: {
+        settledBookingCount,
+        driverSettlementTotal: driverSettlementTotal.toString(),
+        platformMarginTotal: platformMarginTotal.toString(),
+      },
+    };
+  }
+
   private async toSearchItems(rides: Ride[]): Promise<RideSearchItemDto[]> {
     if (rides.length === 0) {
       return [];
@@ -1919,6 +2097,13 @@ export class RidesService {
         availableSeats: ride.availableSeats,
         totalSeats: ride.totalSeats,
         pricePerSeat: ride.pricePerSeat,
+        ...(ride.rideType === RideType.COMMUTE
+          ? {
+              riderPricePerSeat: computeCommuteRiderPricePerSeat(
+                ride.pricePerSeat,
+              ),
+            }
+          : {}),
         preferences: {
           maxTwoInBackSeat: ride.maxTwoInBackSeat,
           noSmoking: ride.noSmoking,
@@ -2220,9 +2405,12 @@ export class RidesService {
 
   private toResponse(ride: Ride): RideResponseDto {
     const isAssured = ride.rideType === RideType.ASSURED;
+    const isCommute = ride.rideType === RideType.COMMUTE;
     const isBookable = isAssured
       ? isAssuredBookableStatus(ride.status) && ride.availableSeats > 0
-      : isRegularPublishedStatus(ride.status) && ride.availableSeats > 0;
+      : isCommute
+        ? isCommutePublishedStatus(ride.status) && ride.availableSeats > 0
+        : isRegularPublishedStatus(ride.status) && ride.availableSeats > 0;
 
     return {
       id: ride.id,
@@ -2237,6 +2425,13 @@ export class RidesService {
       totalSeats: ride.totalSeats,
       availableSeats: ride.availableSeats,
       pricePerSeat: ride.pricePerSeat,
+      ...(isCommute
+        ? {
+            riderPricePerSeat: computeCommuteRiderPricePerSeat(
+              ride.pricePerSeat,
+            ),
+          }
+        : {}),
       maxTwoInBackSeat: ride.maxTwoInBackSeat,
       noSmoking: ride.noSmoking,
       noPets: ride.noPets,

@@ -64,7 +64,10 @@ export class RidesController {
   @ApiOperation({
     summary: 'Publish a ride',
     description:
-      'Creates a PUBLISHED REGULAR or Assured (ASSURANCE_ACTIVE / ASSURANCE_PENDING) ride after verification checks. ASSURED publishing atomically creates an ACTIVE driver ASSURED_DEPOSIT wallet hold (ledger ASSURED_DEPOSIT_HOLD) based on totalPublishedSeats × pricePerSeat × admin deposit %. Assured requires source/destination coordinates, resolvable route geometry, and Idempotency-Key. driverId/status/availableSeats are server-controlled.',
+      'Creates a PUBLISHED REGULAR or COMMUTE ride, or an Assured (ASSURANCE_ACTIVE / ASSURANCE_PENDING) ride after verification checks. ' +
+      'COMMUTE: pricePerSeat is the driver-published base fare; riderPricePerSeat (+10%) is computed server-side for passenger APIs. ' +
+      'ASSURED publishing atomically creates an ACTIVE driver ASSURED_DEPOSIT wallet hold based on totalPublishedSeats × pricePerSeat × admin deposit %. ' +
+      'Assured requires source/destination coordinates, resolvable route geometry, and Idempotency-Key. driverId/status/availableSeats are server-controlled.',
   })
   @ApiHeader({
     name: 'Idempotency-Key',
@@ -101,7 +104,11 @@ export class RidesController {
   @ApiOperation({
     summary: 'Search published rides (passenger discovery)',
     description:
-      'Read-only search of passenger-visible rides. REGULAR: status PUBLISHED. ASSURED: status ASSURANCE_ACTIVE with available seats (ASSURANCE_PENDING is excluded; PUBLISHED is not used as the Assured visibility gate). Optional rideType filters REGULAR or ASSURED; when omitted, both types are returned. With pickup/dropoff coordinates, matching uses a 50km route-corridor along the published polyline (direction-aware). Without coordinates, filters by source/destination place-name contains. Also filters by date, optional time (at/after), and seats. Paginated.',
+      'Read-only search of passenger-visible rides. REGULAR: status PUBLISHED. COMMUTE: status PUBLISHED (includes riderPricePerSeat = driver fare + 10%). ' +
+      'ASSURED: status ASSURANCE_ACTIVE with available seats (ASSURANCE_PENDING is excluded). ' +
+      'Optional rideType filters REGULAR, COMMUTE, or ASSURED; when omitted, all visible types are returned. ' +
+      'With pickup/dropoff coordinates, matching uses a 50km route-corridor along the published polyline (direction-aware). ' +
+      'Without coordinates, filters by source/destination place-name contains. Also filters by date, optional time (at/after), and seats. Paginated.',
   })
   @ApiOkResponse({ type: RideSearchPageDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
@@ -155,7 +162,9 @@ export class RidesController {
   @ApiOperation({
     summary: 'Passenger-facing public ride detail',
     description:
-      'Returns safe public fields for a passenger-visible ride (REGULAR: PUBLISHED; ASSURED: ASSURANCE_ACTIVE with seats). Assured rides include assuredDepositAmount and assuredDepositPercentage from the publish-time snapshot. Does not change owner-only GET /rides/:id behavior. Does not expose phones, emails, wallet, or verification documents.',
+      'Returns safe public fields for a passenger-visible ride (REGULAR: PUBLISHED; COMMUTE: PUBLISHED with riderPricePerSeat; ASSURED: ASSURANCE_ACTIVE with seats). ' +
+      'COMMUTE exposes pricePerSeat (driver base fare) and riderPricePerSeat (passenger fare, +10% markup — not a separate platform fee). ' +
+      'Assured rides include assuredDepositAmount and assuredDepositPercentage from the publish-time snapshot. Does not expose phones, emails, wallet, or verification documents.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: RideSearchItemDto })
@@ -171,7 +180,9 @@ export class RidesController {
   @ApiOperation({
     summary: 'Complete a ride (owning driver only)',
     description:
-      'Trip-lifecycle rides (REGULAR and ASSURED): requires IN_PROGRESS and all active passengers PICKED_UP, then COMPLETED. ASSURED also releases ACTIVE deposit holds and may apply partial-fill compensation. Safe to retry when already COMPLETED. Cancelled/draft rides return 409. Status cannot be set via PATCH.',
+      'REGULAR and ASSURED trip-lifecycle rides: requires IN_PROGRESS and all active passengers PICKED_UP, then COMPLETED. ASSURED also releases ACTIVE deposit holds and may apply partial-fill compensation. ' +
+      'COMMUTE: completes from PUBLISHED or IN_PROGRESS; settles only CONFIRMED PAID bookings (driver share + BhaiWay margin); PENDING requests are not settled. ' +
+      'Rider fare is never debited again at completion. Safe to retry when already COMPLETED.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: CompleteRideResponseDto })

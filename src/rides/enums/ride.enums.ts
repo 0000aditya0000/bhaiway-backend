@@ -1,6 +1,8 @@
 export enum RideType {
   REGULAR = 'REGULAR',
   ASSURED = 'ASSURED',
+  /** Daily Office Commute: driver publishes base fare; riders see +10% markup. */
+  COMMUTE = 'COMMUTE',
 }
 
 export enum RideStatus {

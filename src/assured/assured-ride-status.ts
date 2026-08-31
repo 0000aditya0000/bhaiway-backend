@@ -5,6 +5,11 @@ export function isRegularPublishedStatus(status: RideStatus): boolean {
   return status === RideStatus.PUBLISHED;
 }
 
+/** Daily Office Commute rides are searchable when PUBLISHED (same gate as Regular). */
+export function isCommutePublishedStatus(status: RideStatus): boolean {
+  return status === RideStatus.PUBLISHED;
+}
+
 /** Assured rides visible in passenger search (must also have seats for offer display). */
 export function isAssuredSearchVisibleStatus(status: RideStatus): boolean {
   return status === RideStatus.ASSURANCE_ACTIVE;

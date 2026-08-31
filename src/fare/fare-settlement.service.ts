@@ -211,6 +211,12 @@ export class FareSettlementService {
   }
 
   private assertFareSettlementAllowed(booking: Booking): void {
+    if (booking.bookingMode === BookingMode.COMMUTE) {
+      throw new BadRequestException(
+        'Commute bookings are settled at Commute ride completion, not via regular fare settlement',
+      );
+    }
+
     if (booking.paymentMethod === BookingPaymentMethod.ASSURED_DEPOSIT) {
       if (booking.bookingMode !== BookingMode.ASSURED) {
         throw new BadRequestException(

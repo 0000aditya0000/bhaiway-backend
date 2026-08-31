@@ -133,7 +133,7 @@ export class SearchRidesDto {
     enum: RideType,
     enumName: 'RideType',
     description:
-      'Optional filter. When omitted, returns both REGULAR and ASSURED published rides.',
+      'Optional filter. When omitted, returns REGULAR, COMMUTE, and ASSURED passenger-visible rides.',
   })
   @IsOptional()
   @IsEnum(RideType)

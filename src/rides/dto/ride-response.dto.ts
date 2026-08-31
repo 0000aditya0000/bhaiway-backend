@@ -42,6 +42,15 @@ export class RideResponseDto {
   })
   pricePerSeat!: string;
 
+  @ApiPropertyOptional({
+    description:
+      'COMMUTE only: passenger-facing fare per seat (driver price + 10% markup). ' +
+      'Driver-published base fare remains in pricePerSeat. Null for REGULAR and ASSURED.',
+    nullable: true,
+    example: '110',
+  })
+  riderPricePerSeat?: string | null;
+
   @ApiProperty()
   maxTwoInBackSeat!: boolean;
 

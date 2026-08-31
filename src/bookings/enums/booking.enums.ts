@@ -25,10 +25,12 @@ export enum BookingPaymentStatus {
   PAID = 'PAID',
 }
 
-/** Whether the passenger booked under Assured deposit rules or Regular fare rules. */
+/** Whether the passenger booked under Assured deposit rules, Regular fare rules, or Commute request flow. */
 export enum BookingMode {
   ASSURED = 'ASSURED',
   REGULAR = 'REGULAR',
+  /** Daily Office Commute: pay at request, PENDING until driver accepts. */
+  COMMUTE = 'COMMUTE',
 }
 
 export enum BookingCancellationReason {
@@ -36,6 +38,8 @@ export enum BookingCancellationReason {
   RIDER_NO_SHOW = 'RIDER_NO_SHOW',
   RIDE_CANCELLED = 'RIDE_CANCELLED',
   DRIVER_NO_SHOW = 'DRIVER_NO_SHOW',
+  /** Commute driver rejected a PENDING request (full rider refund). */
+  DRIVER_REJECTED = 'DRIVER_REJECTED',
 }
 
 /**
