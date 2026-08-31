@@ -813,6 +813,20 @@ export class RidesService {
         routePoints,
         pickup: routeMatch.pickup,
         dropoff: routeMatch.dropoff,
+        driverPickup:
+          ride.sourceLatitude != null && ride.sourceLongitude != null
+            ? {
+                latitude: ride.sourceLatitude,
+                longitude: ride.sourceLongitude,
+              }
+            : null,
+        driverDropoff:
+          ride.destinationLatitude != null && ride.destinationLongitude != null
+            ? {
+                latitude: ride.destinationLatitude,
+                longitude: ride.destinationLongitude,
+              }
+            : null,
       });
       return score ?? undefined;
     } catch {

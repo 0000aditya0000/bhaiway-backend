@@ -33,11 +33,39 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from './entities/ride.entity';
 import { RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import {
+  decodePolyline,
+  haversineMeters,
+  type LatLng,
+} from './route/route-geometry';
 
 const NOIDA = { latitude: 28.5355, longitude: 77.391 };
 const INDIRAPURAM = { latitude: 28.6415, longitude: 77.372 };
 const MEERUT = { latitude: 28.9845, longitude: 77.7064 };
 const DEHRADUN = { latitude: 30.3165, longitude: 78.0322 };
+
+function pointAlongRoute(routePoints: LatLng[], fraction: number): LatLng {
+  let total = 0;
+  for (let i = 1; i < routePoints.length; i += 1) {
+    total += haversineMeters(routePoints[i - 1], routePoints[i]);
+  }
+  const target = total * fraction;
+  let traversed = 0;
+  for (let i = 1; i < routePoints.length; i += 1) {
+    const a = routePoints[i - 1];
+    const b = routePoints[i];
+    const segment = haversineMeters(a, b);
+    if (traversed + segment >= target) {
+      const t = (target - traversed) / segment;
+      return {
+        latitude: a.latitude + (b.latitude - a.latitude) * t,
+        longitude: a.longitude + (b.longitude - a.longitude) * t,
+      };
+    }
+    traversed += segment;
+  }
+  return routePoints[routePoints.length - 1];
+}
 
 describe('Commute route match percentage (GET /rides/search)', () => {
   let app: INestApplication;
@@ -243,8 +271,7 @@ describe('Commute route match percentage (GET /rides/search)', () => {
       (row: { id: string }) => row.id === ride.id,
     );
     expect(item).toBeDefined();
-    expect(item.routeMatchPercentage).toBeGreaterThanOrEqual(95);
-    expect(item.routeMatchPercentage).toBeLessThanOrEqual(100);
+    expect(item.routeMatchPercentage).toBe(100);
     expect(item.riderPricePerSeat).toBe('110');
   });
 
@@ -285,41 +312,33 @@ describe('Commute route match percentage (GET /rides/search)', () => {
     expect(item.routeMatchPercentage).toBeGreaterThanOrEqual(70);
   });
 
-  it('returns lower routeMatchPercentage for shorter partial overlap', async () => {
+  it('partial segment on driver route scores high (not penalized by total route length)', async () => {
     const { login, ride } = await publishCommuteNoidaDehradun();
 
-    const full = await corridorSearch(login.accessToken, {
-      source: 'Noida',
+    const stored = await dataSource
+      .getRepository(Ride)
+      .findOneByOrFail({ id: ride.id });
+    const routePoints = decodePolyline(stored.routePolyline!);
+    const partialPickup = pointAlongRoute(routePoints, 0.2);
+    const pickupLat = Number(partialPickup.latitude.toFixed(8));
+    const pickupLng = Number(partialPickup.longitude.toFixed(8));
+
+    const partial = await corridorSearch(login.accessToken, {
+      source: 'Indirapuram',
       destination: 'Dehradun',
       date: departureDate,
       rideType: RideType.COMMUTE,
-      pickupLatitude: NOIDA.latitude,
-      pickupLongitude: NOIDA.longitude,
+      pickupLatitude: pickupLat,
+      pickupLongitude: pickupLng,
       dropoffLatitude: DEHRADUN.latitude,
       dropoffLongitude: DEHRADUN.longitude,
     }).expect(200);
 
-    const partial = await corridorSearch(login.accessToken, {
-      source: 'Indirapuram',
-      destination: 'Meerut',
-      date: departureDate,
-      rideType: RideType.COMMUTE,
-      pickupLatitude: INDIRAPURAM.latitude,
-      pickupLongitude: INDIRAPURAM.longitude,
-      dropoffLatitude: MEERUT.latitude,
-      dropoffLongitude: MEERUT.longitude,
-    }).expect(200);
-
-    const fullItem = full.body.items.find(
-      (row: { id: string }) => row.id === ride.id,
-    );
     const partialItem = partial.body.items.find(
       (row: { id: string }) => row.id === ride.id,
     );
 
-    expect(fullItem.routeMatchPercentage).toBeGreaterThan(
-      partialItem.routeMatchPercentage,
-    );
+    expect(partialItem.routeMatchPercentage).toBeGreaterThanOrEqual(95);
   });
 
   it('does not expose routeMatchPercentage for REGULAR corridor search', async () => {
