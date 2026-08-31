@@ -108,6 +108,7 @@ export class RidesController {
       'ASSURED: status ASSURANCE_ACTIVE with available seats (ASSURANCE_PENDING is excluded). ' +
       'Optional rideType filters REGULAR, COMMUTE, or ASSURED; when omitted, all visible types are returned. ' +
       'With pickup/dropoff coordinates, matching uses a 50km route-corridor along the published polyline (direction-aware). ' +
+      'COMMUTE corridor search also returns routeMatchPercentage (0–100) per matching ride. ' +
       'Without coordinates, filters by source/destination place-name contains. Also filters by date, optional time (at/after), and seats. Paginated.',
   })
   @ApiOkResponse({ type: RideSearchPageDto })

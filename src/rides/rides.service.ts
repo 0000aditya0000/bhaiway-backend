@@ -97,6 +97,7 @@ import {
 } from './enums/ride.enums';
 import { supportsTripLifecycle } from './ride-trip-lifecycle';
 import { computeCommuteRiderPricePerSeat } from './commute-fare.math';
+import { computeCommuteRouteMatchPercentage } from './commute-route-match.math';
 import { RideDirectionsService } from './route/ride-directions.service';
 import {
   decodePolyline,
@@ -105,6 +106,11 @@ import {
   matchesRouteCorridor,
   ROUTE_CORRIDOR_MAX_METERS,
 } from './route/route-geometry';
+
+interface CommuteSearchRouteMatchContext {
+  pickup: LatLng;
+  dropoff: LatLng;
+}
 
 @Injectable()
 export class RidesService {
@@ -790,6 +796,30 @@ export class RidesService {
     return item;
   }
 
+  private resolveCommuteRouteMatchPercentage(
+    ride: Ride,
+    routeMatch?: CommuteSearchRouteMatchContext,
+  ): number | undefined {
+    if (
+      ride.rideType !== RideType.COMMUTE ||
+      !routeMatch ||
+      !ride.routePolyline
+    ) {
+      return undefined;
+    }
+    try {
+      const routePoints = decodePolyline(ride.routePolyline);
+      const score = computeCommuteRouteMatchPercentage({
+        routePoints,
+        pickup: routeMatch.pickup,
+        dropoff: routeMatch.dropoff,
+      });
+      return score ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async search(dto: SearchRidesDto): Promise<RideSearchPageDto> {
     const page = dto.page ?? 1;
     const limit = dto.limit ?? 20;
@@ -907,7 +937,7 @@ export class RidesService {
 
     const total = matched.length;
     const pageRides = matched.slice((page - 1) * limit, page * limit);
-    const items = await this.toSearchItems(pageRides);
+    const items = await this.toSearchItems(pageRides, { pickup, dropoff });
 
     return {
       items,
@@ -2053,7 +2083,10 @@ export class RidesService {
     };
   }
 
-  private async toSearchItems(rides: Ride[]): Promise<RideSearchItemDto[]> {
+  private async toSearchItems(
+    rides: Ride[],
+    routeMatch?: CommuteSearchRouteMatchContext,
+  ): Promise<RideSearchItemDto[]> {
     if (rides.length === 0) {
       return [];
     }
@@ -2086,6 +2119,11 @@ export class RidesService {
         throw new NotFoundException('Ride vehicle not found');
       }
 
+      const routeMatchPercentage = this.resolveCommuteRouteMatchPercentage(
+        ride,
+        routeMatch,
+      );
+
       return {
         id: ride.id,
         rideType: ride.rideType,
@@ -2102,6 +2140,9 @@ export class RidesService {
               riderPricePerSeat: computeCommuteRiderPricePerSeat(
                 ride.pricePerSeat,
               ),
+              ...(routeMatchPercentage !== undefined
+                ? { routeMatchPercentage }
+                : {}),
             }
           : {}),
         preferences: {

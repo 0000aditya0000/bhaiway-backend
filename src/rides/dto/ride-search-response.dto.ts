@@ -103,6 +103,16 @@ export class RideSearchItemDto {
   })
   riderPricePerSeat?: string | null;
 
+  @ApiPropertyOptional({
+    description:
+      'COMMUTE only: route match percentage (0–100). Calculated only when pickup/dropoff coordinates are supplied and corridor matching is performed. Omitted for REGULAR/ASSURED and when coordinates are absent.',
+    nullable: true,
+    minimum: 0,
+    maximum: 100,
+    example: 92,
+  })
+  routeMatchPercentage?: number | null;
+
   @ApiProperty({ type: RideSearchPreferencesDto })
   preferences!: RideSearchPreferencesDto;
 
