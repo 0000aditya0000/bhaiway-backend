@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+import { RideType } from '../../rides/enums/ride.enums';
 import { WalletPointSource } from '../entities/wallet-point-lot.entity';
 import {
   WalletTransactionDirection,
@@ -54,6 +55,21 @@ export class WalletTransactionItemDto {
 
   @ApiPropertyOptional({ nullable: true, maxLength: 255 })
   referenceId!: string | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Ride UUID for booking wallet rows when resolvable from reference data. Omitted when unknown.',
+  })
+  rideId?: string;
+
+  @ApiPropertyOptional({
+    enum: RideType,
+    enumName: 'RideType',
+    description:
+      'ASSURED or REGULAR for booking wallet rows when resolvable. Omitted when unknown.',
+  })
+  rideType?: RideType;
 
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;

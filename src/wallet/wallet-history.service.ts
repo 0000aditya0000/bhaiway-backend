@@ -2,6 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
+import { Booking } from '../bookings/entities/booking.entity';
+import { Ride } from '../rides/entities/ride.entity';
+import { RideType } from '../rides/enums/ride.enums';
 import { WalletTransactionQueryDto } from './dto/wallet-transaction-query.dto';
 import {
   WalletTransactionItemDto,
@@ -11,6 +14,7 @@ import { WalletTransaction } from './entities/wallet-transaction.entity';
 import { Wallet } from './entities/wallet.entity';
 import { WalletNotFoundError } from './errors/wallet.errors';
 import { pointsToCoins } from './wallet-coins.mapper';
+import { resolveRideContextForTransactions } from './wallet-transaction-ride-context';
 
 @Injectable()
 export class WalletHistoryService {
@@ -19,6 +23,10 @@ export class WalletHistoryService {
     private readonly walletRepository: Repository<Wallet>,
     @InjectRepository(WalletTransaction)
     private readonly walletTransactionRepository: Repository<WalletTransaction>,
+    @InjectRepository(Booking)
+    private readonly bookingRepository: Repository<Booking>,
+    @InjectRepository(Ride)
+    private readonly rideRepository: Repository<Ride>,
   ) {}
 
   async findTransactionsForUser(
@@ -62,9 +70,14 @@ export class WalletHistoryService {
     }
 
     const [transactions, total] = await qb.getManyAndCount();
+    const rideContext = await resolveRideContextForTransactions(
+      transactions,
+      this.bookingRepository,
+      this.rideRepository,
+    );
 
     return {
-      items: transactions.map((tx) => this.toItem(tx)),
+      items: transactions.map((tx) => this.toItem(tx, rideContext)),
       page,
       limit,
       total,
@@ -72,7 +85,11 @@ export class WalletHistoryService {
     };
   }
 
-  private toItem(tx: WalletTransaction): WalletTransactionItemDto {
+  private toItem(
+    tx: WalletTransaction,
+    rideContext: Map<string, { rideId: string; rideType: RideType }>,
+  ): WalletTransactionItemDto {
+    const ride = rideContext.get(tx.id);
     return {
       transactionId: tx.id,
       transactionType: tx.transactionType,
@@ -84,6 +101,7 @@ export class WalletHistoryService {
       status: tx.status,
       referenceType: tx.referenceType,
       referenceId: tx.referenceId,
+      ...(ride ? { rideId: ride.rideId, rideType: ride.rideType } : {}),
       createdAt: tx.createdAt.toISOString(),
     };
   }
