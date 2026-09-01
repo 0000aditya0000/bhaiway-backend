@@ -45,6 +45,7 @@ import {
 import { BookingsService } from '../bookings/bookings.service';
 import { CommuteSettlementService } from '../fare/commute-settlement.service';
 import { FareSettlementService } from '../fare/fare-settlement.service';
+import { RatingsService } from '../ratings/ratings.service';
 import { SettingsService } from '../settings/settings.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { User, UserStatus } from '../users/entities/user.entity';
@@ -143,6 +144,7 @@ export class RidesService {
     private readonly bookingsService: BookingsService,
     private readonly trackingService: TrackingService,
     private readonly rideDirectionsService: RideDirectionsService,
+    private readonly ratingsService: RatingsService,
   ) {}
 
   async cancelByDriver(
@@ -1815,6 +1817,7 @@ export class RidesService {
         }
 
         ride.status = RideStatus.COMPLETED;
+        await this.ratingsService.createRatingTasksInTransaction(manager, ride);
         await manager.getRepository(Ride).save(ride);
 
         if (ride.rideType === RideType.ASSURED) {
@@ -1907,6 +1910,7 @@ export class RidesService {
     }
 
     ride.status = RideStatus.COMPLETED;
+    await this.ratingsService.createRatingTasksInTransaction(manager, ride);
     await manager.getRepository(Ride).save(ride);
 
     return {
@@ -2001,6 +2005,8 @@ export class RidesService {
     ride: Ride,
     alreadyCompleted: boolean,
   ): Promise<CompleteRideResponseDto> {
+    await this.ratingsService.createRatingTasksInTransaction(manager, ride);
+
     if (ride.rideType === RideType.COMMUTE) {
       return this.buildCommuteCompleteResponse(manager, ride, alreadyCompleted);
     }

@@ -5,6 +5,7 @@ import { AssuredModule } from './assured/assured.module';
 import { AuthModule } from './auth/auth.module';
 import { BookingsModule } from './bookings/bookings.module';
 import { DatabaseModule } from './database/database.module';
+import { RatingsModule } from './ratings/ratings.module';
 import { RidesModule } from './rides/rides.module';
 import { SettingsModule } from './settings/settings.module';
 import { TrackingModule } from './tracking/tracking.module';
@@ -29,6 +30,7 @@ import { WalletModule } from './wallet/wallet.module';
     AssuredModule,
     RidesModule,
     BookingsModule,
+    RatingsModule,
     TrackingModule,
   ],
 })

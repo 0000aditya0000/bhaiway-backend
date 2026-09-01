@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AssuredModule } from '../assured/assured.module';
 import { FareModule } from '../fare/fare.module';
+import { RatingsModule } from '../ratings/ratings.module';
 import { AuthModule } from '../auth/auth.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingsModule } from '../bookings/bookings.module';
@@ -40,6 +41,7 @@ import { RideDirectionsService } from './route/ride-directions.service';
     AssuredModule,
     FareModule,
     BookingsModule,
+    RatingsModule,
     TrackingModule,
   ],
   controllers: [RidesController],
