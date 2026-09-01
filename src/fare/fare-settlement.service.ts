@@ -9,6 +9,7 @@ import { EntityManager } from 'typeorm';
 
 import { Booking } from '../bookings/entities/booking.entity';
 import {
+  BookingFarePayment,
   BookingMode,
   BookingPaymentMethod,
   BookingPaymentStatus,
@@ -43,7 +44,7 @@ export interface RideFareSettlementSummary {
   totalDriverCredited: string;
 }
 
-export interface RegularPayLaterSettlementResult {
+export interface PayLaterSettlementResult {
   bookingId: string;
   fareAmount: string;
   paymentStatus: BookingPaymentStatus;
@@ -51,7 +52,12 @@ export interface RegularPayLaterSettlementResult {
   driverCredited: string;
   paymentChannel: 'WALLET' | 'CASH';
   alreadySettled: boolean;
+  transactionId?: string | null;
+  paidAt?: string | null;
 }
+
+/** @deprecated Use PayLaterSettlementResult */
+export type RegularPayLaterSettlementResult = PayLaterSettlementResult;
 
 @Injectable()
 export class FareSettlementService {
@@ -147,7 +153,7 @@ export class FareSettlementService {
       };
     }
 
-    if (this.isDeferredRegularPayLater(booking)) {
+    if (this.isDeferredPayLater(booking)) {
       return {
         bookingId: booking.id,
         fareAmount: booking.totalAmount,
@@ -211,11 +217,23 @@ export class FareSettlementService {
     };
   }
 
+  async settlePayLaterWithWalletInTransaction(
+    manager: EntityManager,
+    passengerId: string,
+    bookingId: string,
+  ): Promise<PayLaterSettlementResult> {
+    return this.settleRegularPayLaterWithWalletInTransaction(
+      manager,
+      passengerId,
+      bookingId,
+    );
+  }
+
   async settleRegularPayLaterWithWalletInTransaction(
     manager: EntityManager,
     passengerId: string,
     bookingId: string,
-  ): Promise<RegularPayLaterSettlementResult> {
+  ): Promise<PayLaterSettlementResult> {
     const booking = await manager
       .getRepository(Booking)
       .createQueryBuilder('booking')
@@ -238,7 +256,7 @@ export class FareSettlementService {
       throw new NotFoundException('Ride not found');
     }
 
-    this.assertRegularPayLaterSettlementEligible(booking, ride);
+    this.assertPayLaterSettlementEligible(booking, ride);
 
     const fareAmount = parseFareAmount(booking.totalAmount);
     const driverCreditKey = fareSettlementDriverCreditKey(booking.id);
@@ -249,18 +267,44 @@ export class FareSettlementService {
       .findOne({ where: { idempotencyKey: driverCreditKey } });
 
     if (booking.paymentStatus === BookingPaymentStatus.PAID) {
-      if (booking.walletTransactionId || existingDriverCredit) {
+      if (existingDriverCredit) {
+        const debitTx = await manager.getRepository(WalletTransaction).findOne({
+          where: { idempotencyKey: debitKey },
+        });
         return {
           bookingId: booking.id,
           fareAmount: booking.totalAmount,
           paymentStatus: BookingPaymentStatus.PAID,
-          passengerDebited: fareAmount.toString(),
-          driverCredited: existingDriverCredit?.amount ?? fareAmount.toString(),
+          passengerDebited: existingDriverCredit.amount,
+          driverCredited: existingDriverCredit.amount,
           paymentChannel: 'WALLET',
           alreadySettled: true,
+          transactionId: debitTx?.id ?? null,
+          paidAt:
+            debitTx?.createdAt.toISOString() ??
+            existingDriverCredit.createdAt.toISOString(),
         };
       }
+      if (this.isFarePaidAtBookingTime(booking)) {
+        throw new BadRequestException('Fare was paid at booking time');
+      }
       throw new ConflictException('Fare already paid via cash');
+    }
+
+    if (fareAmount === 0n) {
+      booking.paymentStatus = BookingPaymentStatus.PAID;
+      await manager.getRepository(Booking).save(booking);
+      return {
+        bookingId: booking.id,
+        fareAmount: booking.totalAmount,
+        paymentStatus: BookingPaymentStatus.PAID,
+        passengerDebited: '0',
+        driverCredited: '0',
+        paymentChannel: 'WALLET',
+        alreadySettled: false,
+        transactionId: null,
+        paidAt: new Date().toISOString(),
+      };
     }
 
     const walletByUserId = await this.lockWalletsByUserIds(
@@ -291,26 +335,40 @@ export class FareSettlementService {
       const debitTx = await manager
         .getRepository(WalletTransaction)
         .findOneOrFail({ where: { idempotencyKey: debitKey } });
-      booking.walletTransactionId = debitTx.id;
+      if (booking.bookingMode === BookingMode.ASSURED) {
+        booking.fareWalletTransactionId = debitTx.id;
+      } else {
+        booking.walletTransactionId = debitTx.id;
+      }
     }
 
     let driverCredited = 0n;
+    let driverCreditTx: WalletTransaction | null = null;
     if (fareAmount > 0n) {
-      await this.walletService.creditPointsInTransaction(manager, {
-        walletId: driverWallet.id,
-        userId: ride.driverId,
-        amount: fareAmount,
-        sourceType: WalletPointSource.DRIVER_EARNED,
-        referenceType: 'BOOKING',
-        referenceId: booking.id,
-        idempotencyKey: driverCreditKey,
-        transactionType: WalletTransactionType.DRIVER_EARNING,
-      });
+      const creditResult = await this.walletService.creditPointsInTransaction(
+        manager,
+        {
+          walletId: driverWallet.id,
+          userId: ride.driverId,
+          amount: fareAmount,
+          sourceType: WalletPointSource.DRIVER_EARNED,
+          referenceType: 'BOOKING',
+          referenceId: booking.id,
+          idempotencyKey: driverCreditKey,
+          transactionType: WalletTransactionType.DRIVER_EARNING,
+        },
+      );
       driverCredited = fareAmount;
+      driverCreditTx = creditResult.transaction;
     }
 
+    const paidAt = new Date();
     booking.paymentStatus = BookingPaymentStatus.PAID;
     await manager.getRepository(Booking).save(booking);
+
+    const debitTx = await manager.getRepository(WalletTransaction).findOne({
+      where: { idempotencyKey: debitKey },
+    });
 
     return {
       bookingId: booking.id,
@@ -320,14 +378,28 @@ export class FareSettlementService {
       driverCredited: driverCredited.toString(),
       paymentChannel: 'WALLET',
       alreadySettled: false,
+      transactionId: debitTx?.id ?? driverCreditTx?.id ?? null,
+      paidAt: paidAt.toISOString(),
     };
+  }
+
+  async settlePayLaterWithCashInTransaction(
+    manager: EntityManager,
+    passengerId: string,
+    bookingId: string,
+  ): Promise<PayLaterSettlementResult> {
+    return this.settleRegularPayLaterWithCashInTransaction(
+      manager,
+      passengerId,
+      bookingId,
+    );
   }
 
   async settleRegularPayLaterWithCashInTransaction(
     manager: EntityManager,
     passengerId: string,
     bookingId: string,
-  ): Promise<RegularPayLaterSettlementResult> {
+  ): Promise<PayLaterSettlementResult> {
     const booking = await manager
       .getRepository(Booking)
       .createQueryBuilder('booking')
@@ -347,11 +419,20 @@ export class FareSettlementService {
       throw new NotFoundException('Ride not found');
     }
 
-    this.assertRegularPayLaterSettlementEligible(booking, ride);
+    this.assertPayLaterSettlementEligible(booking, ride);
+
+    const fareAmount = parseFareAmount(booking.totalAmount);
+    const driverCreditKey = fareSettlementDriverCreditKey(booking.id);
+    const existingDriverCredit = await manager
+      .getRepository(WalletTransaction)
+      .findOne({ where: { idempotencyKey: driverCreditKey } });
 
     if (booking.paymentStatus === BookingPaymentStatus.PAID) {
-      if (booking.walletTransactionId) {
+      if (existingDriverCredit) {
         throw new ConflictException('Fare already paid via wallet');
+      }
+      if (this.isFarePaidAtBookingTime(booking)) {
+        throw new BadRequestException('Fare was paid at booking time');
       }
       return {
         bookingId: booking.id,
@@ -361,9 +442,12 @@ export class FareSettlementService {
         driverCredited: '0',
         paymentChannel: 'CASH',
         alreadySettled: true,
+        transactionId: null,
+        paidAt: booking.updatedAt.toISOString(),
       };
     }
 
+    const paidAt = new Date();
     booking.paymentStatus = BookingPaymentStatus.PAID;
     await manager.getRepository(Booking).save(booking);
 
@@ -375,23 +459,52 @@ export class FareSettlementService {
       driverCredited: '0',
       paymentChannel: 'CASH',
       alreadySettled: false,
+      transactionId: null,
+      paidAt: paidAt.toISOString(),
     };
   }
 
   /**
-   * REGULAR PAY_LATER bookings keep fare UNPAID until the passenger explicitly
-   * pays via wallet or cash after ride completion.
+   * REGULAR or ASSURED PAY_LATER bookings keep fare UNPAID until the passenger
+   * explicitly pays via wallet or cash after ride completion.
    */
-  private isDeferredRegularPayLater(booking: Booking): boolean {
-    return (
+  private isDeferredPayLater(booking: Booking): boolean {
+    if (booking.paymentStatus !== BookingPaymentStatus.UNPAID) {
+      return false;
+    }
+
+    if (
       booking.bookingMode === BookingMode.REGULAR &&
-      booking.paymentMethod === BookingPaymentMethod.PAY_LATER &&
-      booking.paymentStatus === BookingPaymentStatus.UNPAID
+      booking.paymentMethod === BookingPaymentMethod.PAY_LATER
+    ) {
+      return true;
+    }
+
+    return this.isAssuredPayLaterFare(booking);
+  }
+
+  private isAssuredPayLaterFare(booking: Booking): boolean {
+    return (
+      booking.bookingMode === BookingMode.ASSURED &&
+      booking.paymentMethod === BookingPaymentMethod.ASSURED_DEPOSIT &&
+      (booking.farePaymentMethod === null ||
+        booking.farePaymentMethod === BookingFarePayment.PAY_LATER)
+    );
+  }
+
+  private isFarePaidAtBookingTime(booking: Booking): boolean {
+    if (booking.paymentMethod === BookingPaymentMethod.PAY_NOW) {
+      return true;
+    }
+    return (
+      booking.bookingMode === BookingMode.ASSURED &&
+      booking.paymentMethod === BookingPaymentMethod.ASSURED_DEPOSIT &&
+      booking.farePaymentMethod === BookingFarePayment.PAY_NOW
     );
   }
 
   private bookingNeedsWalletAtRideCompletion(booking: Booking): boolean {
-    if (this.isDeferredRegularPayLater(booking)) {
+    if (this.isDeferredPayLater(booking)) {
       return false;
     }
     return (
@@ -401,7 +514,7 @@ export class FareSettlementService {
   }
 
   private shouldCreditDriverAtRideCompletion(booking: Booking): boolean {
-    if (this.isDeferredRegularPayLater(booking)) {
+    if (this.isDeferredPayLater(booking)) {
       return false;
     }
     return parseFareAmount(booking.totalAmount) > 0n;
@@ -412,11 +525,15 @@ export class FareSettlementService {
       return false;
     }
 
+    if (this.isDeferredPayLater(booking)) {
+      return false;
+    }
+
     switch (booking.paymentMethod) {
       case BookingPaymentMethod.PAY_LATER:
-        return !this.isDeferredRegularPayLater(booking);
+        return false;
       case BookingPaymentMethod.ASSURED_DEPOSIT:
-        return booking.bookingMode === BookingMode.ASSURED;
+        return false;
       case BookingPaymentMethod.PAY_NOW:
         return false;
       default:
@@ -424,16 +541,24 @@ export class FareSettlementService {
     }
   }
 
-  private assertRegularPayLaterSettlementEligible(
+  private assertPayLaterSettlementEligible(
     booking: Booking,
     ride: Ride,
   ): void {
-    if (
-      booking.bookingMode !== BookingMode.REGULAR ||
-      booking.paymentMethod !== BookingPaymentMethod.PAY_LATER
-    ) {
+    if (booking.bookingMode === BookingMode.COMMUTE) {
       throw new BadRequestException(
-        'Payment applies only to REGULAR PAY_LATER bookings',
+        'Commute bookings cannot use post-ride PAY_LATER settlement',
+      );
+    }
+
+    const eligible =
+      (booking.bookingMode === BookingMode.REGULAR &&
+        booking.paymentMethod === BookingPaymentMethod.PAY_LATER) ||
+      this.isAssuredPayLaterFare(booking);
+
+    if (!eligible) {
+      throw new BadRequestException(
+        'Payment applies only to REGULAR or ASSURED PAY_LATER bookings',
       );
     }
     if (booking.status !== BookingStatus.COMPLETED) {

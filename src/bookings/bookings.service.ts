@@ -49,7 +49,7 @@ import { supportsTripLifecycle } from '../rides/ride-trip-lifecycle';
 import { computeCommuteBookingFareSnapshots } from '../rides/commute-fare.math';
 import {
   FareSettlementService,
-  RegularPayLaterSettlementResult,
+  PayLaterSettlementResult,
 } from '../fare/fare-settlement.service';
 import { SettingsService } from '../settings/settings.service';
 import { User } from '../users/entities/user.entity';
@@ -91,7 +91,7 @@ import {
   DriverBookingPageDto,
 } from './dto/driver-booking-response.dto';
 import { CommuteBookingDriverActionResponseDto } from './dto/commute-booking-action-response.dto';
-import { RegularPayLaterPaymentResponseDto } from './dto/regular-pay-later-payment-response.dto';
+import { PayLaterPaymentResponseDto } from './dto/regular-pay-later-payment-response.dto';
 import { VerifyPickupResponseDto } from './dto/verify-pickup-response.dto';
 import { Booking } from './entities/booking.entity';
 import {
@@ -163,19 +163,45 @@ export class BookingsService {
     );
   }
 
-  async payRegularPayLaterWithWallet(
+  async payPayLaterWithWallet(
     passengerId: string,
     bookingId: string,
-  ): Promise<RegularPayLaterPaymentResponseDto> {
+  ): Promise<PayLaterPaymentResponseDto> {
     try {
       const result = await this.dataSource.transaction((manager) =>
-        this.fareSettlementService.settleRegularPayLaterWithWalletInTransaction(
+        this.fareSettlementService.settlePayLaterWithWalletInTransaction(
           manager,
           passengerId,
           bookingId,
         ),
       );
-      return this.toRegularPayLaterPaymentResponse(result);
+      return this.toPayLaterPaymentResponse(result);
+    } catch (error) {
+      this.rethrowWalletHttpErrors(error);
+      throw error;
+    }
+  }
+
+  async payRegularPayLaterWithWallet(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<PayLaterPaymentResponseDto> {
+    return this.payPayLaterWithWallet(passengerId, bookingId);
+  }
+
+  async payPayLaterWithCash(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<PayLaterPaymentResponseDto> {
+    try {
+      const result = await this.dataSource.transaction((manager) =>
+        this.fareSettlementService.settlePayLaterWithCashInTransaction(
+          manager,
+          passengerId,
+          bookingId,
+        ),
+      );
+      return this.toPayLaterPaymentResponse(result);
     } catch (error) {
       this.rethrowWalletHttpErrors(error);
       throw error;
@@ -185,25 +211,13 @@ export class BookingsService {
   async payRegularPayLaterWithCash(
     passengerId: string,
     bookingId: string,
-  ): Promise<RegularPayLaterPaymentResponseDto> {
-    try {
-      const result = await this.dataSource.transaction((manager) =>
-        this.fareSettlementService.settleRegularPayLaterWithCashInTransaction(
-          manager,
-          passengerId,
-          bookingId,
-        ),
-      );
-      return this.toRegularPayLaterPaymentResponse(result);
-    } catch (error) {
-      this.rethrowWalletHttpErrors(error);
-      throw error;
-    }
+  ): Promise<PayLaterPaymentResponseDto> {
+    return this.payPayLaterWithCash(passengerId, bookingId);
   }
 
-  private toRegularPayLaterPaymentResponse(
-    result: RegularPayLaterSettlementResult,
-  ): RegularPayLaterPaymentResponseDto {
+  private toPayLaterPaymentResponse(
+    result: PayLaterSettlementResult,
+  ): PayLaterPaymentResponseDto {
     return {
       bookingId: result.bookingId,
       fareAmount: result.fareAmount,
@@ -212,7 +226,15 @@ export class BookingsService {
       driverCredited: result.driverCredited,
       paymentChannel: result.paymentChannel,
       alreadySettled: result.alreadySettled,
+      transactionId: result.transactionId ?? null,
+      paidAt: result.paidAt ?? null,
     };
+  }
+
+  private toRegularPayLaterPaymentResponse(
+    result: PayLaterSettlementResult,
+  ): PayLaterPaymentResponseDto {
+    return this.toPayLaterPaymentResponse(result);
   }
 
   async reportRiderNoShow(

@@ -1,8 +1,8 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { BookingPaymentStatus } from '../enums/booking.enums';
 
-export class RegularPayLaterPaymentResponseDto {
+export class PayLaterPaymentResponseDto {
   @ApiProperty({ format: 'uuid' })
   bookingId!: string;
 
@@ -34,4 +34,20 @@ export class RegularPayLaterPaymentResponseDto {
     description: 'True when the fare was already settled (idempotent retry)',
   })
   alreadySettled!: boolean;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
+    description: 'Wallet ledger transaction id (wallet payment only)',
+  })
+  transactionId?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'ISO timestamp when fare was marked paid',
+  })
+  paidAt?: string | null;
 }
+
+/** @deprecated Use PayLaterPaymentResponseDto */
+export type RegularPayLaterPaymentResponseDto = PayLaterPaymentResponseDto;
