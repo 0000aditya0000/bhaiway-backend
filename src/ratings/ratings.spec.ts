@@ -613,8 +613,23 @@ describe('Ratings foundation (integration)', () => {
       .expect(200);
 
     expect(summary.body.totalRatings).toBe(2);
+    expect(summary.body.total).toBe(2);
+    expect(summary.body.direction).toBe('RECEIVED');
     expect(summary.body.averageRating).toBe(4);
     expect(summary.body.items).toHaveLength(2);
+    expect(summary.body.items[0]).toMatchObject({
+      id: expect.any(String),
+      taskId: expect.any(String),
+      rating: expect.any(Number),
+      createdAt: expect.any(String),
+      fromUser: expect.objectContaining({ userId: expect.any(String) }),
+      toUser: expect.objectContaining({ userId: driver.login.user.id }),
+      ride: expect.objectContaining({
+        rideId: ride.id,
+        source: expect.any(String),
+        destination: expect.any(String),
+      }),
+    });
   });
 
   it('REGULAR PAY_LATER driver completion succeeds with zero passenger wallet', async () => {

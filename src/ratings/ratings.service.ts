@@ -29,7 +29,7 @@ import {
 } from './dto/rating-response.dto';
 import { SubmitRatingDto } from './dto/submit-rating.dto';
 import { UserRatingsQueryDto } from './dto/user-ratings-query.dto';
-import { RatingTargetRole, RatingTaskStatus } from './enums/rating.enums';
+import { RatingTargetRole, RatingTaskStatus, UserRatingDirection } from './enums/rating.enums';
 
 const MAX_COMMENT_LENGTH = 500;
 
@@ -250,12 +250,15 @@ export class RatingsService {
   ): Promise<UserRatingsSummaryDto> {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
+    const direction = query.direction ?? UserRatingDirection.RECEIVED;
+    const isReceived = direction === UserRatingDirection.RECEIVED;
+    const ownerColumn = isReceived ? 'task.to_user_id' : 'task.from_user_id';
 
     const aggregate = await this.ratingTaskRepository
       .createQueryBuilder('task')
       .select('AVG(task.rating)', 'average')
       .addSelect('COUNT(task.id)', 'count')
-      .where('task.to_user_id = :userId', { userId })
+      .where(`${ownerColumn} = :userId`, { userId })
       .andWhere('task.status = :status', {
         status: RatingTaskStatus.COMPLETED,
       })
@@ -269,31 +272,105 @@ export class RatingsService {
         : Math.round(Number(aggregate?.average ?? 0) * 10) / 10;
 
     const [tasks, total] = await this.ratingTaskRepository.findAndCount({
-      where: {
-        toUserId: userId,
-        status: RatingTaskStatus.COMPLETED,
-      },
+      where: isReceived
+        ? {
+            toUserId: userId,
+            status: RatingTaskStatus.COMPLETED,
+          }
+        : {
+            fromUserId: userId,
+            status: RatingTaskStatus.COMPLETED,
+          },
       order: { completedAt: 'DESC', id: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
     });
 
-    const items: ReceivedRatingItemDto[] = tasks
-      .filter((task) => task.rating !== null && task.completedAt !== null)
-      .map((task) => ({
-        rating: task.rating!,
-        comment: task.comment,
-        createdAt: task.completedAt!.toISOString(),
-      }));
+    const completedTasks = tasks.filter(
+      (task) => task.rating !== null && task.completedAt !== null,
+    );
+    const items = await this.mapCompletedRatingItems(completedTasks);
 
     return {
       averageRating,
       totalRatings,
+      total: totalRatings,
+      direction,
       items,
       page,
       limit,
       totalPages: total === 0 ? 0 : Math.ceil(total / limit),
     };
+  }
+
+  private async mapCompletedRatingItems(
+    tasks: RatingTask[],
+  ): Promise<ReceivedRatingItemDto[]> {
+    if (tasks.length === 0) {
+      return [];
+    }
+
+    const rideIds = [...new Set(tasks.map((task) => task.rideId))];
+    const userIds = [
+      ...new Set(
+        tasks.flatMap((task) => [task.fromUserId, task.toUserId]),
+      ),
+    ];
+
+    const rides = await this.rideRepository.find({
+      where: rideIds.map((id) => ({ id })),
+    });
+    const rideById = new Map(rides.map((ride) => [ride.id, ride]));
+    const driverIds = new Set(rides.map((ride) => ride.driverId));
+
+    const profiles = await this.userProfileRepository.find({
+      where: userIds.map((id) => ({ userId: id })),
+    });
+    const profileByUserId = new Map(
+      profiles.map((profile) => [profile.userId, profile]),
+    );
+
+    return tasks.map((task) => {
+      const ride = rideById.get(task.rideId);
+      if (!ride) {
+        throw new NotFoundException('Ride not found for completed rating');
+      }
+
+      const fromProfile = profileByUserId.get(task.fromUserId);
+      const toProfile = profileByUserId.get(task.toUserId);
+      const role = driverIds.has(task.toUserId)
+        ? RatingTargetRole.DRIVER
+        : RatingTargetRole.PASSENGER;
+
+      return {
+        id: task.id,
+        taskId: task.id,
+        rideId: task.rideId,
+        bookingId: task.bookingId,
+        rating: task.rating!,
+        comment: task.comment,
+        createdAt: task.completedAt!.toISOString(),
+        role,
+        fromUser: {
+          userId: task.fromUserId,
+          userName:
+            fromProfile?.displayName ?? fromProfile?.firstName ?? null,
+          userPhoto: fromProfile?.profilePhoto ?? null,
+        },
+        toUser: {
+          userId: task.toUserId,
+          userName: toProfile?.displayName ?? toProfile?.firstName ?? null,
+          userPhoto: toProfile?.profilePhoto ?? null,
+        },
+        ride: {
+          rideId: ride.id,
+          source: ride.source,
+          destination: ride.destination,
+          departureDate: ride.departureDate,
+          departureTime: ride.departureTime,
+        },
+      };
+    });
   }
 
   /**

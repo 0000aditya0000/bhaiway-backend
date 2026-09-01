@@ -92,9 +92,9 @@ export class RatingsController {
 
   @Get('user/:userId')
   @ApiOperation({
-    summary: 'Received ratings summary for a user',
+    summary: 'Ratings summary for a user',
     description:
-      'Server-side average and paginated completed ratings. Pending/skipped tasks are excluded.',
+      'Returns completed ratings for a user. Default direction=RECEIVED (ratings others left for them). Use direction=GIVEN for ratings they submitted. Pending/skipped tasks are excluded.',
   })
   @ApiParam({ name: 'userId', format: 'uuid' })
   @ApiOkResponse({ type: UserRatingsSummaryDto })

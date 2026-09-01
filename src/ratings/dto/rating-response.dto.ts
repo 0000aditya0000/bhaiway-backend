@@ -97,7 +97,30 @@ export class SkipRatingResponseDto {
   skippedAt!: string | null;
 }
 
+export class UserRatingPartyDto {
+  @ApiProperty({ format: 'uuid' })
+  userId!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  userName!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  userPhoto!: string | null;
+}
+
 export class ReceivedRatingItemDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiProperty({ format: 'uuid' })
+  taskId!: string;
+
+  @ApiProperty({ format: 'uuid' })
+  rideId!: string;
+
+  @ApiProperty({ format: 'uuid' })
+  bookingId!: string;
+
   @ApiProperty({ minimum: 1, maximum: 5 })
   rating!: number;
 
@@ -106,6 +129,28 @@ export class ReceivedRatingItemDto {
 
   @ApiProperty()
   createdAt!: string;
+
+  @ApiProperty({
+    enum: RatingTargetRole,
+    enumName: 'RatingTargetRole',
+    description: 'Role of the user who was rated',
+  })
+  role!: RatingTargetRole;
+
+  @ApiProperty({
+    type: UserRatingPartyDto,
+    description: 'User who submitted the rating',
+  })
+  fromUser!: UserRatingPartyDto;
+
+  @ApiProperty({
+    type: UserRatingPartyDto,
+    description: 'User who received the rating',
+  })
+  toUser!: UserRatingPartyDto;
+
+  @ApiProperty({ type: PendingRatingRideDto })
+  ride!: PendingRatingRideDto;
 }
 
 export class UserRatingsSummaryDto {
@@ -117,6 +162,17 @@ export class UserRatingsSummaryDto {
 
   @ApiProperty({ description: 'Count of completed ratings received' })
   totalRatings!: number;
+
+  @ApiProperty({
+    description: 'Alias for totalRatings (mobile client compatibility)',
+  })
+  total!: number;
+
+  @ApiProperty({
+    enum: ['RECEIVED', 'GIVEN'],
+    description: 'Whether items are ratings received by or given by the user',
+  })
+  direction!: 'RECEIVED' | 'GIVEN';
 
   @ApiProperty({ type: ReceivedRatingItemDto, isArray: true })
   items!: ReceivedRatingItemDto[];
