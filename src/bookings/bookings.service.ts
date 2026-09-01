@@ -47,6 +47,10 @@ import {
 } from '../rides/enums/ride.enums';
 import { supportsTripLifecycle } from '../rides/ride-trip-lifecycle';
 import { computeCommuteBookingFareSnapshots } from '../rides/commute-fare.math';
+import {
+  FareSettlementService,
+  RegularPayLaterSettlementResult,
+} from '../fare/fare-settlement.service';
 import { SettingsService } from '../settings/settings.service';
 import { User } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
@@ -87,6 +91,7 @@ import {
   DriverBookingPageDto,
 } from './dto/driver-booking-response.dto';
 import { CommuteBookingDriverActionResponseDto } from './dto/commute-booking-action-response.dto';
+import { RegularPayLaterPaymentResponseDto } from './dto/regular-pay-later-payment-response.dto';
 import { VerifyPickupResponseDto } from './dto/verify-pickup-response.dto';
 import { Booking } from './entities/booking.entity';
 import {
@@ -145,6 +150,7 @@ export class BookingsService {
     private readonly assuredQueueService: AssuredQueueService,
     private readonly passengerDepositPenaltyService: PassengerAssuredDepositPenaltyService,
     private readonly configService: ConfigService,
+    private readonly fareSettlementService: FareSettlementService,
   ) {}
 
   async cancelByPassenger(
@@ -155,6 +161,58 @@ export class BookingsService {
       passengerId,
       bookingId,
     );
+  }
+
+  async payRegularPayLaterWithWallet(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<RegularPayLaterPaymentResponseDto> {
+    try {
+      const result = await this.dataSource.transaction((manager) =>
+        this.fareSettlementService.settleRegularPayLaterWithWalletInTransaction(
+          manager,
+          passengerId,
+          bookingId,
+        ),
+      );
+      return this.toRegularPayLaterPaymentResponse(result);
+    } catch (error) {
+      this.rethrowWalletHttpErrors(error);
+      throw error;
+    }
+  }
+
+  async payRegularPayLaterWithCash(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<RegularPayLaterPaymentResponseDto> {
+    try {
+      const result = await this.dataSource.transaction((manager) =>
+        this.fareSettlementService.settleRegularPayLaterWithCashInTransaction(
+          manager,
+          passengerId,
+          bookingId,
+        ),
+      );
+      return this.toRegularPayLaterPaymentResponse(result);
+    } catch (error) {
+      this.rethrowWalletHttpErrors(error);
+      throw error;
+    }
+  }
+
+  private toRegularPayLaterPaymentResponse(
+    result: RegularPayLaterSettlementResult,
+  ): RegularPayLaterPaymentResponseDto {
+    return {
+      bookingId: result.bookingId,
+      fareAmount: result.fareAmount,
+      paymentStatus: result.paymentStatus,
+      passengerDebited: result.passengerDebited,
+      driverCredited: result.driverCredited,
+      paymentChannel: result.paymentChannel,
+      alreadySettled: result.alreadySettled,
+    };
   }
 
   async reportRiderNoShow(

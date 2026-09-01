@@ -43,6 +43,7 @@ import { DriverBookingPageDto } from './dto/driver-booking-response.dto';
 import { VerifyPickupDto } from './dto/verify-pickup.dto';
 import { VerifyPickupResponseDto } from './dto/verify-pickup-response.dto';
 import { CommuteBookingDriverActionResponseDto } from './dto/commute-booking-action-response.dto';
+import { RegularPayLaterPaymentResponseDto } from './dto/regular-pay-later-payment-response.dto';
 import { BookingsService } from './bookings.service';
 
 @ApiTags('Bookings')
@@ -123,6 +124,57 @@ export class BookingsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.bookingsService.cancelByPassenger(currentUser.userId, id);
+  }
+
+  @Post(':id/pay-wallet')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Pay REGULAR PAY_LATER fare via BhaiWay Wallet (passenger only)',
+    description:
+      'After ride completion. Debits the passenger wallet and credits the driver atomically. ' +
+      'Insufficient balance returns 422 to the passenger only — never blocks driver completion. ' +
+      'Idempotent when the fare was already paid via wallet.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOkResponse({ type: RegularPayLaterPaymentResponseDto })
+  @ApiNotFoundResponse({ description: 'Booking not found for this passenger' })
+  @ApiConflictResponse({
+    description: 'Ride not completed, fare already paid via cash, or invalid state',
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Insufficient wallet balance',
+  })
+  payRegularPayLaterWithWallet(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.bookingsService.payRegularPayLaterWithWallet(
+      currentUser.userId,
+      id,
+    );
+  }
+
+  @Post(':id/pay-cash')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Mark REGULAR PAY_LATER fare as paid in cash (passenger only)',
+    description:
+      'After ride completion. No wallet debit or credit. Idempotent when already marked paid.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOkResponse({ type: RegularPayLaterPaymentResponseDto })
+  @ApiNotFoundResponse({ description: 'Booking not found for this passenger' })
+  @ApiConflictResponse({
+    description: 'Ride not completed, fare already paid via wallet, or invalid state',
+  })
+  payRegularPayLaterWithCash(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.bookingsService.payRegularPayLaterWithCash(
+      currentUser.userId,
+      id,
+    );
   }
 
   @Post(':id/accept')

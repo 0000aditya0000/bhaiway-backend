@@ -273,7 +273,7 @@ describe('Fare settlement (integration)', () => {
     return response.body as { id: string; assuredDepositAmount: string };
   }
 
-  it('Regular PAY_LATER: completion debits passenger and credits driver', async () => {
+  it('Regular PAY_LATER: completion leaves fare UNPAID; passenger pays via wallet after', async () => {
     const driver = await fundedDriver();
     const passenger = await fundedPassenger(1000n);
     const ride = await publishRegular(driver, 200);
@@ -306,6 +306,30 @@ describe('Fare settlement (integration)', () => {
     await request(app.getHttpServer())
       .post(`/rides/${ride.id}/complete`)
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+
+    const bookingAfterComplete = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking.body.id });
+    expect(bookingAfterComplete.paymentStatus).toBe(BookingPaymentStatus.UNPAID);
+    expect(bookingAfterComplete.status).toBe(BookingStatus.COMPLETED);
+
+    const passengerAfterComplete = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: passenger.wallet.id });
+    const driverAfterComplete = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: driver.wallet.id });
+    expect(passengerAfterComplete.purchasedAvailable).toBe(
+      passengerBefore.purchasedAvailable,
+    );
+    expect(driverAfterComplete.driverEarnedAvailable).toBe(
+      driverBefore.driverEarnedAvailable,
+    );
+
+    await request(app.getHttpServer())
+      .post(`/bookings/${booking.body.id}/pay-wallet`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
       .expect(200);
 
     const bookingRow = await dataSource
@@ -517,7 +541,7 @@ describe('Fare settlement (integration)', () => {
     expect(fareDebit.amount).not.toBe(bookingRow.assuredDepositAmount);
   });
 
-  it('PAY_LATER with insufficient balance fails completion atomically', async () => {
+  it('REGULAR PAY_LATER with insufficient balance: driver completes; wallet pay fails for passenger', async () => {
     const driver = await fundedDriver();
     const passenger = await fundedPassenger(100n);
     const ride = await publishRegular(driver, 200);
@@ -543,23 +567,38 @@ describe('Fare settlement (integration)', () => {
     await request(app.getHttpServer())
       .post(`/rides/${ride.id}/complete`)
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .expect(422);
+      .expect(200);
 
     const rideRow = await dataSource
       .getRepository(Ride)
       .findOneByOrFail({ id: ride.id });
-    expect(rideRow.status).toBe(RideStatus.IN_PROGRESS);
+    expect(rideRow.status).toBe(RideStatus.COMPLETED);
 
     const bookingRow = await dataSource
       .getRepository(Booking)
       .findOneByOrFail({ id: booking.body.id });
     expect(bookingRow.paymentStatus).toBe(BookingPaymentStatus.UNPAID);
-    expect(bookingRow.status).toBe(BookingStatus.CONFIRMED);
+    expect(bookingRow.status).toBe(BookingStatus.COMPLETED);
 
     const driverBalance = await dataSource
       .getRepository(WalletBalance)
       .findOneByOrFail({ walletId: driver.wallet.id });
     expect(driverBalance.driverEarnedAvailable).toBe('0');
+
+    await request(app.getHttpServer())
+      .post(`/bookings/${booking.body.id}/pay-wallet`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(422);
+
+    await request(app.getHttpServer())
+      .post(`/bookings/${booking.body.id}/pay-cash`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+
+    const afterCash = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking.body.id });
+    expect(afterCash.paymentStatus).toBe(BookingPaymentStatus.PAID);
 
     expect(
       await dataSource.getRepository(WalletTransaction).count({
@@ -613,12 +652,156 @@ describe('Fare settlement (integration)', () => {
     const driverBalance = await dataSource
       .getRepository(WalletBalance)
       .findOneByOrFail({ walletId: driver.wallet.id });
-    expect(driverBalance.driverEarnedAvailable).toBe('300');
+    expect(driverBalance.driverEarnedAvailable).toBe('100');
 
-    for (const id of [payNowBooking.body.id, payLaterBooking.body.id]) {
-      const row = await dataSource.getRepository(Booking).findOneByOrFail({ id });
-      expect(row.paymentStatus).toBe(BookingPaymentStatus.PAID);
-      expect(row.status).toBe(BookingStatus.COMPLETED);
-    }
+    const payLaterRow = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: payLaterBooking.body.id });
+    expect(payLaterRow.paymentStatus).toBe(BookingPaymentStatus.UNPAID);
+
+    const payNowRow = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: payNowBooking.body.id });
+    expect(payNowRow.paymentStatus).toBe(BookingPaymentStatus.PAID);
+    expect(payNowRow.status).toBe(BookingStatus.COMPLETED);
+  });
+
+  it('REGULAR PAY_LATER zero wallet: driver completes successfully', async () => {
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger(0n);
+    const ride = await publishRegular(driver, 150);
+
+    const booking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethod.PAY_LATER,
+      })
+      .expect(201);
+
+    await startRideAndVerifyAllPickups(
+      app,
+      dataSource,
+      driver.login.accessToken,
+      ride.id,
+      pickupOtpPepper(),
+    );
+
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.id}/complete`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+
+    const row = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking.body.id });
+    expect(row.status).toBe(BookingStatus.COMPLETED);
+    expect(row.paymentStatus).toBe(BookingPaymentStatus.UNPAID);
+  });
+
+  it('REGULAR PAY_LATER duplicate wallet payment is idempotent', async () => {
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger(500n);
+    const ride = await publishRegular(driver, 100);
+
+    const booking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethod.PAY_LATER,
+      })
+      .expect(201);
+
+    await startRideAndVerifyAllPickups(
+      app,
+      dataSource,
+      driver.login.accessToken,
+      ride.id,
+      pickupOtpPepper(),
+    );
+
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.id}/complete`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+
+    const first = await request(app.getHttpServer())
+      .post(`/bookings/${booking.body.id}/pay-wallet`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(first.body.alreadySettled).toBe(false);
+
+    const second = await request(app.getHttpServer())
+      .post(`/bookings/${booking.body.id}/pay-wallet`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(second.body.alreadySettled).toBe(true);
+
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: {
+          idempotencyKey: fareSettlementPassengerDebitKey(booking.body.id),
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: {
+          idempotencyKey: fareSettlementDriverCreditKey(booking.body.id),
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('REGULAR PAY_LATER duplicate cash payment is idempotent', async () => {
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger(0n);
+    const ride = await publishRegular(driver, 100);
+
+    const booking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethod.PAY_LATER,
+      })
+      .expect(201);
+
+    await startRideAndVerifyAllPickups(
+      app,
+      dataSource,
+      driver.login.accessToken,
+      ride.id,
+      pickupOtpPepper(),
+    );
+
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.id}/complete`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+
+    const first = await request(app.getHttpServer())
+      .post(`/bookings/${booking.body.id}/pay-cash`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(first.body.paymentChannel).toBe('CASH');
+    expect(first.body.alreadySettled).toBe(false);
+
+    const second = await request(app.getHttpServer())
+      .post(`/bookings/${booking.body.id}/pay-cash`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(second.body.alreadySettled).toBe(true);
+
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: { referenceId: booking.body.id },
+      }),
+    ).toBe(0);
   });
 });
