@@ -328,6 +328,8 @@ describe('Wallet API (integration)', () => {
       expect(response.body.items[0].transactionType).toBe(
         WalletTransactionType.POINT_PURCHASE,
       );
+      expect(response.body.items[0].displayTitle).toBe('Wallet top-up');
+      expect(response.body.items[0].displayCategory).toBe('TOP_UP');
     });
 
     it('paginates results', async () => {

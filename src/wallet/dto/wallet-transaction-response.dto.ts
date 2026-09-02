@@ -7,6 +7,7 @@ import {
   WalletTransactionStatus,
   WalletTransactionType,
 } from '../entities/wallet-transaction.entity';
+import { WalletTransactionDisplayCategory } from '../wallet-transaction-display.mapper';
 
 export class WalletTransactionItemDto {
   @ApiProperty({
@@ -49,6 +50,22 @@ export class WalletTransactionItemDto {
 
   @ApiProperty({ enum: WalletTransactionStatus, enumName: 'WalletTransactionStatus' })
   status!: WalletTransactionStatus;
+
+  @ApiProperty({
+    description:
+      'User-facing title for the mobile wallet history list (e.g. "Office commute booked", "Ride earnings")',
+    example: 'Coins purchased',
+  })
+  displayTitle!: string;
+
+  @ApiProperty({
+    enum: WalletTransactionDisplayCategory,
+    enumName: 'WalletTransactionDisplayCategory',
+    description:
+      'Semantic category for icons/colors in the app (TOP_UP, BOOKING, EARNING, REFUND, etc.)',
+    example: WalletTransactionDisplayCategory.TOP_UP,
+  })
+  displayCategory!: WalletTransactionDisplayCategory;
 
   @ApiPropertyOptional({ nullable: true, maxLength: 50 })
   referenceType!: string | null;
