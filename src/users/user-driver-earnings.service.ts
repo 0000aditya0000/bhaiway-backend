@@ -53,15 +53,19 @@ export class UserDriverEarningsService {
         'booking.id::text = tx.reference_id AND tx.reference_type IN (:...bookingRefTypes)',
         { bookingRefTypes: [...BOOKING_REFERENCE_TYPES] },
       )
-      .leftJoin(Ride, 'rideFromBooking', 'rideFromBooking.id = booking.ride_id')
       .leftJoin(
         Ride,
-        'rideDirect',
-        'rideDirect.id::text = tx.reference_id AND tx.reference_type IN (:...rideRefTypes)',
+        'ride_from_booking',
+        'ride_from_booking.id = booking.ride_id',
+      )
+      .leftJoin(
+        Ride,
+        'ride_direct',
+        'ride_direct.id::text = tx.reference_id AND tx.reference_type IN (:...rideRefTypes)',
         { rideRefTypes: [...RIDE_REFERENCE_TYPES] },
       )
       .select(
-        'COALESCE(rideFromBooking.ride_type, rideDirect.ride_type)',
+        'COALESCE(ride_from_booking.ride_type, ride_direct.ride_type)',
         'rideType',
       )
       .addSelect('SUM(tx.amount::bigint)', 'total')
@@ -75,7 +79,7 @@ export class UserDriverEarningsService {
       .andWhere('tx.transaction_type IN (:...types)', {
         types: [...DRIVER_INCOME_TRANSACTION_TYPES],
       })
-      .groupBy('COALESCE(rideFromBooking.ride_type, rideDirect.ride_type)')
+      .groupBy('COALESCE(ride_from_booking.ride_type, ride_direct.ride_type)')
       .getRawMany<{ rideType: RideType | null; total: string }>();
 
     let regular = 0n;
