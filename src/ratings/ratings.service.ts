@@ -244,6 +244,63 @@ export class RatingsService {
     });
   }
 
+  async getUserRatingRoleAverages(userId: string): Promise<{
+    overall: { averageRating: number; totalRatings: number };
+    asDriver: { averageRating: number; totalRatings: number };
+    asRider: { averageRating: number; totalRatings: number };
+  }> {
+    const aggregate = await this.ratingTaskRepository
+      .createQueryBuilder('task')
+      .innerJoin(Ride, 'ride', 'ride.id = task.ride_id')
+      .innerJoin(Booking, 'booking', 'booking.id = task.booking_id')
+      .select('AVG(task.rating)', 'overallAverage')
+      .addSelect('COUNT(task.id)', 'overallCount')
+      .addSelect(
+        'AVG(task.rating) FILTER (WHERE ride.driver_id = task.to_user_id)',
+        'driverAverage',
+      )
+      .addSelect(
+        'COUNT(task.id) FILTER (WHERE ride.driver_id = task.to_user_id)',
+        'driverCount',
+      )
+      .addSelect(
+        'AVG(task.rating) FILTER (WHERE booking.passenger_id = task.to_user_id)',
+        'riderAverage',
+      )
+      .addSelect(
+        'COUNT(task.id) FILTER (WHERE booking.passenger_id = task.to_user_id)',
+        'riderCount',
+      )
+      .where('task.to_user_id = :userId', { userId })
+      .andWhere('task.status = :status', {
+        status: RatingTaskStatus.COMPLETED,
+      })
+      .andWhere('task.rating IS NOT NULL')
+      .getRawOne<{
+        overallAverage: string | null;
+        overallCount: string;
+        driverAverage: string | null;
+        driverCount: string;
+        riderAverage: string | null;
+        riderCount: string;
+      }>();
+
+    return {
+      overall: this.toRatingAverage(
+        aggregate?.overallAverage,
+        aggregate?.overallCount,
+      ),
+      asDriver: this.toRatingAverage(
+        aggregate?.driverAverage,
+        aggregate?.driverCount,
+      ),
+      asRider: this.toRatingAverage(
+        aggregate?.riderAverage,
+        aggregate?.riderCount,
+      ),
+    };
+  }
+
   async getUserRatingsSummary(
     userId: string,
     query: UserRatingsQueryDto,
@@ -457,6 +514,19 @@ export class RatingsService {
         'Rating participants do not match ride booking',
       );
     }
+  }
+
+  private toRatingAverage(
+    average: string | null | undefined,
+    count: string | null | undefined,
+  ): { averageRating: number; totalRatings: number } {
+    const totalRatings = Number(count ?? 0);
+    const averageRating =
+      totalRatings === 0
+        ? 0
+        : Math.round(Number(average ?? 0) * 10) / 10;
+
+    return { averageRating, totalRatings };
   }
 
   private normalizeComment(comment?: string | null): string | null {

@@ -12,6 +12,9 @@ import { UserProfile } from './entities/user-profile.entity';
 import { User } from './entities/user.entity';
 import { isProfileCompleted } from './profile-completion';
 import { PassengerAssuredDepositPenaltyService } from '../assured/passenger-assured-deposit-penalty.service';
+import { RatingsService } from '../ratings/ratings.service';
+import { WalletQueryService } from '../wallet/wallet-query.service';
+import { UserDriverEarningsService } from './user-driver-earnings.service';
 
 @Injectable()
 export class UsersService {
@@ -21,6 +24,9 @@ export class UsersService {
     @InjectRepository(UserProfile)
     private readonly userProfileRepository: Repository<UserProfile>,
     private readonly passengerDepositPenaltyService: PassengerAssuredDepositPenaltyService,
+    private readonly walletQueryService: WalletQueryService,
+    private readonly userDriverEarningsService: UserDriverEarningsService,
+    private readonly ratingsService: RatingsService,
   ) {}
 
   async getMe(userId: string) {
@@ -30,8 +36,12 @@ export class UsersService {
     }
 
     const profile = await this.getProfileEntity(userId);
-    const depositQuote =
-      await this.passengerDepositPenaltyService.getDepositQuote(userId);
+    const [depositQuote, wallet, driverEarnings, ratings] = await Promise.all([
+      this.passengerDepositPenaltyService.getDepositQuote(userId),
+      this.walletQueryService.getBalanceForUser(userId),
+      this.userDriverEarningsService.getLifetimeEarningsByRideType(userId),
+      this.ratingsService.getUserRatingRoleAverages(userId),
+    ]);
 
     return {
       user: {
@@ -50,6 +60,9 @@ export class UsersService {
             reason: depositQuote.reason!,
           }
         : null,
+      wallet,
+      driverEarnings,
+      ratings,
     };
   }
 

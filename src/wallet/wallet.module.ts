@@ -48,6 +48,7 @@ import { WalletService } from './wallet.service';
   exports: [
     TypeOrmModule,
     WalletService,
+    WalletQueryService,
     WalletReconciliationService,
     WalletLotExpiryService,
   ],

@@ -1,7 +1,68 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+import { WalletBalanceResponseDto } from '../../wallet/dto/wallet-balance-response.dto';
 import { Gender } from '../entities/user-profile.entity';
 import { UserStatus } from '../entities/user.entity';
+
+export class UserRatingAverageDto {
+  @ApiProperty({
+    description: 'Average star rating (1 decimal place)',
+    example: 4.5,
+  })
+  averageRating!: number;
+
+  @ApiProperty({
+    description: 'Number of completed ratings in this category',
+    example: 12,
+  })
+  totalRatings!: number;
+}
+
+export class UserRatingsSummarySectionDto {
+  @ApiProperty({
+    type: UserRatingAverageDto,
+    description: 'All ratings received by the user',
+  })
+  overall!: UserRatingAverageDto;
+
+  @ApiProperty({
+    type: UserRatingAverageDto,
+    description: 'Ratings received when acting as a driver',
+  })
+  asDriver!: UserRatingAverageDto;
+
+  @ApiProperty({
+    type: UserRatingAverageDto,
+    description: 'Ratings received when acting as a passenger/rider',
+  })
+  asRider!: UserRatingAverageDto;
+}
+
+export class UserDriverEarningsDto {
+  @ApiProperty({
+    description: 'Lifetime driver earnings from Regular rides (coins)',
+    example: '1500',
+  })
+  regularTotalCoins!: string;
+
+  @ApiProperty({
+    description: 'Lifetime driver earnings from Assured rides (coins)',
+    example: '800',
+  })
+  assuredTotalCoins!: string;
+
+  @ApiProperty({
+    description: 'Lifetime driver earnings from Office Commute rides (coins)',
+    example: '400',
+  })
+  commuteTotalCoins!: string;
+
+  @ApiProperty({
+    description: 'Total lifetime driver earnings across all ride types (coins)',
+    example: '2700',
+  })
+  totalCoins!: string;
+}
 
 export class UserSummaryDto {
   @ApiProperty({ format: 'uuid' })
@@ -76,4 +137,24 @@ export class GetMeResponseDto {
     percentage: number;
     reason: string;
   } | null;
+
+  @ApiProperty({
+    type: WalletBalanceResponseDto,
+    description: 'Current wallet coin balance and bucket breakdown',
+  })
+  wallet!: WalletBalanceResponseDto;
+
+  @ApiProperty({
+    type: UserDriverEarningsDto,
+    description:
+      'Lifetime driver earnings split by ride type (Regular, Assured, Office Commute)',
+  })
+  driverEarnings!: UserDriverEarningsDto;
+
+  @ApiProperty({
+    type: UserRatingsSummarySectionDto,
+    description:
+      'Rating averages from received ratings, split by driver and rider roles',
+  })
+  ratings!: UserRatingsSummarySectionDto;
 }

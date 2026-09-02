@@ -13,6 +13,7 @@ import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
 import { WalletTransaction } from '../wallet/entities/wallet-transaction.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
+import { RatingsModule } from '../ratings/ratings.module';
 import { WalletModule } from '../wallet/wallet.module';
 import {
   assertSafeTestDatabaseUrl,
@@ -50,6 +51,7 @@ describe('UsersController (integration)', () => {
         AuthModule,
         UsersModule,
         WalletModule,
+        RatingsModule,
       ],
     })
       .overrideProvider(OTP_PROVIDER)
@@ -137,6 +139,22 @@ describe('UsersController (integration)', () => {
     });
     expect(response.body.profile).toBeNull();
     expect(response.body.profileCompleted).toBe(false);
+    expect(response.body.wallet).toMatchObject({
+      balanceCoins: '0',
+      availableCoins: '0',
+      heldCoins: '0',
+    });
+    expect(response.body.driverEarnings).toEqual({
+      regularTotalCoins: '0',
+      assuredTotalCoins: '0',
+      commuteTotalCoins: '0',
+      totalCoins: '0',
+    });
+    expect(response.body.ratings).toEqual({
+      overall: { averageRating: 0, totalRatings: 0 },
+      asDriver: { averageRating: 0, totalRatings: 0 },
+      asRider: { averageRating: 0, totalRatings: 0 },
+    });
   });
 
   it('GET /users/me when profile does not exist → profile null', async () => {
