@@ -446,6 +446,7 @@ describe('Commute booking request lifecycle (integration)', () => {
 
     expect(rejected.body).toMatchObject({
       status: BookingStatus.CANCELLED,
+      paymentStatus: BookingPaymentStatus.REFUNDED,
       alreadyApplied: false,
     });
 
@@ -603,23 +604,42 @@ describe('Commute booking request lifecycle (integration)', () => {
     expect(storedRide.availableSeats).toBe(1);
   });
 
-  it('blocks Commute passenger cancellation via POST /bookings/:id/cancel', async () => {
-    const { login: driver, ride } = await publishCommuteDriver(4, 100);
-    const { login: passenger } = await fundedPassenger(1000n);
+  it('passenger can cancel PENDING Commute booking with full refund', async () => {
+    const { login: driver, ride } = await publishCommuteDriver(3, 100);
+    const { login: passenger, wallet } = await fundedPassenger(1000n);
+
     const booking = await createCommuteBooking(
       passenger.accessToken,
       ride.id,
       1,
     );
 
-    await request(app.getHttpServer())
+    const balanceAfterBook = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+
+    const cancelled = await request(app.getHttpServer())
       .post(`/bookings/${booking.body.id}/cancel`)
       .set('Authorization', `Bearer ${passenger.accessToken}`)
-      .expect(400);
+      .expect(200);
 
-    const stored = await dataSource.getRepository(Booking).findOneByOrFail({
-      id: booking.body.id,
+    expect(cancelled.body).toMatchObject({
+      status: BookingStatus.CANCELLED,
+      paymentStatus: BookingPaymentStatus.REFUNDED,
+      cancellationReason: BookingCancellationReason.RIDER_CANCELLED,
+      seatsRestored: 0,
+      fareRefunded: '110',
+      alreadyApplied: false,
     });
-    expect(stored.status).toBe(BookingStatus.PENDING);
+
+    const storedRide = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: ride.id,
+    });
+    expect(storedRide.availableSeats).toBe(3);
+
+    const balanceAfterCancel = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+    expect(balanceAfterCancel.purchasedAvailable).toBe('1000');
   });
 });

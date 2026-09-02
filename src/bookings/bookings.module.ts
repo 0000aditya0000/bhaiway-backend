@@ -14,6 +14,8 @@ import { VerificationModule } from '../verification/verification.module';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { WalletModule } from '../wallet/wallet.module';
+import { WalletTransaction } from '../wallet/entities/wallet-transaction.entity';
+import { CommuteCancellationService } from './commute-cancellation.service';
 import { BookingsController } from './bookings.controller';
 import { BookingsService } from './bookings.service';
 import { Booking } from './entities/booking.entity';
@@ -29,6 +31,7 @@ import { Booking } from './entities/booking.entity';
       Wallet,
       UserCoupon,
       Vehicle,
+      WalletTransaction,
     ]),
     AuthModule,
     VerificationModule,
@@ -38,7 +41,7 @@ import { Booking } from './entities/booking.entity';
     FareModule,
   ],
   controllers: [BookingsController],
-  providers: [BookingsService],
-  exports: [TypeOrmModule, BookingsService],
+  providers: [BookingsService, CommuteCancellationService],
+  exports: [TypeOrmModule, BookingsService, CommuteCancellationService],
 })
 export class BookingsModule {}

@@ -90,6 +90,8 @@ import {
   DriverBookingItemDto,
   DriverBookingPageDto,
 } from './dto/driver-booking-response.dto';
+import { CommuteCancellationService } from './commute-cancellation.service';
+import { CommuteBookingCancellationResponseDto } from './dto/commute-cancellation-response.dto';
 import { CommuteBookingDriverActionResponseDto } from './dto/commute-booking-action-response.dto';
 import { PayLaterPaymentResponseDto } from './dto/regular-pay-later-payment-response.dto';
 import { VerifyPickupResponseDto } from './dto/verify-pickup-response.dto';
@@ -151,12 +153,30 @@ export class BookingsService {
     private readonly passengerDepositPenaltyService: PassengerAssuredDepositPenaltyService,
     private readonly configService: ConfigService,
     private readonly fareSettlementService: FareSettlementService,
+    private readonly commuteCancellationService: CommuteCancellationService,
   ) {}
 
   async cancelByPassenger(
     passengerId: string,
     bookingId: string,
-  ): Promise<AssuredBookingLifecycleResponseDto> {
+  ): Promise<
+    AssuredBookingLifecycleResponseDto | CommuteBookingCancellationResponseDto
+  > {
+    const booking = await this.bookingRepository.findOne({
+      where: { id: bookingId },
+      select: { id: true, bookingMode: true },
+    });
+    if (!booking) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    if (booking.bookingMode === BookingMode.COMMUTE) {
+      return this.commuteCancellationService.cancelBookingByPassenger(
+        passengerId,
+        bookingId,
+      );
+    }
+
     return this.assuredLifecycleService.cancelBookingByRider(
       passengerId,
       bookingId,
@@ -476,6 +496,7 @@ export class BookingsService {
           ride,
           null,
           true,
+          [],
         );
       }
 
@@ -497,11 +518,19 @@ export class BookingsService {
       booking.status = BookingStatus.CONFIRMED;
       await manager.getRepository(Booking).save(booking);
 
+      const autoCancelledBookings =
+        await this.commuteCancellationService.autoCancelRemainingPendingWhenFull(
+          manager,
+          ride,
+          booking.id,
+        );
+
       return this.toCommuteDriverActionResponse(
         booking,
         ride,
         null,
         false,
+        autoCancelledBookings,
       );
     });
   }
@@ -553,6 +582,7 @@ export class BookingsService {
               ride,
               null,
               true,
+              [],
             );
           }
           throw new ConflictException(
@@ -590,6 +620,12 @@ export class BookingsService {
         booking.status = BookingStatus.CANCELLED;
         booking.cancellationReason = BookingCancellationReason.DRIVER_REJECTED;
         booking.cancelledAt = now;
+        if (
+          booking.paymentStatus === BookingPaymentStatus.PAID &&
+          BigInt(booking.totalAmount) > 0n
+        ) {
+          booking.paymentStatus = BookingPaymentStatus.REFUNDED;
+        }
         await manager.getRepository(Booking).save(booking);
 
         return this.toCommuteDriverActionResponse(
@@ -597,6 +633,7 @@ export class BookingsService {
           ride,
           null,
           false,
+          [],
         );
       });
     } catch (error) {
@@ -617,6 +654,7 @@ export class BookingsService {
             booking.ride,
             null,
             true,
+            [],
           );
         }
       }
@@ -1644,6 +1682,7 @@ export class BookingsService {
     ride: Ride,
     profile: UserProfile | null,
     alreadyApplied: boolean,
+    autoCancelledBookings: CommuteBookingDriverActionResponseDto['autoCancelledBookings'],
   ): Promise<CommuteBookingDriverActionResponseDto> {
     if (!profile) {
       const loaded = await this.userProfileRepository.findOne({
@@ -1654,6 +1693,10 @@ export class BookingsService {
     return {
       ...this.toDriverBookingItem(booking, ride, profile),
       alreadyApplied,
+      autoCancelledBookings:
+        autoCancelledBookings && autoCancelledBookings.length > 0
+          ? autoCancelledBookings
+          : undefined,
     };
   }
 

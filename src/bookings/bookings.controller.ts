@@ -28,6 +28,7 @@ import {
 } from '@nestjs/common';
 
 import { AssuredBookingLifecycleResponseDto } from '../assured/dto/assured-lifecycle-response.dto';
+import { CommuteBookingCancellationResponseDto } from './dto/commute-cancellation-response.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
@@ -108,13 +109,20 @@ export class BookingsController {
     summary: 'Cancel own booking (passenger only)',
     description:
       'REGULAR bookings: cancel and restore seats only (no wallet movements). ' +
-      'COMMUTE bookings: passenger cancellation is not yet available (returns 400). ' +
+      'COMMUTE bookings: full upfront fare refund. PENDING cancellations do not change availableSeats; CONFIRMED cancellations restore seats. Idempotent via commute:rider-cancel:{bookingId}. ' +
       'ASSURED CONFIRMED bookings before departure: forfeits security deposit (100% to driver on PAY_LATER; separate deposit + 30/70 fare split on PAY_NOW with no fare refund), restores seats, sets next Assured deposit to 10% for the passenger. ' +
       'Ride remains active when other passengers remain. Idempotent via assured:rider-cancel:{bookingId}. ' +
       'After departure use rider no-show (driver only). Drivers cannot use this endpoint.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
-  @ApiOkResponse({ type: AssuredBookingLifecycleResponseDto })
+  @ApiOkResponse({
+    schema: {
+      oneOf: [
+        { $ref: '#/components/schemas/AssuredBookingLifecycleResponseDto' },
+        { $ref: '#/components/schemas/CommuteBookingCancellationResponseDto' },
+      ],
+    },
+  })
   @ApiNotFoundResponse({
     description: 'Booking not found for this passenger',
   })

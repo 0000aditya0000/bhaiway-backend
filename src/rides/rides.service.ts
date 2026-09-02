@@ -43,6 +43,7 @@ import {
   BookingStatus,
 } from '../bookings/enums/booking.enums';
 import { BookingsService } from '../bookings/bookings.service';
+import { CommuteCancellationService } from '../bookings/commute-cancellation.service';
 import { CommuteSettlementService, type CommuteRideSettlementSummary } from '../fare/commute-settlement.service';
 import { FareSettlementService } from '../fare/fare-settlement.service';
 import { RatingsService } from '../ratings/ratings.service';
@@ -141,6 +142,7 @@ export class RidesService {
     private readonly assuredGeographicQueueService: AssuredGeographicQueueService,
     private readonly fareSettlementService: FareSettlementService,
     private readonly commuteSettlementService: CommuteSettlementService,
+    private readonly commuteCancellationService: CommuteCancellationService,
     private readonly bookingsService: BookingsService,
     private readonly trackingService: TrackingService,
     private readonly rideDirectionsService: RideDirectionsService,
@@ -166,6 +168,15 @@ export class RidesService {
 
     if (ride.rideType === RideType.ASSURED) {
       return this.assuredLifecycleService.cancelRideByDriver(driverId, rideId);
+    }
+
+    if (ride.rideType === RideType.COMMUTE) {
+      const result = await this.commuteCancellationService.cancelRideByDriver(
+        driverId,
+        rideId,
+      );
+      await this.trackingService.clearRideTracking(rideId, 'cancel');
+      return result;
     }
 
     throw new BadRequestException(`Unsupported ride type: ${ride.rideType}`);

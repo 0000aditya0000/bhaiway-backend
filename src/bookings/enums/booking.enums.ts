@@ -23,6 +23,7 @@ export enum BookingFarePayment {
 export enum BookingPaymentStatus {
   UNPAID = 'UNPAID',
   PAID = 'PAID',
+  REFUNDED = 'REFUNDED',
 }
 
 /** Whether the passenger booked under Assured deposit rules, Regular fare rules, or Commute request flow. */
@@ -40,6 +41,8 @@ export enum BookingCancellationReason {
   DRIVER_NO_SHOW = 'DRIVER_NO_SHOW',
   /** Commute driver rejected a PENDING request (full rider refund). */
   DRIVER_REJECTED = 'DRIVER_REJECTED',
+  /** Commute ride became full; remaining PENDING requests auto-cancelled with full refund. */
+  COMMUTE_RIDE_FULL = 'COMMUTE_RIDE_FULL',
 }
 
 /**
