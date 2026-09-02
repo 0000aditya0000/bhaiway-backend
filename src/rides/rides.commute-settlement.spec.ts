@@ -54,6 +54,15 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { startRideAndVerifyAllPickups } from './test/ride-trip-test.helpers';
+
+function pickupOtpPepper(): string {
+  const secret = process.env.JWT_ACCESS_SECRET?.trim();
+  if (!secret || secret.length < 8) {
+    throw new Error('JWT_ACCESS_SECRET is required for pickup OTP tests');
+  }
+  return secret;
+}
 
 describe('Commute completion settlement (integration)', () => {
   let app: INestApplication;
@@ -273,6 +282,16 @@ describe('Commute completion settlement (integration)', () => {
     return booking.body;
   }
 
+  async function startCommuteTrip(driverToken: string, rideId: string) {
+    await startRideAndVerifyAllPickups(
+      app,
+      dataSource,
+      driverToken,
+      rideId,
+      pickupOtpPepper(),
+    );
+  }
+
   it('A–E: one-seat completion credits driver ₹100 and BhaiWay ₹10; no passenger debit', async () => {
     const { login: driver, wallet: driverWallet, ride } =
       await publishCommuteDriver(4, 100);
@@ -301,6 +320,8 @@ describe('Commute completion settlement (integration)', () => {
     const passengerTxBefore = await dataSource
       .getRepository(WalletTransaction)
       .count({ where: { walletId: passengerWallet.id } });
+
+    await startCommuteTrip(driver.accessToken, ride.id);
 
     const complete = await request(app.getHttpServer())
       .post(`/rides/${ride.id}/complete`)
@@ -384,6 +405,8 @@ describe('Commute completion settlement (integration)', () => {
       2,
     );
 
+    await startCommuteTrip(driver.accessToken, ride.id);
+
     const complete = await request(app.getHttpServer())
       .post(`/rides/${ride.id}/complete`)
       .set('Authorization', `Bearer ${driver.accessToken}`)
@@ -443,6 +466,8 @@ describe('Commute completion settlement (integration)', () => {
       .set('Authorization', `Bearer ${driver.accessToken}`)
       .expect(200);
 
+    await startCommuteTrip(driver.accessToken, ride.id);
+
     await request(app.getHttpServer())
       .post(`/rides/${ride.id}/complete`)
       .set('Authorization', `Bearer ${driver.accessToken}`)
@@ -496,6 +521,8 @@ describe('Commute completion settlement (integration)', () => {
       1,
     );
 
+    await startCommuteTrip(driver.accessToken, ride.id);
+
     await request(app.getHttpServer())
       .post(`/rides/${ride.id}/complete`)
       .set('Authorization', `Bearer ${driver.accessToken}`)
@@ -548,6 +575,8 @@ describe('Commute completion settlement (integration)', () => {
     await bookAccept(driver.accessToken, passengerA.accessToken, ride.id, 2);
     await bookAccept(driver.accessToken, passengerB.accessToken, ride.id, 1);
 
+    await startCommuteTrip(driver.accessToken, ride.id);
+
     const complete = await request(app.getHttpServer())
       .post(`/rides/${ride.id}/complete`)
       .set('Authorization', `Bearer ${driver.accessToken}`)
@@ -576,6 +605,13 @@ describe('Commute completion settlement (integration)', () => {
       .post(`/rides/${ride.id}/complete`)
       .set('Authorization', `Bearer ${otherDriver.accessToken}`)
       .expect(404);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.id}/complete`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .expect(409);
+
+    await startCommuteTrip(driver.accessToken, ride.id);
 
     await request(app.getHttpServer())
       .post(`/rides/${ride.id}/complete`)

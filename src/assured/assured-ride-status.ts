@@ -47,5 +47,8 @@ export function assertRideStartableForType(
   if (rideType === RideType.ASSURED) {
     return isAssuredStartableStatus(status);
   }
+  if (rideType === RideType.COMMUTE) {
+    return isCommutePublishedStatus(status);
+  }
   return isRegularPublishedStatus(status);
 }

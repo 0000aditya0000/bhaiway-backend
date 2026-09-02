@@ -43,7 +43,7 @@ import {
   BookingStatus,
 } from '../bookings/enums/booking.enums';
 import { BookingsService } from '../bookings/bookings.service';
-import { CommuteSettlementService } from '../fare/commute-settlement.service';
+import { CommuteSettlementService, type CommuteRideSettlementSummary } from '../fare/commute-settlement.service';
 import { FareSettlementService } from '../fare/fare-settlement.service';
 import { RatingsService } from '../ratings/ratings.service';
 import { SettingsService } from '../settings/settings.service';
@@ -172,7 +172,7 @@ export class RidesService {
   }
 
   /**
-   * Start a trip-lifecycle ride (Regular or Assured): PUBLISHED → IN_PROGRESS.
+   * Start a trip-lifecycle ride (Regular, Assured, or Commute): PUBLISHED → IN_PROGRESS.
    * Zero confirmed passengers is allowed.
    */
   async startByDriver(
@@ -1673,10 +1673,9 @@ export class RidesService {
   }
 
   /**
-   * Dedicated completion for trip-lifecycle rides (Regular + Assured).
-   * Regular: IN_PROGRESS → COMPLETED after all passengers are picked up.
-   * Assured: same trip gates, then releases ACTIVE deposit holds and
-   * applies partial-fill compensation when applicable.
+   * Dedicated completion for trip-lifecycle rides (Regular, Assured, and Commute).
+   * All types require IN_PROGRESS and confirmed passengers PICKED_UP before completion.
+   * Commute uses prepaid settlement (driver share + platform margin); Regular/Assured use fare settlement.
    */
   async complete(
     driverId: string,
@@ -1707,10 +1706,6 @@ export class RidesService {
           throw new ConflictException('Draft rides cannot be completed');
         }
 
-        if (ride.rideType === RideType.COMMUTE) {
-          return this.completeCommuteRideInTransaction(manager, ride);
-        }
-
         if (!supportsTripLifecycle(ride.rideType)) {
           throw new BadRequestException(
             `Ride type ${ride.rideType} cannot be completed via this endpoint`,
@@ -1727,8 +1722,8 @@ export class RidesService {
           .getRepository(Booking)
           .createQueryBuilder('booking')
           .where('booking.ride_id = :rideId', { rideId: ride.id })
-          .andWhere('booking.status IN (:...statuses)', {
-            statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+          .andWhere('booking.status = :confirmed', {
+            confirmed: BookingStatus.CONFIRMED,
           })
           .andWhere(
             '(booking.pickup_status IS NULL OR booking.pickup_status = :waiting)',
@@ -1752,11 +1747,33 @@ export class RidesService {
           .orderBy('booking.id', 'ASC')
           .getMany();
 
-        await this.fareSettlementService.settleRideFaresInTransaction(manager, {
-          ride,
-          driverId: ride.driverId,
-          bookings: activeBookings,
-        });
+        let commuteSettlement: CommuteRideSettlementSummary | undefined;
+
+        if (ride.rideType === RideType.COMMUTE) {
+          const confirmedCommuteBookings = activeBookings.filter(
+            (booking) =>
+              booking.bookingMode === BookingMode.COMMUTE &&
+              booking.status === BookingStatus.CONFIRMED,
+          );
+          commuteSettlement =
+            await this.commuteSettlementService.settleCommuteRideInTransaction(
+              manager,
+              {
+                ride,
+                driverId: ride.driverId,
+                bookings: confirmedCommuteBookings,
+              },
+            );
+        } else {
+          await this.fareSettlementService.settleRideFaresInTransaction(
+            manager,
+            {
+              ride,
+              driverId: ride.driverId,
+              bookings: activeBookings,
+            },
+          );
+        }
 
         let driverReleased: string | null = null;
         let ridersReleased = 0n;
@@ -1792,16 +1809,28 @@ export class RidesService {
           }
         }
 
-        await manager
-          .getRepository(Booking)
-          .createQueryBuilder()
-          .update(Booking)
-          .set({ status: BookingStatus.COMPLETED })
-          .where('ride_id = :rideId', { rideId: ride.id })
-          .andWhere('status IN (:...statuses)', {
-            statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
-          })
-          .execute();
+        if (ride.rideType === RideType.COMMUTE) {
+          await manager
+            .getRepository(Booking)
+            .createQueryBuilder()
+            .update(Booking)
+            .set({ status: BookingStatus.COMPLETED })
+            .where('ride_id = :rideId', { rideId: ride.id })
+            .andWhere('booking_mode = :mode', { mode: BookingMode.COMMUTE })
+            .andWhere('status = :status', { status: BookingStatus.CONFIRMED })
+            .execute();
+        } else {
+          await manager
+            .getRepository(Booking)
+            .createQueryBuilder()
+            .update(Booking)
+            .set({ status: BookingStatus.COMPLETED })
+            .where('ride_id = :rideId', { rideId: ride.id })
+            .andWhere('status IN (:...statuses)', {
+              statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+            })
+            .execute();
+        }
 
         if (ride.rideType === RideType.ASSURED) {
           await this.assuredLifecycleService.payPartialFillIfApplicable(
@@ -1834,6 +1863,16 @@ export class RidesService {
           };
         }
 
+        if (ride.rideType === RideType.COMMUTE) {
+          return {
+            rideId: ride.id,
+            status: RideStatus.COMPLETED,
+            rideType: ride.rideType,
+            alreadyCompleted: false,
+            commuteSettlement,
+          };
+        }
+
         return {
           rideId: ride.id,
           status: RideStatus.COMPLETED,
@@ -1860,66 +1899,6 @@ export class RidesService {
       }
       throw error;
     }
-  }
-
-  private async completeCommuteRideInTransaction(
-    manager: EntityManager,
-    ride: Ride,
-  ): Promise<CompleteRideResponseDto> {
-    if (
-      ride.status !== RideStatus.PUBLISHED &&
-      ride.status !== RideStatus.IN_PROGRESS
-    ) {
-      throw new ConflictException(
-        'Commute rides must be PUBLISHED or IN_PROGRESS before completion',
-      );
-    }
-
-    const confirmedBookings = await manager
-      .getRepository(Booking)
-      .createQueryBuilder('booking')
-      .setLock('pessimistic_write')
-      .where('booking.ride_id = :rideId', { rideId: ride.id })
-      .andWhere('booking.booking_mode = :mode', { mode: BookingMode.COMMUTE })
-      .andWhere('booking.status = :status', {
-        status: BookingStatus.CONFIRMED,
-      })
-      .orderBy('booking.id', 'ASC')
-      .getMany();
-
-    const commuteSettlement =
-      await this.commuteSettlementService.settleCommuteRideInTransaction(
-        manager,
-        {
-          ride,
-          driverId: ride.driverId,
-          bookings: confirmedBookings,
-        },
-      );
-
-    if (confirmedBookings.length > 0) {
-      await manager
-        .getRepository(Booking)
-        .createQueryBuilder()
-        .update(Booking)
-        .set({ status: BookingStatus.COMPLETED })
-        .where('ride_id = :rideId', { rideId: ride.id })
-        .andWhere('booking_mode = :mode', { mode: BookingMode.COMMUTE })
-        .andWhere('status = :status', { status: BookingStatus.CONFIRMED })
-        .execute();
-    }
-
-    ride.status = RideStatus.COMPLETED;
-    await this.ratingsService.createRatingTasksInTransaction(manager, ride);
-    await manager.getRepository(Ride).save(ride);
-
-    return {
-      rideId: ride.id,
-      status: RideStatus.COMPLETED,
-      rideType: ride.rideType,
-      alreadyCompleted: false,
-      commuteSettlement,
-    };
   }
 
   private async collectAssuredReleaseTargets(

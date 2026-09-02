@@ -181,8 +181,8 @@ export class RidesController {
   @ApiOperation({
     summary: 'Complete a ride (owning driver only)',
     description:
-      'REGULAR and ASSURED trip-lifecycle rides: requires IN_PROGRESS and all active passengers PICKED_UP, then COMPLETED. ASSURED also releases ACTIVE deposit holds and may apply partial-fill compensation. ' +
-      'COMMUTE: completes from PUBLISHED or IN_PROGRESS; settles only CONFIRMED PAID bookings (driver share + BhaiWay margin); PENDING requests are not settled. ' +
+      'REGULAR, ASSURED, and COMMUTE trip-lifecycle rides: requires IN_PROGRESS and all confirmed passengers PICKED_UP, then COMPLETED. ASSURED also releases ACTIVE deposit holds and may apply partial-fill compensation. ' +
+      'COMMUTE: settles only CONFIRMED prepaid bookings (driver share + BhaiWay margin); PENDING requests are not settled. ' +
       'Rider fare is never debited again at completion. Safe to retry when already COMPLETED.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
@@ -206,7 +206,7 @@ export class RidesController {
   @ApiOperation({
     summary: 'Start a trip-lifecycle ride (owning driver only)',
     description:
-      'PUBLISHED → IN_PROGRESS for REGULAR and ASSURED rides. Ensures pickup OTPs exist for confirmed passengers. Zero passengers is allowed. Status cannot be set via PATCH.',
+      'PUBLISHED → IN_PROGRESS for REGULAR, ASSURED, and COMMUTE rides. Ensures pickup OTPs exist for confirmed passengers. Zero passengers is allowed. Status cannot be set via PATCH.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: RideResponseDto })

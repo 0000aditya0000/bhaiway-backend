@@ -255,7 +255,7 @@ export class BookingsController {
   @ApiOperation({
     summary: 'Verify passenger pickup OTP (owning driver only)',
     description:
-      'REGULAR and ASSURED trip-lifecycle rides. Ride must be IN_PROGRESS. Booking must be CONFIRMED and WAITING_FOR_PICKUP. Marks booking PICKED_UP on success. Idempotent when already picked up. Never returns the OTP.',
+      'REGULAR, ASSURED, and COMMUTE trip-lifecycle rides. Ride must be IN_PROGRESS. Booking must be CONFIRMED and WAITING_FOR_PICKUP. Marks booking PICKED_UP on success. Idempotent when already picked up. Never returns the OTP.',
   })
   @ApiParam({ name: 'id', format: 'uuid', description: 'Booking id' })
   @ApiOkResponse({ type: VerifyPickupResponseDto })
