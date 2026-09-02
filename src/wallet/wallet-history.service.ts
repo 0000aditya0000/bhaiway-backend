@@ -14,6 +14,7 @@ import { WalletTransaction } from './entities/wallet-transaction.entity';
 import { Wallet } from './entities/wallet.entity';
 import { WalletNotFoundError } from './errors/wallet.errors';
 import { pointsToCoins } from './wallet-coins.mapper';
+import { getWalletTransactionDisplay } from './wallet-transaction-display.mapper';
 import { resolveRideContextForTransactions } from './wallet-transaction-ride-context';
 
 @Injectable()
@@ -90,6 +91,7 @@ export class WalletHistoryService {
     rideContext: Map<string, { rideId: string; rideType: RideType }>,
   ): WalletTransactionItemDto {
     const ride = rideContext.get(tx.id);
+    const display = getWalletTransactionDisplay(tx, ride?.rideType);
     return {
       transactionId: tx.id,
       transactionType: tx.transactionType,
@@ -99,6 +101,8 @@ export class WalletHistoryService {
       balanceAfter: pointsToCoins(tx.balanceAfter),
       pointSource: tx.pointSource,
       status: tx.status,
+      displayTitle: display.displayTitle,
+      displayCategory: display.displayCategory,
       referenceType: tx.referenceType,
       referenceId: tx.referenceId,
       ...(ride ? { rideId: ride.rideId, rideType: ride.rideType } : {}),

@@ -72,7 +72,7 @@ export class WalletController {
   @ApiOperation({
     summary: 'List authenticated user wallet transactions',
     description:
-      'Read-only paginated ledger history, newest first. Amounts are integer coin strings (1 Coin = ₹1). Booking payment rows include rideId and rideType when resolvable from real Booking/Ride records.',
+      'Read-only paginated ledger history, newest first. Amounts are integer coin strings (1 Coin = ₹1). Each item includes displayTitle and displayCategory for mobile UI. Booking payment rows include rideId and rideType when resolvable from real Booking/Ride records.',
   })
   @ApiOkResponse({ type: WalletTransactionPageDto })
   @ApiNotFoundResponse({ description: 'Wallet not found' })
