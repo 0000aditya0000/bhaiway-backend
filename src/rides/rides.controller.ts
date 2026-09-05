@@ -109,7 +109,8 @@ export class RidesController {
       'Optional rideType filters REGULAR, COMMUTE, or ASSURED; when omitted, all visible types are returned. ' +
       'With pickup/dropoff coordinates, matching uses a 50km route-corridor along the published polyline (direction-aware). ' +
       'COMMUTE corridor search also returns routeMatchPercentage (0–100) per matching ride. ' +
-      'Without coordinates, filters by source/destination place-name contains. Also filters by date, optional time (at/after), and seats. Paginated.',
+      'Without coordinates, filters by source/destination place-name contains. Also filters by date, optional time (at/after), and seats. Paginated. ' +
+      'Each item includes vehicle details plus driver.rating (as-driver averages) and driver.recentRides (last 5 COMPLETED/CANCELLED).',
   })
   @ApiOkResponse({ type: RideSearchPageDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
@@ -165,7 +166,9 @@ export class RidesController {
     description:
       'Returns safe public fields for a passenger-visible ride (REGULAR: PUBLISHED; COMMUTE: PUBLISHED with riderPricePerSeat; ASSURED: ASSURANCE_ACTIVE with seats). ' +
       'COMMUTE exposes pricePerSeat (driver base fare) and riderPricePerSeat (passenger fare, +10% markup — not a separate platform fee). ' +
-      'Assured rides include assuredDepositAmount and assuredDepositPercentage from the publish-time snapshot. Does not expose phones, emails, wallet, or verification documents.',
+      'Assured rides include assuredDepositAmount and assuredDepositPercentage from the publish-time snapshot. ' +
+      'Includes vehicle details, driver.rating (as-driver averages), and driver.recentRides (last 5 COMPLETED/CANCELLED). ' +
+      'Does not expose phones, emails, wallet, or verification documents.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: RideSearchItemDto })

@@ -558,6 +558,8 @@ describe('Rides search (integration)', () => {
       id: login.user.id,
       displayName: 'Search Driver',
       profilePhoto: 'https://cdn.example.com/driver.jpg',
+      rating: { averageRating: 0, totalRatings: 0 },
+      recentRides: [],
     });
     expect(item.vehicle).toMatchObject({
       id: vehicle.id,
@@ -579,6 +581,148 @@ describe('Rides search (integration)', () => {
     expect(item.vehicle.documentReference).toBeUndefined();
     expect(item.vehicle.registrationNumber).toBeUndefined();
     expect(JSON.stringify(item)).not.toContain(login.user.phone);
+  });
+
+  it('search and public include vehicle, driver rating, and last 5 terminal rides', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const stranger = await createAuthenticatedUser();
+
+    const terminalSpecs = [
+      {
+        source: 'Faridabad',
+        destination: 'Gurgaon',
+        departureDate: '2026-08-01',
+        departureTime: '06:00',
+        status: RideStatus.COMPLETED,
+      },
+      {
+        source: 'Ghaziabad',
+        destination: 'Meerut',
+        departureDate: '2026-08-10',
+        departureTime: '08:00',
+        status: RideStatus.COMPLETED,
+      },
+      {
+        source: 'Kanpur',
+        destination: 'Lucknow',
+        departureDate: '2026-08-12',
+        departureTime: '11:00',
+        status: RideStatus.CANCELLED,
+      },
+      {
+        source: 'Varanasi',
+        destination: 'Allahabad',
+        departureDate: '2026-08-13',
+        departureTime: '09:30',
+        status: RideStatus.COMPLETED,
+      },
+      {
+        source: 'Jaipur',
+        destination: 'Ajmer',
+        departureDate: '2026-08-14',
+        departureTime: '10:00',
+        status: RideStatus.CANCELLED,
+      },
+      {
+        source: 'Agra',
+        destination: 'Mathura',
+        departureDate: '2026-08-15',
+        departureTime: '14:00',
+        status: RideStatus.COMPLETED,
+      },
+    ] as const;
+
+    const terminalRides: Array<{
+      id: string;
+      source: string;
+      destination: string;
+      departureDate: string;
+      status: RideStatus;
+    }> = [];
+
+    for (const spec of terminalSpecs) {
+      const ride = await createRide(login.accessToken, vehicle.id, {
+        source: spec.source,
+        destination: spec.destination,
+        departureDate: spec.departureDate,
+        departureTime: spec.departureTime,
+      });
+      await dataSource
+        .getRepository(Ride)
+        .update({ id: ride.id }, { status: spec.status });
+      terminalRides.push({
+        id: ride.id,
+        source: spec.source,
+        destination: spec.destination,
+        departureDate: spec.departureDate,
+        status: spec.status,
+      });
+    }
+
+    const live = await createRide(login.accessToken, vehicle.id, {
+      source: 'Noida Sector 62',
+      destination: 'Connaught Place, Delhi',
+      departureDate: '2026-08-20',
+      departureTime: '09:00',
+    });
+
+    const expectedRecent = [...terminalRides]
+      .sort((a, b) => b.departureDate.localeCompare(a.departureDate))
+      .slice(0, 5)
+      .map((ride) => ({
+        id: ride.id,
+        date: ride.departureDate,
+        source: ride.source,
+        destination: ride.destination,
+        status: ride.status,
+      }));
+
+    const search = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${stranger.accessToken}`)
+      .query({
+        source: 'Noida',
+        destination: 'Delhi',
+        date: '2026-08-20',
+      })
+      .expect(200);
+
+    const searchItem = search.body.items.find(
+      (item: { id: string }) => item.id === live.id,
+    );
+    expect(searchItem).toBeDefined();
+    expect(searchItem.vehicle).toMatchObject({
+      id: vehicle.id,
+      make: 'Honda',
+      model: 'City',
+      seatingCapacity: 5,
+    });
+    expect(searchItem.driver.rating).toEqual({
+      averageRating: 0,
+      totalRatings: 0,
+    });
+    expect(searchItem.driver.recentRides).toHaveLength(5);
+    expect(searchItem.driver.recentRides).toEqual(expectedRecent);
+    expect(
+      searchItem.driver.recentRides.map((r: { id: string }) => r.id),
+    ).not.toContain(terminalRides[0].id);
+    expect(
+      searchItem.driver.recentRides.map((r: { id: string }) => r.id),
+    ).not.toContain(live.id);
+
+    const publicView = await request(app.getHttpServer())
+      .get(`/rides/public/${live.id}`)
+      .set('Authorization', `Bearer ${stranger.accessToken}`)
+      .expect(200);
+
+    expect(publicView.body.vehicle.id).toBe(vehicle.id);
+    expect(publicView.body.driver.rating).toEqual({
+      averageRating: 0,
+      totalRatings: 0,
+    });
+    expect(publicView.body.driver.recentRides).toEqual(
+      searchItem.driver.recentRides,
+    );
   });
 
   it('GET /rides/public/:id returns published ride only', async () => {

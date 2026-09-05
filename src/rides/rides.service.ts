@@ -2126,15 +2126,18 @@ export class RidesService {
     const driverIds = [...new Set(rides.map((ride) => ride.driverId))];
     const vehicleIds = [...new Set(rides.map((ride) => ride.vehicleId))];
 
-    const [profiles, vehicles] = await Promise.all([
-      this.userProfileRepository.find({
-        where: { userId: In(driverIds) },
-      }),
-      this.vehicleRepository.find({
-        where: { id: In(vehicleIds) },
-        withDeleted: true,
-      }),
-    ]);
+    const [profiles, vehicles, driverRatings, recentRidesByDriver] =
+      await Promise.all([
+        this.userProfileRepository.find({
+          where: { userId: In(driverIds) },
+        }),
+        this.vehicleRepository.find({
+          where: { id: In(vehicleIds) },
+          withDeleted: true,
+        }),
+        this.ratingsService.getDriverRatingAveragesForUsers(driverIds),
+        this.loadDriverRecentTerminalRides(driverIds),
+      ]);
 
     const profileByUserId = new Map(
       profiles.map((profile) => [profile.userId, profile] as const),
@@ -2197,6 +2200,11 @@ export class RidesService {
           id: ride.driverId,
           displayName: profile?.displayName ?? profile?.firstName ?? null,
           profilePhoto: profile?.profilePhoto ?? null,
+          rating: driverRatings.get(ride.driverId) ?? {
+            averageRating: 0,
+            totalRatings: 0,
+          },
+          recentRides: recentRidesByDriver.get(ride.driverId) ?? [],
         },
         vehicle: {
           id: vehicle.id,
@@ -2209,6 +2217,85 @@ export class RidesService {
         },
       };
     });
+  }
+
+  /**
+   * Last 5 COMPLETED/CANCELLED rides per driver for passenger discovery cards.
+   */
+  private async loadDriverRecentTerminalRides(
+    driverIds: string[],
+  ): Promise<
+    Map<
+      string,
+      Array<{
+        id: string;
+        date: string;
+        source: string;
+        destination: string;
+        status: RideStatus.COMPLETED | RideStatus.CANCELLED;
+      }>
+    >
+  > {
+    const result = new Map<
+      string,
+      Array<{
+        id: string;
+        date: string;
+        source: string;
+        destination: string;
+        status: RideStatus.COMPLETED | RideStatus.CANCELLED;
+      }>
+    >(driverIds.map((id) => [id, []]));
+
+    if (driverIds.length === 0) {
+      return result;
+    }
+
+    const rows: Array<{
+      id: string;
+      driver_id: string;
+      source: string;
+      destination: string;
+      departure_date: string;
+      status: RideStatus.COMPLETED | RideStatus.CANCELLED;
+    }> = await this.rideRepository.query(
+      `
+      SELECT id, driver_id, source, destination, departure_date, status
+      FROM (
+        SELECT
+          id,
+          driver_id,
+          source,
+          destination,
+          departure_date::text AS departure_date,
+          status,
+          ROW_NUMBER() OVER (
+            PARTITION BY driver_id
+            ORDER BY departure_date DESC, departure_time DESC, updated_at DESC
+          ) AS rn
+        FROM rides
+        WHERE driver_id = ANY($1::uuid[])
+          AND status IN ('COMPLETED', 'CANCELLED')
+      ) ranked
+      WHERE rn <= 5
+      ORDER BY driver_id ASC, rn ASC
+      `,
+      [driverIds],
+    );
+
+    for (const row of rows) {
+      const list = result.get(row.driver_id) ?? [];
+      list.push({
+        id: row.id,
+        date: String(row.departure_date).slice(0, 10),
+        source: row.source,
+        destination: row.destination,
+        status: row.status,
+      });
+      result.set(row.driver_id, list);
+    }
+
+    return result;
   }
 
   private async lockWalletForUpdate(

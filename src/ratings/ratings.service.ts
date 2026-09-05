@@ -301,6 +301,53 @@ export class RatingsService {
     };
   }
 
+  /**
+   * Batch as-driver rating averages for passenger-facing ride cards.
+   * Missing users default to { averageRating: 0, totalRatings: 0 }.
+   */
+  async getDriverRatingAveragesForUsers(
+    userIds: string[],
+  ): Promise<Map<string, { averageRating: number; totalRatings: number }>> {
+    const uniqueIds = [...new Set(userIds)];
+    const result = new Map<
+      string,
+      { averageRating: number; totalRatings: number }
+    >(
+      uniqueIds.map(
+        (id) => [id, { averageRating: 0, totalRatings: 0 }] as const,
+      ),
+    );
+
+    if (uniqueIds.length === 0) {
+      return result;
+    }
+
+    const rows = await this.ratingTaskRepository
+      .createQueryBuilder('task')
+      .innerJoin(Ride, 'ride', 'ride.id = task.ride_id')
+      .select('task.to_user_id', 'userId')
+      .addSelect('AVG(task.rating)', 'average')
+      .addSelect('COUNT(task.id)', 'count')
+      .where('task.to_user_id IN (:...userIds)', { userIds: uniqueIds })
+      .andWhere('task.status = :status', {
+        status: RatingTaskStatus.COMPLETED,
+      })
+      .andWhere('task.rating IS NOT NULL')
+      .andWhere('ride.driver_id = task.to_user_id')
+      .groupBy('task.to_user_id')
+      .getRawMany<{
+        userId: string;
+        average: string | null;
+        count: string;
+      }>();
+
+    for (const row of rows) {
+      result.set(row.userId, this.toRatingAverage(row.average, row.count));
+    }
+
+    return result;
+  }
+
   async getUserRatingsSummary(
     userId: string,
     query: UserRatingsQueryDto,

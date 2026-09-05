@@ -23,6 +23,44 @@ export class RideSearchPreferencesDto {
   womenOnly!: boolean;
 }
 
+export class RideSearchDriverRatingDto {
+  @ApiProperty({
+    description: 'Average star rating received as a driver (1 decimal place)',
+    example: 4.5,
+  })
+  averageRating!: number;
+
+  @ApiProperty({
+    description: 'Number of completed ratings received as a driver',
+    example: 12,
+  })
+  totalRatings!: number;
+}
+
+export class RideSearchDriverRecentRideDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiProperty({
+    description: 'Departure date (YYYY-MM-DD)',
+    example: '2026-09-01',
+  })
+  date!: string;
+
+  @ApiProperty()
+  source!: string;
+
+  @ApiProperty()
+  destination!: string;
+
+  @ApiProperty({
+    enum: [RideStatus.COMPLETED, RideStatus.CANCELLED],
+    enumName: 'RideStatus',
+    description: 'Terminal status only: COMPLETED or CANCELLED',
+  })
+  status!: RideStatus.COMPLETED | RideStatus.CANCELLED;
+}
+
 export class RideSearchDriverDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
@@ -35,6 +73,20 @@ export class RideSearchDriverDto {
 
   @ApiPropertyOptional({ nullable: true })
   profilePhoto!: string | null;
+
+  @ApiProperty({
+    type: RideSearchDriverRatingDto,
+    description: 'Ratings received when acting as a driver',
+  })
+  rating!: RideSearchDriverRatingDto;
+
+  @ApiProperty({
+    type: RideSearchDriverRecentRideDto,
+    isArray: true,
+    description:
+      'Up to 5 most recent COMPLETED or CANCELLED rides by this driver (newest first)',
+  })
+  recentRides!: RideSearchDriverRecentRideDto[];
 }
 
 export class RideSearchVehicleDto {
