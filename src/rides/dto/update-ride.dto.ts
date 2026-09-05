@@ -133,6 +133,14 @@ export class UpdateRideDto {
   @IsBoolean()
   luggageAllowed?: boolean;
 
+  @ApiPropertyOptional({
+    description:
+      'REGULAR/ASSURED only. Locked after the first booking. Ignored for COMMUTE.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  womenOnly?: boolean;
+
   @ApiPropertyOptional({ nullable: true, maxLength: 2000 })
   @IsOptional()
   @IsString()

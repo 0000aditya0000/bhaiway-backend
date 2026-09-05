@@ -31,7 +31,14 @@ export class CreateProfileDto {
   @MaxLength(150)
   displayName?: string | null;
 
-  @ApiPropertyOptional({ enum: Gender, enumName: 'Gender', nullable: true })
+  @ApiPropertyOptional({
+    enum: Gender,
+    enumName: 'Gender',
+    nullable: true,
+    description:
+      'Ignored for writes. Gender is set only from Aadhaar/IDENTITY verification. Sending this field returns 403 GENDER_LOCKED.',
+    deprecated: true,
+  })
   @IsOptional()
   @IsEnum(Gender)
   gender?: Gender | null;

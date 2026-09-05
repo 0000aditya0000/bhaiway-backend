@@ -5,13 +5,20 @@ import { AuthModule } from '../auth/auth.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import { Ride } from '../rides/entities/ride.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
+import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { RatingTask } from './entities/rating-task.entity';
 import { RatingsController } from './ratings.controller';
 import { RatingsService } from './ratings.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([RatingTask, Ride, Booking, UserProfile]),
+    TypeOrmModule.forFeature([
+      RatingTask,
+      Ride,
+      Booking,
+      UserProfile,
+      Vehicle,
+    ]),
     AuthModule,
   ],
   controllers: [RatingsController],

@@ -52,9 +52,10 @@ import {
   PayLaterSettlementResult,
 } from '../fare/fare-settlement.service';
 import { SettingsService } from '../settings/settings.service';
+import { Gender, UserProfile } from '../users/entities/user-profile.entity';
 import { User } from '../users/entities/user.entity';
-import { UserProfile } from '../users/entities/user-profile.entity';
 import { VerificationService } from '../verification/verification.service';
+import { assertWomenOnlyBookingAllowed } from './women-only-ride.guard';
 import {
   InsufficientWalletBalanceError,
   PlatformWalletForbiddenError,
@@ -840,6 +841,7 @@ export class BookingsService {
           ride,
           options.requireAssuredRegularOpen === true,
         );
+        await this.assertWomenOnlyEligibility(manager, ride, passengerId);
         this.assertEnoughSeats(ride, dto.seats);
         await this.assertNoActiveBooking(manager, passengerId, ride.id);
 
@@ -926,6 +928,7 @@ export class BookingsService {
           ride,
           options.requireAssuredRegularOpen === true,
         );
+        await this.assertWomenOnlyEligibility(manager, ride, passengerId);
         this.assertEnoughSeats(ride, dto.seats);
         await this.assertNoActiveBooking(manager, passengerId, ride.id);
 
@@ -1080,6 +1083,7 @@ export class BookingsService {
           throw new BadRequestException('Ride is not an Assured ride');
         }
         this.assertRideBookable(ride, passengerId);
+        await this.assertWomenOnlyEligibility(manager, ride, passengerId);
         this.assertEnoughSeats(ride, dto.seats);
         await this.assertNoActiveBooking(manager, passengerId, ride.id);
 
@@ -1531,6 +1535,27 @@ export class BookingsService {
       total,
       totalPages: total === 0 ? 0 : Math.ceil(total / limit),
     };
+  }
+
+  private async assertWomenOnlyEligibility(
+    manager: EntityManager,
+    ride: Ride,
+    passengerId: string,
+  ): Promise<void> {
+    if (!ride.womenOnly) {
+      return;
+    }
+
+    const profile = await manager.getRepository(UserProfile).findOne({
+      where: { userId: passengerId },
+      select: { gender: true },
+    });
+
+    assertWomenOnlyBookingAllowed({
+      rideType: ride.rideType,
+      womenOnly: ride.womenOnly,
+      passengerGender: (profile?.gender as Gender | null) ?? null,
+    });
   }
 
   private async assertPassengerCanBook(passengerId: string): Promise<void> {

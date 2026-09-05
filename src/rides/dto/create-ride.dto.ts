@@ -27,6 +27,7 @@ export class CreateRideDto {
     description:
       'REGULAR, ASSURED, or COMMUTE. ASSURED publishing creates an atomic driver security-deposit hold. ' +
       'COMMUTE: pricePerSeat is the driver-published base fare; passengers see +10% via riderPricePerSeat in search/public APIs. ' +
+      'womenOnly is supported for REGULAR and ASSURED only (ignored for COMMUTE). ' +
       'Assured requires source/destination coordinates and Idempotency-Key.',
   })
   @IsEnum(RideType)
@@ -158,6 +159,15 @@ export class CreateRideDto {
   @IsOptional()
   @IsBoolean()
   luggageAllowed?: boolean;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'REGULAR/ASSURED only. When true, only Aadhaar-verified female passengers may book. Ignored for COMMUTE (always false).',
+  })
+  @IsOptional()
+  @IsBoolean()
+  womenOnly?: boolean;
 
   @ApiPropertyOptional({ nullable: true, maxLength: 2000 })
   @IsOptional()

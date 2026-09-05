@@ -169,7 +169,7 @@ describe('UsersController (integration)', () => {
     expect(response.body.profileCompleted).toBe(false);
   });
 
-  it('creates profile successfully', async () => {
+  it('creates profile successfully without client gender', async () => {
     const login = await createAuthenticatedUser();
 
     const created = await request(app.getHttpServer())
@@ -179,7 +179,6 @@ describe('UsersController (integration)', () => {
         firstName: 'Aditya',
         lastName: 'Gangwar',
         displayName: 'Aditya',
-        gender: Gender.MALE,
         dateOfBirth: '2000-01-01',
         profilePhoto: 'https://cdn.example.com/a.jpg',
       })
@@ -189,11 +188,29 @@ describe('UsersController (integration)', () => {
       firstName: 'Aditya',
       lastName: 'Gangwar',
       displayName: 'Aditya',
-      gender: Gender.MALE,
+      gender: null,
       dateOfBirth: '2000-01-01',
       profilePhoto: 'https://cdn.example.com/a.jpg',
     });
     expect(created.body.id).toBeTruthy();
+  });
+
+  it('rejects client gender on create profile with GENDER_LOCKED', async () => {
+    const login = await createAuthenticatedUser();
+
+    const response = await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        firstName: 'Aditya',
+        gender: Gender.MALE,
+      })
+      .expect(403);
+
+    expect(response.body).toMatchObject({
+      statusCode: 403,
+      code: 'GENDER_LOCKED',
+    });
   });
 
   it('create profile without JWT → 401', async () => {
@@ -219,7 +236,38 @@ describe('UsersController (integration)', () => {
       .expect(409);
   });
 
-  it('updates profile successfully', async () => {
+  it('rejects client gender on update profile with GENDER_LOCKED', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ firstName: 'Ada', lastName: 'Lovelace' })
+      .expect(201);
+
+    const response = await request(app.getHttpServer())
+      .patch('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        displayName: 'Ada L',
+        gender: Gender.FEMALE,
+      })
+      .expect(403);
+
+    expect(response.body).toMatchObject({
+      statusCode: 403,
+      code: 'GENDER_LOCKED',
+    });
+
+    const me = await request(app.getHttpServer())
+      .get('/users/me')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+    expect(me.body.profile.gender).toBeNull();
+    expect(me.body.profile.displayName).toBeNull();
+  });
+
+  it('updates profile successfully without gender', async () => {
     const login = await createAuthenticatedUser();
 
     await request(app.getHttpServer())
@@ -233,12 +281,11 @@ describe('UsersController (integration)', () => {
       .set('Authorization', `Bearer ${login.accessToken}`)
       .send({
         displayName: 'Ada L',
-        gender: Gender.FEMALE,
       })
       .expect(200);
 
     expect(updated.body.displayName).toBe('Ada L');
-    expect(updated.body.gender).toBe(Gender.FEMALE);
+    expect(updated.body.gender).toBeNull();
     expect(updated.body.firstName).toBe('Ada');
     expect(updated.body.lastName).toBe('Lovelace');
   });
@@ -440,7 +487,7 @@ describe('UsersController (integration)', () => {
     expect(meB.body.profile.displayName).toBe('Secret B');
   });
 
-  it('invalid gender rejected', async () => {
+  it('invalid gender enum rejected before lock', async () => {
     const login = await createAuthenticatedUser();
 
     await request(app.getHttpServer())
@@ -518,14 +565,13 @@ describe('UsersController (integration)', () => {
         firstName: 'Aditya',
         lastName: 'Gangwar',
         email: 'Aditya@Example.com',
-        gender: Gender.MALE,
       })
       .expect(201);
 
     expect(created.body).toMatchObject({
       firstName: 'Aditya',
       lastName: 'Gangwar',
-      gender: Gender.MALE,
+      gender: null,
     });
     expect(created.body).not.toHaveProperty('email');
     expect(created.body).not.toHaveProperty('walletId');

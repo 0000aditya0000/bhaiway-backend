@@ -63,6 +63,13 @@ export class RideResponseDto {
   @ApiProperty()
   luggageAllowed!: boolean;
 
+  @ApiProperty({
+    description:
+      'When true, only verified female passengers may book (REGULAR/ASSURED). Always false for COMMUTE.',
+    example: false,
+  })
+  womenOnly!: boolean;
+
   @ApiPropertyOptional({ nullable: true })
   notes!: string | null;
 

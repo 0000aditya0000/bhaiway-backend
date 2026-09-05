@@ -97,7 +97,13 @@ export class ProfileResponseDto {
   @ApiPropertyOptional({ nullable: true })
   displayName!: string | null;
 
-  @ApiPropertyOptional({ enum: Gender, enumName: 'Gender', nullable: true })
+  @ApiPropertyOptional({
+    enum: Gender,
+    enumName: 'Gender',
+    nullable: true,
+    description:
+      'Canonical gender from Aadhaar/IDENTITY verification. Null until verification succeeds. Not user-editable.',
+  })
   gender!: Gender | null;
 
   @ApiPropertyOptional({ nullable: true, example: '2000-01-01' })

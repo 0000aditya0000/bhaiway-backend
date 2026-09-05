@@ -10,6 +10,7 @@ import { CreateProfileDto } from './dto/create-profile.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UserProfile } from './entities/user-profile.entity';
 import { User } from './entities/user.entity';
+import { GenderLockedError } from './errors/gender.errors';
 import { isProfileCompleted } from './profile-completion';
 import { PassengerAssuredDepositPenaltyService } from '../assured/passenger-assured-deposit-penalty.service';
 import { RatingsService } from '../ratings/ratings.service';
@@ -75,6 +76,10 @@ export class UsersService {
   }
 
   async createProfile(userId: string, dto: CreateProfileDto) {
+    if (dto.gender !== undefined) {
+      throw new GenderLockedError();
+    }
+
     try {
       return await this.userRepository.manager.transaction(async (manager) => {
         const userRepo = manager.getRepository(User);
@@ -97,7 +102,7 @@ export class UsersService {
           firstName: dto.firstName.trim(),
           lastName: dto.lastName ?? null,
           displayName: dto.displayName ?? null,
-          gender: dto.gender ?? null,
+          gender: null,
           dateOfBirth: dto.dateOfBirth ?? null,
           profilePhoto: dto.profilePhoto ?? null,
         });
@@ -112,6 +117,10 @@ export class UsersService {
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
+    if (dto.gender !== undefined) {
+      throw new GenderLockedError();
+    }
+
     const profile = await this.getProfileEntity(userId);
     if (!profile) {
       throw new NotFoundException('User profile not found');
@@ -125,9 +134,6 @@ export class UsersService {
     }
     if (dto.displayName !== undefined) {
       profile.displayName = dto.displayName;
-    }
-    if (dto.gender !== undefined) {
-      profile.gender = dto.gender;
     }
     if (dto.dateOfBirth !== undefined) {
       profile.dateOfBirth = dto.dateOfBirth;

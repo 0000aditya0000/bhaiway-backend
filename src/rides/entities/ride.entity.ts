@@ -231,6 +231,17 @@ export class Ride {
   })
   luggageAllowed!: boolean;
 
+  /**
+   * REGULAR / ASSURED only. When true, only passengers with verified
+   * UserProfile.gender === FEMALE may book. Always false for COMMUTE.
+   */
+  @Column({
+    name: 'women_only',
+    type: 'boolean',
+    default: false,
+  })
+  womenOnly!: boolean;
+
   @Column({
     type: 'text',
     nullable: true,

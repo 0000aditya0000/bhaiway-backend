@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -7,6 +8,8 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, IsNull, Repository } from 'typeorm';
 
+import { UserProfile } from '../users/entities/user-profile.entity';
+import { mapVerifiedGenderToEnum } from '../users/gender-from-verification.mapper';
 import { User } from '../users/entities/user.entity';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { SubmitVerificationDto } from './dto/submit-verification.dto';
@@ -47,6 +50,8 @@ export class VerificationService {
     private readonly verificationRepository: Repository<UserVerification>,
     @InjectRepository(Vehicle)
     private readonly vehicleRepository: Repository<Vehicle>,
+    @InjectRepository(UserProfile)
+    private readonly userProfileRepository: Repository<UserProfile>,
     @Inject(VERIFICATION_PROVIDER)
     private readonly verificationProvider: VerificationProvider,
   ) {}
@@ -397,8 +402,52 @@ export class VerificationService {
       });
 
       const saved = await repo.save(created);
+
+      if (verificationType === VerificationType.IDENTITY && verified) {
+        await this.applyVerifiedGenderFromProvider(
+          manager.getRepository(UserProfile),
+          userId,
+          providerResult.verifiedGender,
+        );
+      }
+
       return this.toStatusView(saved);
     });
+  }
+
+  /**
+   * Forcefully sets UserProfile.gender from Aadhaar/KYC provider result.
+   * Creates a minimal profile shell if none exists yet.
+   */
+  private async applyVerifiedGenderFromProvider(
+    profileRepo: Repository<UserProfile>,
+    userId: string,
+    rawGender: string | null | undefined,
+  ): Promise<void> {
+    const gender = mapVerifiedGenderToEnum(
+      typeof rawGender === 'string' ? rawGender : rawGender ?? null,
+    );
+    if (!gender) {
+      throw new BadRequestException(
+        'Identity verification did not return a mappable verified gender',
+      );
+    }
+
+    let profile = await profileRepo.findOne({ where: { userId } });
+    if (!profile) {
+      profile = profileRepo.create({
+        userId,
+        firstName: 'User',
+        lastName: null,
+        displayName: null,
+        gender,
+        dateOfBirth: null,
+        profilePhoto: null,
+      });
+    } else {
+      profile.gender = gender;
+    }
+    await profileRepo.save(profile);
   }
 
   private blocksNewSubmission(record: UserVerification): boolean {

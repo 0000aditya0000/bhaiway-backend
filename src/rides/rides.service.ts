@@ -407,6 +407,7 @@ export class RidesService {
       noSmoking: dto.noSmoking ?? false,
       noPets: dto.noPets ?? false,
       luggageAllowed: dto.luggageAllowed ?? true,
+      womenOnly: dto.womenOnly === true,
       notes: dto.notes?.trim() ?? null,
       assuredDepositPercentage: null,
       assuredDepositAmount: null,
@@ -448,6 +449,7 @@ export class RidesService {
       noSmoking: dto.noSmoking ?? false,
       noPets: dto.noPets ?? false,
       luggageAllowed: dto.luggageAllowed ?? true,
+      womenOnly: false,
       notes: dto.notes?.trim() ?? null,
       assuredDepositPercentage: null,
       assuredDepositAmount: null,
@@ -568,6 +570,7 @@ export class RidesService {
           noSmoking: dto.noSmoking ?? false,
           noPets: dto.noPets ?? false,
           luggageAllowed: dto.luggageAllowed ?? true,
+          womenOnly: dto.womenOnly === true,
           notes: dto.notes?.trim() ?? null,
           assuredDepositPercentage: percentage,
           assuredDepositAmount: depositAmount.toString(),
@@ -1093,6 +1096,9 @@ export class RidesService {
     }
 
     const bookedSeats = await this.sumActiveBookedSeats(manager, ride.id);
+    if (bookedSeats > 0) {
+      this.assertWomenOnlyUnchangedAfterBooking(ride, dto);
+    }
     if (dto.totalSeats !== undefined) {
       if (dto.totalSeats < bookedSeats) {
         throw new ForbiddenException(
@@ -1252,6 +1258,10 @@ export class RidesService {
     if (dto.luggageAllowed !== undefined) {
       ride.luggageAllowed = dto.luggageAllowed;
     }
+    if (dto.womenOnly !== undefined) {
+      ride.womenOnly =
+        ride.rideType === RideType.COMMUTE ? false : dto.womenOnly === true;
+    }
     if (dto.notes !== undefined) {
       ride.notes = dto.notes?.trim() ?? null;
     }
@@ -1338,12 +1348,24 @@ export class RidesService {
       (dto.noPets !== undefined && dto.noPets !== ride.noPets) ||
       (dto.luggageAllowed !== undefined &&
         dto.luggageAllowed !== ride.luggageAllowed) ||
+      (dto.womenOnly !== undefined && dto.womenOnly !== ride.womenOnly) ||
       (dto.notes !== undefined &&
         (dto.notes?.trim() ?? null) !== (ride.notes?.trim() ?? null));
 
     if (protectedChanged) {
       throw new ConflictException(
         'Ride details cannot be modified after a booking has been made. Only seats can be changed.',
+      );
+    }
+  }
+
+  private assertWomenOnlyUnchangedAfterBooking(
+    ride: Ride,
+    dto: UpdateRideDto,
+  ): void {
+    if (dto.womenOnly !== undefined && dto.womenOnly !== ride.womenOnly) {
+      throw new ConflictException(
+        'womenOnly cannot be changed after a booking has been made.',
       );
     }
   }
@@ -2160,6 +2182,7 @@ export class RidesService {
           noSmoking: ride.noSmoking,
           noPets: ride.noPets,
           luggageAllowed: ride.luggageAllowed,
+          womenOnly: ride.womenOnly,
         },
         notes: ride.notes,
         assuredDepositPercentage:
@@ -2487,6 +2510,7 @@ export class RidesService {
       noSmoking: ride.noSmoking,
       noPets: ride.noPets,
       luggageAllowed: ride.luggageAllowed,
+      womenOnly: ride.womenOnly,
       notes: ride.notes,
       assuredDepositPercentage: ride.assuredDepositPercentage,
       assuredDepositAmount: ride.assuredDepositAmount,
