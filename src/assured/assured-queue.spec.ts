@@ -13,6 +13,7 @@ import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { BookingsModule } from '../bookings/bookings.module';
 import { Booking } from '../bookings/entities/booking.entity';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
@@ -113,11 +114,28 @@ describe('Assured Queue Engine (integration)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
-        await dataSource.getRepository(Booking).delete({
-          passengerId: ctx.userId,
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
         });
         const rides = await dataSource.getRepository(Ride).find({
           where: { driverId: ctx.userId },
+        });
+        const rideBookingIds =
+          rides.length === 0
+            ? []
+            : (
+                await dataSource.getRepository(Booking).find({
+                  where: { rideId: In(rides.map((r) => r.id)) },
+                  select: { id: true },
+                })
+              ).map((b) => b.id);
+        await deleteChatForBookingIds(dataSource, [
+          ...passengerBookings.map((b) => b.id),
+          ...rideBookingIds,
+        ]);
+        await dataSource.getRepository(Booking).delete({
+          passengerId: ctx.userId,
         });
         const queueIds = [
           ...new Set(

@@ -6,6 +6,7 @@ import { FareModule } from '../fare/fare.module';
 import { AuthModule } from '../auth/auth.module';
 import { ChatModule } from '../chat/chat.module';
 import { UserCoupon } from '../coupons/entities/user-coupon.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { Ride } from '../rides/entities/ride.entity';
 import { SettingsModule } from '../settings/settings.module';
 import { User } from '../users/entities/user.entity';
@@ -41,6 +42,7 @@ import { Booking } from './entities/booking.entity';
     AssuredModule,
     FareModule,
     ChatModule,
+    NotificationsModule,
   ],
   controllers: [BookingsController],
   providers: [BookingsService, CommuteCancellationService],

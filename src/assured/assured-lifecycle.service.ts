@@ -22,6 +22,7 @@ import {
   BookingStatus,
 } from '../bookings/enums/booking.enums';
 import { ChatService } from '../chat/chat.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   UserCoupon,
   UserCouponStatus,
@@ -89,6 +90,15 @@ type DriverForfeitEvent =
   | AssuredLifecycleEventType.DRIVER_CANCEL
   | AssuredLifecycleEventType.DRIVER_NO_SHOW;
 
+type DriverForfeitResult = AssuredRideLifecycleResponseDto & {
+  promotedRide: Ride | null;
+  cancelledBookings: Array<{
+    bookingId: string;
+    passengerId: string;
+    bookingMode: BookingMode;
+  }>;
+};
+
 @Injectable()
 export class AssuredLifecycleService {
   constructor(
@@ -97,6 +107,7 @@ export class AssuredLifecycleService {
     private readonly assuredQueueService: AssuredQueueService,
     private readonly passengerDepositPenaltyService: PassengerAssuredDepositPenaltyService,
     private readonly chatService: ChatService,
+    private readonly notificationsService: NotificationsService,
     @InjectRepository(Ride)
     private readonly rideRepository: Repository<Ride>,
     @InjectRepository(Booking)
@@ -123,7 +134,9 @@ export class AssuredLifecycleService {
         }),
       );
       await this.chatService.safeCloseForRide(rideId);
-      return result;
+      await this.afterAssuredRideCancelledNotifications(result);
+      const { promotedRide: _p, cancelledBookings: _c, ...response } = result;
+      return response;
     } catch (error) {
       if (this.isLifecycleEventUniqueViolation(error, idempotencyKey)) {
         await this.chatService.safeCloseForRide(rideId);
@@ -154,7 +167,9 @@ export class AssuredLifecycleService {
         }),
       );
       await this.chatService.safeCloseForRide(rideId);
-      return result;
+      await this.afterAssuredRideCancelledNotifications(result);
+      const { promotedRide: _p, cancelledBookings: _c, ...response } = result;
+      return response;
     } catch (error) {
       if (this.isLifecycleEventUniqueViolation(error, idempotencyKey)) {
         await this.chatService.safeCloseForRide(rideId);
@@ -450,6 +465,37 @@ export class AssuredLifecycleService {
     return amount;
   }
 
+  private async afterAssuredRideCancelledNotifications(result: {
+    rideId: string;
+    alreadyApplied: boolean;
+    promotedRide?: Ride | null;
+    cancelledBookings?: Array<{
+      bookingId: string;
+      passengerId: string;
+      bookingMode: BookingMode;
+    }>;
+  }): Promise<void> {
+    if (result.alreadyApplied) {
+      return;
+    }
+    for (const booking of result.cancelledBookings ?? []) {
+      const mode =
+        booking.bookingMode === BookingMode.ASSURED ? 'ASSURED' : 'REGULAR';
+      await this.notificationsService.safeNotifyBookingCancelled({
+        bookingId: booking.bookingId,
+        rideId: result.rideId,
+        recipientUserId: booking.passengerId,
+        bookingMode: mode,
+      });
+    }
+    if (result.promotedRide) {
+      await this.notificationsService.safeNotifyAssuredPublished({
+        rideId: result.promotedRide.id,
+        driverId: result.promotedRide.driverId,
+      });
+    }
+  }
+
   private async executeDriverForfeit(
     manager: EntityManager,
     params: {
@@ -464,7 +510,7 @@ export class AssuredLifecycleService {
       timing: 'before_departure' | 'at_or_after_departure';
       reporterPassengerId?: string;
     },
-  ): Promise<AssuredRideLifecycleResponseDto> {
+  ): Promise<DriverForfeitResult> {
     const ride = await this.lockRide(manager, params.rideId);
 
     if (params.requireOwnership) {
@@ -494,7 +540,11 @@ export class AssuredLifecycleService {
         ride.status === RideStatus.CANCELLED &&
         ride.cancellationReason === params.rideCancellationReason
       ) {
-        return this.buildRideLifecycleResponse(manager, ride, true);
+        return {
+          ...(await this.buildRideLifecycleResponse(manager, ride, true)),
+          promotedRide: null,
+          cancelledBookings: [],
+        };
       }
 
       if (!isAssuredBookableStatus(ride.status)) {
@@ -521,7 +571,11 @@ export class AssuredLifecycleService {
 
     if (ride.status === RideStatus.CANCELLED) {
       if (ride.cancellationReason === params.rideCancellationReason) {
-        return this.buildRideLifecycleResponse(manager, ride, true);
+        return {
+          ...(await this.buildRideLifecycleResponse(manager, ride, true)),
+          promotedRide: null,
+          cancelledBookings: [],
+        };
       }
       throw new ConflictException(
         `Ride is already cancelled (${ride.cancellationReason})`,
@@ -535,6 +589,7 @@ export class AssuredLifecycleService {
     }
 
     const wasActiveOffer = ride.status === RideStatus.ASSURANCE_ACTIVE;
+    let promotedRide: Ride | null = null;
 
     const now = new Date();
     if (params.timing === 'before_departure') {
@@ -557,7 +612,11 @@ export class AssuredLifecycleService {
       .getRepository(AssuredLifecycleEvent)
       .findOne({ where: { idempotencyKey: params.idempotencyKey } });
     if (existingEvent) {
-      return this.buildRideLifecycleResponse(manager, ride, true);
+      return {
+        ...(await this.buildRideLifecycleResponse(manager, ride, true)),
+        promotedRide: null,
+        cancelledBookings: [],
+      };
     }
 
     await this.insertLifecycleEvent(manager, {
@@ -837,14 +896,18 @@ export class AssuredLifecycleService {
       (params.eventType === AssuredLifecycleEventType.DRIVER_CANCEL ||
         params.eventType === AssuredLifecycleEventType.DRIVER_NO_SHOW)
     ) {
-      await this.assuredQueueService.advanceQueueInTransaction(manager, {
-        queueId: ride.assuredQueueId,
-        reason:
-          params.eventType === AssuredLifecycleEventType.DRIVER_CANCEL
-            ? AssuredQueueAdvanceReason.DRIVER_CANCELLED
-            : AssuredQueueAdvanceReason.DRIVER_NO_SHOW,
-        sourceRideId: ride.id,
-      });
+      const advance = await this.assuredQueueService.advanceQueueInTransaction(
+        manager,
+        {
+          queueId: ride.assuredQueueId,
+          reason:
+            params.eventType === AssuredLifecycleEventType.DRIVER_CANCEL
+              ? AssuredQueueAdvanceReason.DRIVER_CANCELLED
+              : AssuredQueueAdvanceReason.DRIVER_NO_SHOW,
+          sourceRideId: ride.id,
+        },
+      );
+      promotedRide = advance.promotedRide;
     }
 
     await manager.getRepository(AssuredLifecycleEvent).update(
@@ -873,6 +936,12 @@ export class AssuredLifecycleService {
       fareRefundedTotal: fareRefundedTotal.toString(),
       couponsIssuedCount,
       alreadyApplied: false,
+      promotedRide,
+      cancelledBookings: allActiveBookings.map((b) => ({
+        bookingId: b.id,
+        passengerId: b.passengerId,
+        bookingMode: b.bookingMode,
+      })),
     };
   }
 

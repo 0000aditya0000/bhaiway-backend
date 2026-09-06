@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AuthModule } from '../auth/auth.module';
 import { Booking } from '../bookings/entities/booking.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { Ride } from '../rides/entities/ride.entity';
 import { PaymentOrder } from './entities/payment-order.entity';
 import { WalletBalance } from './entities/wallet-balance.entity';
@@ -24,6 +25,7 @@ import { WalletService } from './wallet.service';
   imports: [
     AuthModule,
     PaymentGatewayModule,
+    NotificationsModule,
     TypeOrmModule.forFeature([
       Wallet,
       WalletBalance,

@@ -48,6 +48,7 @@ import {
 import { supportsTripLifecycle } from '../rides/ride-trip-lifecycle';
 import { computeCommuteBookingFareSnapshots } from '../rides/commute-fare.math';
 import { ChatService } from '../chat/chat.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   FareSettlementService,
   PayLaterSettlementResult,
@@ -157,6 +158,7 @@ export class BookingsService {
     private readonly fareSettlementService: FareSettlementService,
     private readonly commuteCancellationService: CommuteCancellationService,
     private readonly chatService: ChatService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async cancelByPassenger(
@@ -180,14 +182,33 @@ export class BookingsService {
           bookingId,
         );
       await this.chatService.safeCloseForBooking(bookingId);
+      // Counterparty notified inside CommuteCancellationService.
       return result;
     }
 
+    const full = await this.bookingRepository.findOne({
+      where: { id: bookingId },
+    });
     const result = await this.assuredLifecycleService.cancelBookingByRider(
       passengerId,
       bookingId,
     );
     await this.chatService.safeCloseForBooking(bookingId);
+    if (full) {
+      const mode =
+        full.bookingMode === BookingMode.ASSURED ? 'ASSURED' : 'REGULAR';
+      const ride = await this.rideRepository.findOne({
+        where: { id: full.rideId },
+      });
+      if (ride) {
+        await this.notificationsService.safeNotifyBookingCancelled({
+          bookingId: full.id,
+          rideId: full.rideId,
+          recipientUserId: ride.driverId,
+          bookingMode: mode,
+        });
+      }
+    }
     return result;
   }
 
@@ -544,6 +565,24 @@ export class BookingsService {
 
     for (const cancelled of result.autoCancelledBookings ?? []) {
       await this.chatService.safeCloseForBooking(cancelled.bookingId);
+      const cancelledBooking = await this.bookingRepository.findOne({
+        where: { id: cancelled.bookingId },
+      });
+      if (cancelledBooking) {
+        await this.notificationsService.safeNotifyCommuteCancelled({
+          bookingId: cancelledBooking.id,
+          rideId: cancelledBooking.rideId,
+          recipientUserId: cancelledBooking.passengerId,
+        });
+      }
+    }
+
+    if (!result.alreadyApplied) {
+      await this.notificationsService.safeNotifyCommuteConfirmed({
+        bookingId: result.id,
+        rideId: result.ride.id,
+        passengerId: result.passenger.id,
+      });
     }
     return result;
   }
@@ -650,6 +689,11 @@ export class BookingsService {
         );
       });
       await this.chatService.safeCloseForBooking(bookingId);
+      await this.notificationsService.safeNotifyCommuteCancelled({
+        bookingId: result.id,
+        rideId: result.ride.id,
+        recipientUserId: result.passenger.id,
+      });
       return result;
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
@@ -665,6 +709,11 @@ export class BookingsService {
             BookingCancellationReason.DRIVER_REJECTED
         ) {
           await this.chatService.safeCloseForBooking(bookingId);
+          await this.notificationsService.safeNotifyCommuteCancelled({
+            bookingId: booking.id,
+            rideId: booking.rideId,
+            recipientUserId: booking.passengerId,
+          });
           return this.toCommuteDriverActionResponse(
             booking,
             booking.ride,
@@ -721,7 +770,11 @@ export class BookingsService {
       const ride = await this.rideRepository.findOne({
         where: { id: existing.rideId },
       });
-      await this.chatService.safeEnsureOpenForBooking(existing.id);
+      if (ride) {
+        await this.afterBookingPersisted(existing, ride);
+      } else {
+        await this.chatService.safeEnsureOpenForBooking(existing.id);
+      }
       return this.toResponseWithDriver(existing, ride ?? undefined);
     }
 
@@ -799,7 +852,7 @@ export class BookingsService {
         return { booking: saved, ride };
       });
 
-      await this.chatService.safeEnsureOpenForBooking(result.booking.id);
+      await this.afterBookingPersisted(result.booking, result.ride);
       return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
@@ -813,10 +866,14 @@ export class BookingsService {
             dto,
           );
           const ride = await this.rideRepository.findOne({
-            where: { id: recovered.rideId },
-          });
-          await this.chatService.safeEnsureOpenForBooking(recovered.id);
-          return this.toResponseWithDriver(recovered, ride ?? undefined);
+        where: { id: recovered.rideId },
+      });
+      if (ride) {
+        await this.afterBookingPersisted(recovered, ride);
+      } else {
+        await this.chatService.safeEnsureOpenForBooking(recovered.id);
+      }
+      return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
           'Idempotency conflict could not be resolved; existing booking not found',
@@ -834,10 +891,14 @@ export class BookingsService {
             dto,
           );
           const ride = await this.rideRepository.findOne({
-            where: { id: recovered.rideId },
-          });
-          await this.chatService.safeEnsureOpenForBooking(recovered.id);
-          return this.toResponseWithDriver(recovered, ride ?? undefined);
+        where: { id: recovered.rideId },
+      });
+      if (ride) {
+        await this.afterBookingPersisted(recovered, ride);
+      } else {
+        await this.chatService.safeEnsureOpenForBooking(recovered.id);
+      }
+      return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }
 
@@ -872,7 +933,8 @@ export class BookingsService {
 
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
-        await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
+        const promotedRide =
+          await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
 
         const bookingId = randomUUID();
         const pickupFields = this.buildRegularPickupFields(
@@ -904,9 +966,10 @@ export class BookingsService {
         });
 
         const saved = await manager.getRepository(Booking).save(booking);
-        return { booking: saved, ride };
+        return { booking: saved, ride, promotedRide };
       });
-      await this.chatService.safeEnsureOpenForBooking(result.booking.id);
+      await this.afterBookingPersisted(result.booking, result.ride);
+      await this.notifyAssuredPublishedIfPresent(result.promotedRide);
       return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       this.rethrowDuplicateActiveBooking(error);
@@ -936,7 +999,11 @@ export class BookingsService {
       const ride = await this.rideRepository.findOne({
         where: { id: existing.rideId },
       });
-      await this.chatService.safeEnsureOpenForBooking(existing.id);
+      if (ride) {
+        await this.afterBookingPersisted(existing, ride);
+      } else {
+        await this.chatService.safeEnsureOpenForBooking(existing.id);
+      }
       return this.toResponseWithDriver(existing, ride ?? undefined);
     }
 
@@ -994,7 +1061,8 @@ export class BookingsService {
 
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
-        await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
+        const promotedRide =
+          await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
 
         const pickupFields = await this.buildRegularPickupFields(
           ride,
@@ -1025,9 +1093,10 @@ export class BookingsService {
         });
 
         const saved = await manager.getRepository(Booking).save(booking);
-        return { booking: saved, ride };
+        return { booking: saved, ride, promotedRide };
       });
-      await this.chatService.safeEnsureOpenForBooking(result.booking.id);
+      await this.afterBookingPersisted(result.booking, result.ride);
+      await this.notifyAssuredPublishedIfPresent(result.promotedRide);
       return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
@@ -1037,10 +1106,14 @@ export class BookingsService {
         if (recovered) {
           this.assertIdempotentRequestMatches(recovered, passengerId, dto);
           const ride = await this.rideRepository.findOne({
-            where: { id: recovered.rideId },
-          });
-          await this.chatService.safeEnsureOpenForBooking(recovered.id);
-          return this.toResponseWithDriver(recovered, ride ?? undefined);
+        where: { id: recovered.rideId },
+      });
+      if (ride) {
+        await this.afterBookingPersisted(recovered, ride);
+      } else {
+        await this.chatService.safeEnsureOpenForBooking(recovered.id);
+      }
+      return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
           'Idempotency conflict could not be resolved; existing booking not found',
@@ -1054,10 +1127,14 @@ export class BookingsService {
         if (recovered) {
           this.assertIdempotentRequestMatches(recovered, passengerId, dto);
           const ride = await this.rideRepository.findOne({
-            where: { id: recovered.rideId },
-          });
-          await this.chatService.safeEnsureOpenForBooking(recovered.id);
-          return this.toResponseWithDriver(recovered, ride ?? undefined);
+        where: { id: recovered.rideId },
+      });
+      if (ride) {
+        await this.afterBookingPersisted(recovered, ride);
+      } else {
+        await this.chatService.safeEnsureOpenForBooking(recovered.id);
+      }
+      return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }
 
@@ -1094,7 +1171,11 @@ export class BookingsService {
       const ride = await this.rideRepository.findOne({
         where: { id: existing.rideId },
       });
-      await this.chatService.safeEnsureOpenForBooking(existing.id);
+      if (ride) {
+        await this.afterBookingPersisted(existing, ride);
+      } else {
+        await this.chatService.safeEnsureOpenForBooking(existing.id);
+      }
       return this.toResponseWithDriver(existing, ride ?? undefined);
     }
 
@@ -1202,7 +1283,8 @@ export class BookingsService {
 
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
-        await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
+        const promotedRide =
+          await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
 
         const booking = manager.getRepository(Booking).create({
           id: bookingId,
@@ -1237,9 +1319,10 @@ export class BookingsService {
             saved.id,
           );
         }
-        return { booking: saved, ride };
+        return { booking: saved, ride, promotedRide };
       });
-      await this.chatService.safeEnsureOpenForBooking(result.booking.id);
+      await this.afterBookingPersisted(result.booking, result.ride);
+      await this.notifyAssuredPublishedIfPresent(result.promotedRide);
       return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
@@ -1249,10 +1332,14 @@ export class BookingsService {
         if (recovered) {
           this.assertIdempotentRequestMatches(recovered, passengerId, dto);
           const ride = await this.rideRepository.findOne({
-            where: { id: recovered.rideId },
-          });
-          await this.chatService.safeEnsureOpenForBooking(recovered.id);
-          return this.toResponseWithDriver(recovered, ride ?? undefined);
+        where: { id: recovered.rideId },
+      });
+      if (ride) {
+        await this.afterBookingPersisted(recovered, ride);
+      } else {
+        await this.chatService.safeEnsureOpenForBooking(recovered.id);
+      }
+      return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
           'Idempotency conflict could not be resolved; existing booking not found',
@@ -1266,10 +1353,14 @@ export class BookingsService {
         if (recovered) {
           this.assertIdempotentRequestMatches(recovered, passengerId, dto);
           const ride = await this.rideRepository.findOne({
-            where: { id: recovered.rideId },
-          });
-          await this.chatService.safeEnsureOpenForBooking(recovered.id);
-          return this.toResponseWithDriver(recovered, ride ?? undefined);
+        where: { id: recovered.rideId },
+      });
+      if (ride) {
+        await this.afterBookingPersisted(recovered, ride);
+      } else {
+        await this.chatService.safeEnsureOpenForBooking(recovered.id);
+      }
+      return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }
 
@@ -1753,17 +1844,63 @@ export class BookingsService {
     };
   }
 
+  private async afterBookingPersisted(
+    booking: Booking,
+    ride: Ride,
+  ): Promise<void> {
+    await this.chatService.safeEnsureOpenForBooking(booking.id);
+
+    if (booking.bookingMode === BookingMode.COMMUTE) {
+      await this.notificationsService.safeNotifyCommuteRequested({
+        bookingId: booking.id,
+        rideId: ride.id,
+        driverId: ride.driverId,
+      });
+      return;
+    }
+
+    const mode =
+      booking.bookingMode === BookingMode.ASSURED ? 'ASSURED' : 'REGULAR';
+    await this.notificationsService.safeNotifyBookingReceived({
+      bookingId: booking.id,
+      rideId: ride.id,
+      driverId: ride.driverId,
+      passengerId: booking.passengerId,
+      bookingMode: mode,
+    });
+    await this.notificationsService.safeNotifyBookingConfirmed({
+      bookingId: booking.id,
+      rideId: ride.id,
+      passengerId: booking.passengerId,
+      bookingMode: mode,
+    });
+  }
+
+  private async notifyAssuredPublishedIfPresent(
+    promoted: Ride | null | undefined,
+  ): Promise<void> {
+    if (!promoted) {
+      return;
+    }
+    await this.notificationsService.safeNotifyAssuredPublished({
+      rideId: promoted.id,
+      driverId: promoted.driverId,
+    });
+  }
+
   private async maybeAdvanceAssuredQueueAfterBooking(
     manager: EntityManager,
     ride: Ride,
-  ): Promise<void> {
+  ): Promise<Ride | null> {
     if (ride.rideType !== RideType.ASSURED || ride.availableSeats > 0) {
-      return;
+      return null;
     }
-    await this.assuredQueueService.handleRideBecameFullInTransaction(
-      manager,
-      ride,
-    );
+    const advance =
+      await this.assuredQueueService.handleRideBecameFullInTransaction(
+        manager,
+        ride,
+      );
+    return advance.promotedRide;
   }
 
   private assertEnoughSeats(ride: Ride, seats: number): void {

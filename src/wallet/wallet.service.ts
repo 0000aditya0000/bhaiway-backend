@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   DataSource,
@@ -7,6 +7,7 @@ import {
   Repository,
 } from 'typeorm';
 
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   ConsumeHoldInput,
   CreateHoldInput,
@@ -66,6 +67,8 @@ interface LotAllocationPlan {
 
 @Injectable()
 export class WalletService {
+  private readonly logger = new Logger(WalletService.name);
+
   constructor(
     private readonly dataSource: DataSource,
     @InjectRepository(Wallet)
@@ -80,14 +83,35 @@ export class WalletService {
     private readonly walletHoldAllocationRepository: Repository<WalletHoldAllocation>,
     @InjectRepository(WalletTransaction)
     private readonly walletTransactionRepository: Repository<WalletTransaction>,
+    @Optional()
+    private readonly notificationsService?: NotificationsService,
   ) {}
 
   async creditPoints(input: CreditPointsInput): Promise<WalletOperationResult> {
     this.assertPositiveAmount(input.amount);
 
-    return this.runIdempotentMutation(input.idempotencyKey, async (manager) =>
-      this.creditPointsInTransaction(manager, input),
+    const result = await this.runIdempotentMutation(
+      input.idempotencyKey,
+      async (manager) => this.creditPointsInTransaction(manager, input),
     );
+    // Notification already enqueued in-transaction (outbox). Flush dispatch.
+    if (result.transaction?.id) {
+      void this.notificationsService
+        ?.findByIdempotencyKey(`wallet-credited:${result.transaction.id}`)
+        .then((row) => {
+          if (row) {
+            return this.notificationsService?.flushDispatch(row.id);
+          }
+        })
+        .catch((error) => {
+          this.logger.warn(
+            `Wallet credit notify flush failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+    }
+    return result;
   }
 
   /**
@@ -164,6 +188,18 @@ export class WalletService {
       WalletTransaction,
       transaction,
     );
+
+    if (this.notificationsService) {
+      await this.notificationsService.safeNotifyWalletCreditedInTransaction(
+        manager,
+        {
+          userId: input.userId,
+          transactionId: savedTransaction.id,
+          amount: savedTransaction.amount,
+          currency: 'INR',
+        },
+      );
+    }
 
     return {
       transaction: savedTransaction,

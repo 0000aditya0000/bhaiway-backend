@@ -2,13 +2,14 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
+import { DataSource, In } from 'typeorm';
 import request from 'supertest';
 
 import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import { VerificationType } from '../verification/enums/verification.enums';
@@ -111,6 +112,35 @@ describe('Commute booking request lifecycle (integration)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
+        const bookings = await dataSource.getRepository(Booking).find({
+          where: [{ passengerId: ctx.userId }],
+          select: { id: true },
+        });
+        const asDriverRides = await dataSource.getRepository(Ride).find({
+          where: { driverId: ctx.userId },
+          select: { id: true },
+        });
+        const driverBookingIds =
+          asDriverRides.length === 0
+            ? []
+            : (
+                await dataSource.getRepository(Booking).find({
+                  where: { rideId: In(asDriverRides.map((r) => r.id)) },
+                  select: { id: true },
+                })
+              ).map((b) => b.id);
+        await deleteChatForBookingIds(dataSource, [
+          ...bookings.map((b) => b.id),
+          ...driverBookingIds,
+        ]);
+        if (driverBookingIds.length > 0) {
+          await dataSource
+            .getRepository(Booking)
+            .createQueryBuilder()
+            .delete()
+            .where('id IN (:...ids)', { ids: driverBookingIds })
+            .execute();
+        }
         await dataSource.getRepository(Booking).delete({
           passengerId: ctx.userId,
         });

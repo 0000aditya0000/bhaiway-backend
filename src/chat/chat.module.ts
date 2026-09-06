@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AuthModule } from '../auth/auth.module';
 import { Booking } from '../bookings/entities/booking.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { Ride } from '../rides/entities/ride.entity';
 import { TrackingModule } from '../tracking/tracking.module';
 import { UserProfile } from '../users/entities/user-profile.entity';
@@ -23,6 +24,7 @@ import { ChatMessage } from './entities/chat-message.entity';
     ]),
     AuthModule,
     TrackingModule,
+    NotificationsModule,
   ],
   controllers: [ChatController],
   providers: [ChatService, ChatGateway],
