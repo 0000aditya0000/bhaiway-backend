@@ -10,6 +10,11 @@ import {
   type PushSendResult,
 } from '../notifications.types';
 import type { NotificationProvider } from './notification.provider';
+import {
+  isLikelyPemPrivateKey,
+  normalizeFirebasePrivateKey,
+  readFirebaseConfigPresence,
+} from './firebase-config.util';
 
 @Injectable()
 export class FirebaseNotificationProvider
@@ -19,43 +24,86 @@ export class FirebaseNotificationProvider
   private readonly logger = new Logger(FirebaseNotificationProvider.name);
   private enabled = false;
   private messaging: Messaging | null = null;
+  private disableReason: string | null = 'NOT_INITIALIZED';
 
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit(): void {
-    const projectId = this.configService.get<string>('FIREBASE_PROJECT_ID');
-    const clientEmail = this.configService.get<string>('FIREBASE_CLIENT_EMAIL');
+    const projectId = this.configService
+      .get<string>('FIREBASE_PROJECT_ID')
+      ?.trim();
+    const clientEmail = this.configService
+      .get<string>('FIREBASE_CLIENT_EMAIL')
+      ?.trim();
     const privateKeyRaw = this.configService.get<string>('FIREBASE_PRIVATE_KEY');
 
-    if (!projectId || !clientEmail || !privateKeyRaw) {
-      this.logger.warn(
-        'Firebase FCM credentials not configured; push delivery disabled',
-      );
+    const presence = readFirebaseConfigPresence({
+      projectId,
+      clientEmail,
+      privateKey: privateKeyRaw,
+    });
+
+    this.logger.log(
+      `[NOTIFICATIONS] provider=firebase project configured=${presence.projectIdConfigured} client email configured=${presence.clientEmailConfigured} private key configured=${presence.privateKeyConfigured}`,
+    );
+
+    if (
+      !presence.projectIdConfigured ||
+      !presence.clientEmailConfigured ||
+      !presence.privateKeyConfigured
+    ) {
+      const missing: string[] = [];
+      if (!presence.projectIdConfigured) missing.push('FIREBASE_PROJECT_ID');
+      if (!presence.clientEmailConfigured) missing.push('FIREBASE_CLIENT_EMAIL');
+      if (!presence.privateKeyConfigured) missing.push('FIREBASE_PRIVATE_KEY');
+      this.disableReason = `MISSING_CONFIG:${missing.join(',')}`;
       this.enabled = false;
+      this.messaging = null;
+      this.logger.warn(
+        `[NOTIFICATIONS] firebase configured=false initialization=skipped reason=${this.disableReason}`,
+      );
       return;
     }
 
     try {
-      const privateKey = privateKeyRaw.replace(/\\n/g, '\n');
+      const privateKey = normalizeFirebasePrivateKey(privateKeyRaw!);
+      if (!isLikelyPemPrivateKey(privateKey)) {
+        this.disableReason = 'INVALID_PRIVATE_KEY_FORMAT';
+        this.enabled = false;
+        this.messaging = null;
+        this.logger.error(
+          '[NOTIFICATIONS] firebase configured=false initialization=failure reason=INVALID_PRIVATE_KEY_FORMAT (expected PEM BEGIN PRIVATE KEY)',
+        );
+        return;
+      }
+
       const app: App =
         getApps().length > 0
           ? getApps()[0]!
           : initializeApp({
               credential: cert({
-                projectId,
-                clientEmail,
+                projectId: projectId!,
+                clientEmail: clientEmail!,
                 privateKey,
               }),
             });
       this.messaging = getMessaging(app);
       this.enabled = true;
-      this.logger.log('Firebase FCM provider initialized');
+      this.disableReason = null;
+      this.logger.log(
+        '[NOTIFICATIONS] firebase configured=true initialization=success',
+      );
     } catch (error) {
       this.enabled = false;
+      this.messaging = null;
+      const message = error instanceof Error ? error.message : String(error);
+      // Avoid echoing key material if an error message ever included it.
+      const safeMessage = message
+        .replace(/-----BEGIN[\s\S]*?-----END[^-]*-----/g, '[REDACTED_PEM]')
+        .slice(0, 300);
+      this.disableReason = `INIT_FAILED:${safeMessage}`;
       this.logger.error(
-        `Firebase FCM init failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `[NOTIFICATIONS] firebase configured=false initialization=failure reason=${safeMessage}`,
       );
     }
   }
@@ -64,12 +112,16 @@ export class FirebaseNotificationProvider
     return this.enabled && this.messaging !== null;
   }
 
+  getDisableReason(): string | null {
+    return this.disableReason;
+  }
+
   async send(request: PushSendRequest): Promise<PushSendResult> {
     if (!this.messaging) {
       return {
         ok: false,
         permanent: false,
-        reason: 'FCM_NOT_CONFIGURED',
+        reason: this.disableReason ?? 'FCM_NOT_CONFIGURED',
       };
     }
 

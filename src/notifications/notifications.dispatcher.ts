@@ -115,9 +115,11 @@ export class NotificationsDispatcher {
       NotificationProviderName.FCM;
 
     if (!this.provider.isEnabled()) {
+      const detail =
+        this.provider.getDisableReason?.() ?? 'PROVIDER_NOT_ENABLED';
       await this.markFailed(
         notification,
-        'PROVIDER_DISABLED',
+        `PROVIDER_DISABLED:${detail}`.slice(0, 500),
         /*retry*/ true,
       );
       return;

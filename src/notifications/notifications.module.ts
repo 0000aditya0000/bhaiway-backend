@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
@@ -37,10 +37,17 @@ import { MockNotificationProvider } from './providers/mock-notification.provider
         firebase: FirebaseNotificationProvider,
         mock: MockNotificationProvider,
       ) => {
-        const forceMock =
-          config.get<string>('NOTIFICATION_PROVIDER') === 'mock' ||
-          config.get<string>('NODE_ENV') === 'test';
-        return forceMock ? mock : firebase;
+        const logger = new Logger('NotificationsModule');
+        const requested =
+          config.get<string>('NOTIFICATION_PROVIDER')?.trim().toLowerCase() ??
+          '';
+        const nodeEnv = config.get<string>('NODE_ENV')?.trim() ?? '';
+        const forceMock = requested === 'mock' || nodeEnv === 'test';
+        const selected = forceMock ? mock : firebase;
+        logger.log(
+          `[NOTIFICATIONS] provider=${forceMock ? 'mock' : 'firebase'} requested=${requested || '(default)'} nodeEnv=${nodeEnv || '(unset)'}`,
+        );
+        return selected;
       },
     },
   ],
