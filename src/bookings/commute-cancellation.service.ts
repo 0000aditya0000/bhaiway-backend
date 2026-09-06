@@ -12,6 +12,7 @@ import {
 
 import { AssuredRideLifecycleResponseDto } from '../assured/dto/assured-lifecycle-response.dto';
 import { ChatService } from '../chat/chat.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { Ride } from '../rides/entities/ride.entity';
 import {
   RideCancellationReason,
@@ -53,6 +54,7 @@ export class CommuteCancellationService {
     private readonly dataSource: DataSource,
     private readonly walletService: WalletService,
     private readonly chatService: ChatService,
+    private readonly notificationsService: NotificationsService,
     @InjectRepository(Booking)
     private readonly bookingRepository: Repository<Booking>,
     @InjectRepository(WalletTransaction)
@@ -94,6 +96,22 @@ export class CommuteCancellationService {
         return this.toPassengerCancelResponse(cancelResult, ride.id);
       });
       await this.chatService.safeCloseForBooking(bookingId);
+      const booking = await this.bookingRepository.findOne({
+        where: { id: bookingId },
+      });
+      if (booking) {
+        // Passenger cancelled — notify driver (counterparty).
+        const ride = await this.dataSource.getRepository(Ride).findOne({
+          where: { id: booking.rideId },
+        });
+        if (ride) {
+          await this.notificationsService.safeNotifyCommuteCancelled({
+            bookingId: booking.id,
+            rideId: booking.rideId,
+            recipientUserId: ride.driverId,
+          });
+        }
+      }
       return result;
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
@@ -135,7 +153,10 @@ export class CommuteCancellationService {
           if (
             ride.cancellationReason === RideCancellationReason.DRIVER_CANCELLED
           ) {
-            return this.toRideCancelResponse(ride, 0n, 0, true);
+            return {
+              response: this.toRideCancelResponse(ride, 0n, 0, true),
+              cancelledForNotify: [],
+            };
           }
           throw new ConflictException(
             `Ride is already cancelled (${ride.cancellationReason})`,
@@ -161,6 +182,10 @@ export class CommuteCancellationService {
           .getMany();
 
         let fareRefundedTotal = 0n;
+        const cancelledForNotify: Array<{
+          bookingId: string;
+          passengerId: string;
+        }> = [];
         for (const booking of activeBookings) {
           const cancelResult = await this.cancelCommuteBookingInTransaction(
             manager,
@@ -173,6 +198,12 @@ export class CommuteCancellationService {
             },
           );
           fareRefundedTotal += cancelResult.fareRefunded;
+          if (!cancelResult.alreadyApplied) {
+            cancelledForNotify.push({
+              bookingId: booking.id,
+              passengerId: booking.passengerId,
+            });
+          }
         }
 
         const now = new Date();
@@ -182,15 +213,25 @@ export class CommuteCancellationService {
         ride.cancelledAt = now;
         await manager.getRepository(Ride).save(ride);
 
-        return this.toRideCancelResponse(
-          ride,
-          fareRefundedTotal,
-          activeBookings.length,
-          false,
-        );
+        return {
+          response: this.toRideCancelResponse(
+            ride,
+            fareRefundedTotal,
+            activeBookings.length,
+            false,
+          ),
+          cancelledForNotify,
+        };
       });
       await this.chatService.safeCloseForRide(rideId);
-      return result;
+      for (const item of result.cancelledForNotify) {
+        await this.notificationsService.safeNotifyCommuteCancelled({
+          bookingId: item.bookingId,
+          rideId,
+          recipientUserId: item.passengerId,
+        });
+      }
+      return result.response;
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
         const ride = await this.dataSource.getRepository(Ride).findOne({

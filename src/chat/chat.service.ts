@@ -20,6 +20,7 @@ import {
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus } from '../rides/enums/ride.enums';
 import { UserProfile } from '../users/entities/user-profile.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   ChatConversationDto,
   ChatConversationListDto,
@@ -86,6 +87,7 @@ export class ChatService {
     private readonly rideRepository: Repository<Ride>,
     @InjectRepository(UserProfile)
     private readonly profileRepository: Repository<UserProfile>,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   setRealtimePublisher(
@@ -505,6 +507,18 @@ export class ChatService {
       type: 'message',
       conversationId,
       message: dto,
+    });
+
+    const recipientUserId =
+      conversation.driverId === userId
+        ? conversation.passengerId
+        : conversation.driverId;
+    await this.notificationsService.safeNotifyChatMessage({
+      messageId: saved.id,
+      conversationId,
+      bookingId: conversation.bookingId,
+      recipientUserId,
+      senderUserId: userId,
     });
 
     return {

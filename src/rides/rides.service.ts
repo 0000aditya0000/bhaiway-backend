@@ -48,6 +48,7 @@ import { CommuteSettlementService, type CommuteRideSettlementSummary } from '../
 import { FareSettlementService } from '../fare/fare-settlement.service';
 import { RatingsService } from '../ratings/ratings.service';
 import { ChatService } from '../chat/chat.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { SettingsService } from '../settings/settings.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { User, UserStatus } from '../users/entities/user.entity';
@@ -149,6 +150,7 @@ export class RidesService {
     private readonly rideDirectionsService: RideDirectionsService,
     private readonly ratingsService: RatingsService,
     private readonly chatService: ChatService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async cancelByDriver(
@@ -336,12 +338,27 @@ export class RidesService {
         fareRefundedTotal: '0',
         couponsIssuedCount: 0,
         alreadyApplied: false,
+        cancelledBookings: activeBookings.map((b) => ({
+          bookingId: b.id,
+          passengerId: b.passengerId,
+        })),
       };
     });
 
     await this.trackingService.clearRideTracking(rideId, 'cancel');
     await this.chatService.safeCloseForRide(rideId);
-    return result;
+    if (!result.alreadyApplied) {
+      for (const booking of result.cancelledBookings ?? []) {
+        await this.notificationsService.safeNotifyBookingCancelled({
+          bookingId: booking.bookingId,
+          rideId,
+          recipientUserId: booking.passengerId,
+          bookingMode: 'REGULAR',
+        });
+      }
+    }
+    const { cancelledBookings: _c, ...response } = result;
+    return response;
   }
 
   async reportDriverNoShow(
@@ -523,7 +540,7 @@ export class RidesService {
     const depositLedgerKey = `assured-driver-deposit:${rideId}`;
 
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      const created = await this.dataSource.transaction(async (manager) => {
         if (clientKey) {
           const existingAfterLock = await manager.getRepository(Ride).findOne({
             where: { publishIdempotencyKey: key },
@@ -598,6 +615,14 @@ export class RidesService {
           );
         return this.toResponse(saved);
       });
+
+      if (created.status === RideStatus.ASSURANCE_ACTIVE) {
+        await this.notificationsService.safeNotifyAssuredPublished({
+          rideId: created.id,
+          driverId,
+        });
+      }
+      return created;
     } catch (error) {
       if (clientKey && this.isAssuredPublishIdempotencyUniqueViolation(error)) {
         const recovered = await this.rideRepository.findOne({
@@ -605,6 +630,12 @@ export class RidesService {
         });
         if (recovered) {
           this.assertAssuredPublishIdempotentMatches(recovered, driverId, dto);
+          if (recovered.status === RideStatus.ASSURANCE_ACTIVE) {
+            await this.notificationsService.safeNotifyAssuredPublished({
+              rideId: recovered.id,
+              driverId,
+            });
+          }
           return this.toResponse(recovered);
         }
       }
