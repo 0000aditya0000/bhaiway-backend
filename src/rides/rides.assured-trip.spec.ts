@@ -48,6 +48,8 @@ import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
 import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
 import { startRideAndVerifyAllPickups } from './test/ride-trip-test.helpers';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
+import { RatingTask } from '../ratings/entities/rating-task.entity';
 
 function pickupOtpPepper(): string {
   const secret = process.env.JWT_ACCESS_SECRET?.trim();
@@ -126,11 +128,56 @@ describe('Assured ride trip lifecycle (integration)', () => {
           where: { driverId: ctx.userId },
         });
         for (const ride of rides) {
+          const rideBookings = await dataSource.getRepository(Booking).find({
+            where: { rideId: ride.id },
+            select: { id: true },
+          });
+          const rideBookingIds = rideBookings.map((b) => b.id);
+          if (rideBookingIds.length > 0) {
+            await dataSource
+              .getRepository(RatingTask)
+              .createQueryBuilder()
+              .delete()
+              .where('booking_id IN (:...ids)', { ids: rideBookingIds })
+              .execute();
+          }
+          await dataSource
+            .getRepository(RatingTask)
+            .delete({ rideId: ride.id });
+          await deleteChatForBookingIds(dataSource, rideBookingIds);
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
         }
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        const passengerBookingIds = passengerBookings.map((b) => b.id);
+        if (passengerBookingIds.length > 0) {
+          await dataSource
+            .getRepository(RatingTask)
+            .createQueryBuilder()
+            .delete()
+            .where('booking_id IN (:...ids)', { ids: passengerBookingIds })
+            .execute();
+        }
+        await deleteChatForBookingIds(dataSource, passengerBookingIds);
         await dataSource.getRepository(Booking).delete({
           passengerId: ctx.userId,
         });
+        // Cancel Assured rides before delete so queue-membership check passes.
+        await dataSource.query(
+          `
+          UPDATE rides
+          SET status = 'CANCELLED',
+              assured_queue_id = NULL,
+              cancellation_reason = 'DRIVER_CANCELLED',
+              cancelled_at = NOW()
+          WHERE driver_id = $1
+            AND ride_type = 'ASSURED'
+            AND status::text LIKE 'ASSURANCE%'
+          `,
+          [ctx.userId],
+        );
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
         await dataSource.getRepository(Vehicle).delete({ userId: ctx.userId });
         await dataSource.getRepository(UserProfile).delete({
@@ -227,6 +274,7 @@ describe('Assured ride trip lifecycle (integration)', () => {
   }
 
   async function publishAssured(driver: Awaited<ReturnType<typeof fundedDriver>>) {
+    const day = 10 + (Date.now() % 18); // 10..27 avoids colliding with leftover Dec-10 orphans
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
@@ -235,7 +283,7 @@ describe('Assured ride trip lifecycle (integration)', () => {
         vehicleId: driver.vehicle.id,
         source: 'Assured Trip Source',
         destination: 'Assured Trip Dest',
-        departureDate: '2026-12-10',
+        departureDate: `2026-12-${String(day).padStart(2, '0')}`,
         departureTime: '09:00',
         totalSeats: 4,
         pricePerSeat: 500,

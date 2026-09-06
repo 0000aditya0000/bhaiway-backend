@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { Booking } from '../bookings/entities/booking.entity';
+import { ChatModule } from '../chat/chat.module';
 import { UserCoupon } from '../coupons/entities/user-coupon.entity';
 import { Ride } from '../rides/entities/ride.entity';
 import { SettingsModule } from '../settings/settings.module';
@@ -32,6 +33,7 @@ import { PassengerAssuredDepositPenaltyService } from './passenger-assured-depos
     ]),
     WalletModule,
     SettingsModule,
+    ChatModule,
   ],
   providers: [
     AssuredLifecycleService,

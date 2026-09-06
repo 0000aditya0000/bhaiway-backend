@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AssuredModule } from '../assured/assured.module';
 import { FareModule } from '../fare/fare.module';
 import { AuthModule } from '../auth/auth.module';
+import { ChatModule } from '../chat/chat.module';
 import { UserCoupon } from '../coupons/entities/user-coupon.entity';
 import { Ride } from '../rides/entities/ride.entity';
 import { SettingsModule } from '../settings/settings.module';
@@ -39,6 +40,7 @@ import { Booking } from './entities/booking.entity';
     SettingsModule,
     AssuredModule,
     FareModule,
+    ChatModule,
   ],
   controllers: [BookingsController],
   providers: [BookingsService, CommuteCancellationService],

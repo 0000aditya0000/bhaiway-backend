@@ -16,6 +16,7 @@ import {
   BookingPaymentMethod,
   BookingStatus,
 } from '../bookings/enums/booking.enums';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import {
@@ -113,8 +114,24 @@ describe('Regular ride driver cancellation (integration)', () => {
           where: { driverId: ctx.userId },
         });
         for (const ride of rides) {
+          const rideBookings = await dataSource.getRepository(Booking).find({
+            where: { rideId: ride.id },
+            select: { id: true },
+          });
+          await deleteChatForBookingIds(
+            dataSource,
+            rideBookings.map((b) => b.id),
+          );
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
         }
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        await deleteChatForBookingIds(
+          dataSource,
+          passengerBookings.map((b) => b.id),
+        );
         await dataSource.getRepository(Booking).delete({
           passengerId: ctx.userId,
         });

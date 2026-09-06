@@ -47,6 +47,7 @@ import {
 } from '../rides/enums/ride.enums';
 import { supportsTripLifecycle } from '../rides/ride-trip-lifecycle';
 import { computeCommuteBookingFareSnapshots } from '../rides/commute-fare.math';
+import { ChatService } from '../chat/chat.service';
 import {
   FareSettlementService,
   PayLaterSettlementResult,
@@ -155,6 +156,7 @@ export class BookingsService {
     private readonly configService: ConfigService,
     private readonly fareSettlementService: FareSettlementService,
     private readonly commuteCancellationService: CommuteCancellationService,
+    private readonly chatService: ChatService,
   ) {}
 
   async cancelByPassenger(
@@ -172,16 +174,21 @@ export class BookingsService {
     }
 
     if (booking.bookingMode === BookingMode.COMMUTE) {
-      return this.commuteCancellationService.cancelBookingByPassenger(
-        passengerId,
-        bookingId,
-      );
+      const result =
+        await this.commuteCancellationService.cancelBookingByPassenger(
+          passengerId,
+          bookingId,
+        );
+      await this.chatService.safeCloseForBooking(bookingId);
+      return result;
     }
 
-    return this.assuredLifecycleService.cancelBookingByRider(
+    const result = await this.assuredLifecycleService.cancelBookingByRider(
       passengerId,
       bookingId,
     );
+    await this.chatService.safeCloseForBooking(bookingId);
+    return result;
   }
 
   async payPayLaterWithWallet(
@@ -461,7 +468,7 @@ export class BookingsService {
     driverId: string,
     bookingId: string,
   ): Promise<CommuteBookingDriverActionResponseDto> {
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const bookingPeek = await manager.getRepository(Booking).findOne({
         where: { id: bookingId },
       });
@@ -534,6 +541,11 @@ export class BookingsService {
         autoCancelledBookings,
       );
     });
+
+    for (const cancelled of result.autoCancelledBookings ?? []) {
+      await this.chatService.safeCloseForBooking(cancelled.bookingId);
+    }
+    return result;
   }
 
   async rejectCommuteBookingByDriver(
@@ -543,7 +555,7 @@ export class BookingsService {
     const refundIdempotencyKey = `commute:reject:${bookingId}`;
 
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      const result = await this.dataSource.transaction(async (manager) => {
         const bookingPeek = await manager.getRepository(Booking).findOne({
           where: { id: bookingId },
         });
@@ -637,6 +649,8 @@ export class BookingsService {
           [],
         );
       });
+      await this.chatService.safeCloseForBooking(bookingId);
+      return result;
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
         const booking = await this.bookingRepository.findOne({
@@ -650,6 +664,7 @@ export class BookingsService {
           booking.cancellationReason ===
             BookingCancellationReason.DRIVER_REJECTED
         ) {
+          await this.chatService.safeCloseForBooking(bookingId);
           return this.toCommuteDriverActionResponse(
             booking,
             booking.ride,
@@ -706,6 +721,7 @@ export class BookingsService {
       const ride = await this.rideRepository.findOne({
         where: { id: existing.rideId },
       });
+      await this.chatService.safeEnsureOpenForBooking(existing.id);
       return this.toResponseWithDriver(existing, ride ?? undefined);
     }
 
@@ -783,6 +799,7 @@ export class BookingsService {
         return { booking: saved, ride };
       });
 
+      await this.chatService.safeEnsureOpenForBooking(result.booking.id);
       return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
@@ -798,6 +815,7 @@ export class BookingsService {
           const ride = await this.rideRepository.findOne({
             where: { id: recovered.rideId },
           });
+          await this.chatService.safeEnsureOpenForBooking(recovered.id);
           return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
@@ -818,6 +836,7 @@ export class BookingsService {
           const ride = await this.rideRepository.findOne({
             where: { id: recovered.rideId },
           });
+          await this.chatService.safeEnsureOpenForBooking(recovered.id);
           return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }
@@ -887,6 +906,7 @@ export class BookingsService {
         const saved = await manager.getRepository(Booking).save(booking);
         return { booking: saved, ride };
       });
+      await this.chatService.safeEnsureOpenForBooking(result.booking.id);
       return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       this.rethrowDuplicateActiveBooking(error);
@@ -916,6 +936,7 @@ export class BookingsService {
       const ride = await this.rideRepository.findOne({
         where: { id: existing.rideId },
       });
+      await this.chatService.safeEnsureOpenForBooking(existing.id);
       return this.toResponseWithDriver(existing, ride ?? undefined);
     }
 
@@ -1006,6 +1027,7 @@ export class BookingsService {
         const saved = await manager.getRepository(Booking).save(booking);
         return { booking: saved, ride };
       });
+      await this.chatService.safeEnsureOpenForBooking(result.booking.id);
       return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
@@ -1017,6 +1039,7 @@ export class BookingsService {
           const ride = await this.rideRepository.findOne({
             where: { id: recovered.rideId },
           });
+          await this.chatService.safeEnsureOpenForBooking(recovered.id);
           return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
@@ -1033,6 +1056,7 @@ export class BookingsService {
           const ride = await this.rideRepository.findOne({
             where: { id: recovered.rideId },
           });
+          await this.chatService.safeEnsureOpenForBooking(recovered.id);
           return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }
@@ -1070,6 +1094,7 @@ export class BookingsService {
       const ride = await this.rideRepository.findOne({
         where: { id: existing.rideId },
       });
+      await this.chatService.safeEnsureOpenForBooking(existing.id);
       return this.toResponseWithDriver(existing, ride ?? undefined);
     }
 
@@ -1214,6 +1239,7 @@ export class BookingsService {
         }
         return { booking: saved, ride };
       });
+      await this.chatService.safeEnsureOpenForBooking(result.booking.id);
       return this.toResponseWithDriver(result.booking, result.ride);
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
@@ -1225,6 +1251,7 @@ export class BookingsService {
           const ride = await this.rideRepository.findOne({
             where: { id: recovered.rideId },
           });
+          await this.chatService.safeEnsureOpenForBooking(recovered.id);
           return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
@@ -1241,6 +1268,7 @@ export class BookingsService {
           const ride = await this.rideRepository.findOne({
             where: { id: recovered.rideId },
           });
+          await this.chatService.safeEnsureOpenForBooking(recovered.id);
           return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }

@@ -15,6 +15,8 @@ import {
   BookingPaymentMethod,
   BookingStatus,
 } from '../bookings/enums/booking.enums';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
+import { RatingTask } from '../ratings/entities/rating-task.entity';
 import { SettingsModule } from '../settings/settings.module';
 import { SettingsService } from '../settings/settings.service';
 import { UserProfile } from '../users/entities/user-profile.entity';
@@ -131,6 +133,20 @@ describe('Ride completion Phase 3 (integration)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        const passengerBookingIds = passengerBookings.map((b) => b.id);
+        if (passengerBookingIds.length > 0) {
+          await dataSource
+            .getRepository(RatingTask)
+            .createQueryBuilder()
+            .delete()
+            .where('booking_id IN (:...ids)', { ids: passengerBookingIds })
+            .execute();
+        }
+        await deleteChatForBookingIds(dataSource, passengerBookingIds);
         await dataSource.getRepository(Booking).delete({
           passengerId: ctx.userId,
         });
@@ -138,6 +154,23 @@ describe('Ride completion Phase 3 (integration)', () => {
           where: { driverId: ctx.userId },
         });
         for (const ride of rides) {
+          const rideBookings = await dataSource.getRepository(Booking).find({
+            where: { rideId: ride.id },
+            select: { id: true },
+          });
+          const rideBookingIds = rideBookings.map((b) => b.id);
+          if (rideBookingIds.length > 0) {
+            await dataSource
+              .getRepository(RatingTask)
+              .createQueryBuilder()
+              .delete()
+              .where('booking_id IN (:...ids)', { ids: rideBookingIds })
+              .execute();
+          }
+          await dataSource
+            .getRepository(RatingTask)
+            .delete({ rideId: ride.id });
+          await deleteChatForBookingIds(dataSource, rideBookingIds);
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
         }
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });

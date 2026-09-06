@@ -9,6 +9,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
@@ -114,6 +115,10 @@ describe('Commute cancellation lifecycle (integration)', () => {
         select: { id: true },
       });
       if (passengerBookings.length > 0) {
+        await deleteChatForBookingIds(
+          dataSource,
+          passengerBookings.map((booking) => booking.id),
+        );
         await dataSource.getRepository(WalletTransaction).delete({
           referenceId: In(passengerBookings.map((booking) => booking.id)),
         });
@@ -133,6 +138,10 @@ describe('Commute cancellation lifecycle (integration)', () => {
           select: { id: true },
         });
         if (rideBookings.length > 0) {
+          await deleteChatForBookingIds(
+            dataSource,
+            rideBookings.map((booking) => booking.id),
+          );
           await dataSource.getRepository(WalletTransaction).delete({
             referenceId: In(rideBookings.map((booking) => booking.id)),
           });

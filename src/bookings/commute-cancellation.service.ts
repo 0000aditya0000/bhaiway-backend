@@ -11,6 +11,7 @@ import {
 } from 'typeorm';
 
 import { AssuredRideLifecycleResponseDto } from '../assured/dto/assured-lifecycle-response.dto';
+import { ChatService } from '../chat/chat.service';
 import { Ride } from '../rides/entities/ride.entity';
 import {
   RideCancellationReason,
@@ -51,6 +52,7 @@ export class CommuteCancellationService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly walletService: WalletService,
+    private readonly chatService: ChatService,
     @InjectRepository(Booking)
     private readonly bookingRepository: Repository<Booking>,
     @InjectRepository(WalletTransaction)
@@ -62,7 +64,7 @@ export class CommuteCancellationService {
     bookingId: string,
   ): Promise<CommuteBookingCancellationResponseDto> {
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      const result = await this.dataSource.transaction(async (manager) => {
         const bookingPeek = await manager.getRepository(Booking).findOne({
           where: { id: bookingId },
         });
@@ -78,16 +80,21 @@ export class CommuteCancellationService {
 
         this.assertCommuteBooking(booking, ride);
 
-        const result = await this.cancelCommuteBookingInTransaction(manager, {
-          ride,
-          booking,
-          cancellationReason: BookingCancellationReason.RIDER_CANCELLED,
-          refundIdempotencyKey: commuteRiderCancelRefundKey(booking.id),
-          restoreSeats: booking.status === BookingStatus.CONFIRMED,
-        });
+        const cancelResult = await this.cancelCommuteBookingInTransaction(
+          manager,
+          {
+            ride,
+            booking,
+            cancellationReason: BookingCancellationReason.RIDER_CANCELLED,
+            refundIdempotencyKey: commuteRiderCancelRefundKey(booking.id),
+            restoreSeats: booking.status === BookingStatus.CONFIRMED,
+          },
+        );
 
-        return this.toPassengerCancelResponse(result, ride.id);
+        return this.toPassengerCancelResponse(cancelResult, ride.id);
       });
+      await this.chatService.safeCloseForBooking(bookingId);
+      return result;
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
         const recovered = await this.recoverPassengerCancelIdempotent(
@@ -97,6 +104,7 @@ export class CommuteCancellationService {
           commuteRiderCancelRefundKey(bookingId),
         );
         if (recovered) {
+          await this.chatService.safeCloseForBooking(bookingId);
           return recovered;
         }
       }
@@ -109,7 +117,7 @@ export class CommuteCancellationService {
     rideId: string,
   ): Promise<AssuredRideLifecycleResponseDto> {
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      const result = await this.dataSource.transaction(async (manager) => {
         const ride = await this.lockRideForUpdate(manager, rideId);
         if (!ride || ride.driverId !== driverId) {
           throw new NotFoundException('Ride not found');
@@ -154,14 +162,17 @@ export class CommuteCancellationService {
 
         let fareRefundedTotal = 0n;
         for (const booking of activeBookings) {
-          const result = await this.cancelCommuteBookingInTransaction(manager, {
-            ride,
-            booking,
-            cancellationReason: BookingCancellationReason.RIDE_CANCELLED,
-            refundIdempotencyKey: commuteRideCancelRefundKey(booking.id),
-            restoreSeats: false,
-          });
-          fareRefundedTotal += result.fareRefunded;
+          const cancelResult = await this.cancelCommuteBookingInTransaction(
+            manager,
+            {
+              ride,
+              booking,
+              cancellationReason: BookingCancellationReason.RIDE_CANCELLED,
+              refundIdempotencyKey: commuteRideCancelRefundKey(booking.id),
+              restoreSeats: false,
+            },
+          );
+          fareRefundedTotal += cancelResult.fareRefunded;
         }
 
         const now = new Date();
@@ -178,6 +189,8 @@ export class CommuteCancellationService {
           false,
         );
       });
+      await this.chatService.safeCloseForRide(rideId);
+      return result;
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
         const ride = await this.dataSource.getRepository(Ride).findOne({
@@ -196,6 +209,7 @@ export class CommuteCancellationService {
               cancellationReason: BookingCancellationReason.RIDE_CANCELLED,
             },
           });
+          await this.chatService.safeCloseForRide(rideId);
           return this.toRideCancelResponse(ride, 0n, cancelledCount, true);
         }
       }

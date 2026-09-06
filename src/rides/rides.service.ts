@@ -47,6 +47,7 @@ import { CommuteCancellationService } from '../bookings/commute-cancellation.ser
 import { CommuteSettlementService, type CommuteRideSettlementSummary } from '../fare/commute-settlement.service';
 import { FareSettlementService } from '../fare/fare-settlement.service';
 import { RatingsService } from '../ratings/ratings.service';
+import { ChatService } from '../chat/chat.service';
 import { SettingsService } from '../settings/settings.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { User, UserStatus } from '../users/entities/user.entity';
@@ -147,6 +148,7 @@ export class RidesService {
     private readonly trackingService: TrackingService,
     private readonly rideDirectionsService: RideDirectionsService,
     private readonly ratingsService: RatingsService,
+    private readonly chatService: ChatService,
   ) {}
 
   async cancelByDriver(
@@ -338,6 +340,7 @@ export class RidesService {
     });
 
     await this.trackingService.clearRideTracking(rideId, 'cancel');
+    await this.chatService.safeCloseForRide(rideId);
     return result;
   }
 
@@ -1917,6 +1920,7 @@ export class RidesService {
       if (supportsTripLifecycle(result.rideType)) {
         await this.trackingService.clearRideTracking(rideId, 'complete');
       }
+      await this.chatService.safeCloseForRide(rideId);
 
       return result;
     } catch (error) {

@@ -21,6 +21,7 @@ import {
   BookingPaymentStatus,
   BookingStatus,
 } from '../bookings/enums/booking.enums';
+import { ChatService } from '../chat/chat.service';
 import {
   UserCoupon,
   UserCouponStatus,
@@ -95,6 +96,7 @@ export class AssuredLifecycleService {
     private readonly walletService: WalletService,
     private readonly assuredQueueService: AssuredQueueService,
     private readonly passengerDepositPenaltyService: PassengerAssuredDepositPenaltyService,
+    private readonly chatService: ChatService,
     @InjectRepository(Ride)
     private readonly rideRepository: Repository<Ride>,
     @InjectRepository(Booking)
@@ -107,7 +109,7 @@ export class AssuredLifecycleService {
   ): Promise<AssuredRideLifecycleResponseDto> {
     const idempotencyKey = `assured:driver-cancel:${rideId}`;
     try {
-      return await this.dataSource.transaction((manager) =>
+      const result = await this.dataSource.transaction((manager) =>
         this.executeDriverForfeit(manager, {
           actorUserId: driverId,
           rideId,
@@ -120,8 +122,11 @@ export class AssuredLifecycleService {
           timing: 'before_departure',
         }),
       );
+      await this.chatService.safeCloseForRide(rideId);
+      return result;
     } catch (error) {
       if (this.isLifecycleEventUniqueViolation(error, idempotencyKey)) {
+        await this.chatService.safeCloseForRide(rideId);
         return this.buildRideLifecycleResponseFromDb(rideId, true);
       }
       throw error;
@@ -134,7 +139,7 @@ export class AssuredLifecycleService {
   ): Promise<AssuredRideLifecycleResponseDto> {
     const idempotencyKey = `assured:driver-no-show:${rideId}`;
     try {
-      return await this.dataSource.transaction((manager) =>
+      const result = await this.dataSource.transaction((manager) =>
         this.executeDriverForfeit(manager, {
           actorUserId: reporterPassengerId,
           rideId,
@@ -148,8 +153,11 @@ export class AssuredLifecycleService {
           reporterPassengerId,
         }),
       );
+      await this.chatService.safeCloseForRide(rideId);
+      return result;
     } catch (error) {
       if (this.isLifecycleEventUniqueViolation(error, idempotencyKey)) {
+        await this.chatService.safeCloseForRide(rideId);
         return this.buildRideLifecycleResponseFromDb(rideId, true);
       }
       throw error;
@@ -162,7 +170,7 @@ export class AssuredLifecycleService {
   ): Promise<AssuredBookingLifecycleResponseDto> {
     const idempotencyKey = `assured:rider-cancel:${bookingId}`;
     try {
-      return await this.dataSource.transaction((manager) =>
+      const result = await this.dataSource.transaction((manager) =>
         this.executeRiderBookingExit(manager, {
           actorUserId: passengerId,
           bookingId,
@@ -177,8 +185,11 @@ export class AssuredLifecycleService {
           partialFillSuffix: `rider-cancel:${bookingId}`,
         }),
       );
+      await this.chatService.safeCloseForBooking(bookingId);
+      return result;
     } catch (error) {
       if (this.isLifecycleEventUniqueViolation(error, idempotencyKey)) {
+        await this.chatService.safeCloseForBooking(bookingId);
         return this.buildBookingLifecycleResponseFromDb(bookingId, true);
       }
       throw error;
@@ -191,7 +202,7 @@ export class AssuredLifecycleService {
   ): Promise<AssuredBookingLifecycleResponseDto> {
     const idempotencyKey = `assured:rider-no-show:${bookingId}`;
     try {
-      return await this.dataSource.transaction((manager) =>
+      const result = await this.dataSource.transaction((manager) =>
         this.executeRiderBookingExit(manager, {
           actorUserId: driverId,
           bookingId,
@@ -206,8 +217,11 @@ export class AssuredLifecycleService {
           partialFillSuffix: `rider-no-show:${bookingId}`,
         }),
       );
+      await this.chatService.safeCloseForBooking(bookingId);
+      return result;
     } catch (error) {
       if (this.isLifecycleEventUniqueViolation(error, idempotencyKey)) {
+        await this.chatService.safeCloseForBooking(bookingId);
         return this.buildBookingLifecycleResponseFromDb(bookingId, true, true);
       }
       throw error;
