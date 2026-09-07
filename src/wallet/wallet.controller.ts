@@ -33,6 +33,7 @@ import type { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { CreateTopUpDto } from './dto/create-top-up.dto';
 import { TopUpCallbackDto } from './dto/top-up-callback.dto';
 import { TopUpOrderResponseDto } from './dto/top-up-order-response.dto';
+import { VerifyTopUpDto } from './dto/verify-top-up.dto';
 import { WalletBalanceResponseDto } from './dto/wallet-balance-response.dto';
 import { WalletTransactionQueryDto } from './dto/wallet-transaction-query.dto';
 import { WalletTransactionPageDto } from './dto/wallet-transaction-response.dto';
@@ -141,6 +142,26 @@ export class WalletController {
     @Param('orderId', ParseUUIDPipe) orderId: string,
   ) {
     return this.topUpService.getTopUpOrderForUser(currentUser.userId, orderId);
+  }
+
+  @Post('top-up/verify')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('bearer')
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid BhaiWay JWT' })
+  @ApiOperation({
+    summary: 'Verify client Razorpay checkout payment',
+    description:
+      'Client verification endpoint called after Razorpay checkout completion. Authenticated with user JWT. Server cryptographically verifies the checkout signature and captured payment state before crediting wallet. Safe against duplicate callbacks and race conditions with webhooks.',
+  })
+  @ApiOkResponse({ type: TopUpOrderResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid checkout signature or payload' })
+  @ApiNotFoundResponse({ description: 'Payment order not found' })
+  @ApiConflictResponse({ description: 'Payment order in non-success terminal state' })
+  verifyTopUp(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Body() dto: VerifyTopUpDto,
+  ) {
+    return this.topUpService.verifyClientPayment(currentUser.userId, dto);
   }
 
   @Post('top-up/callback')

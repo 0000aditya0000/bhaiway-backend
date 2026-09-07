@@ -31,6 +31,10 @@ import { Wallet } from './wallet.entity';
   unique: true,
   where: '"gateway_order_id" IS NOT NULL',
 })
+@Index('UQ_payment_orders_gateway_payment_id', ['gatewayPaymentId'], {
+  unique: true,
+  where: '"gateway_payment_id" IS NOT NULL',
+})
 @Index('UQ_payment_orders_idempotency_key', ['idempotencyKey'], {
   unique: true,
   where: '"idempotency_key" IS NOT NULL',
@@ -128,6 +132,45 @@ export class PaymentOrder {
     nullable: true,
   })
   callbackReference!: string | null;
+
+  @Column({
+    name: 'gateway_payment_id',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  gatewayPaymentId!: string | null;
+
+  @Column({
+    name: 'gateway_signature',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  gatewaySignature!: string | null;
+
+  @Column({
+    name: 'gateway_status',
+    type: 'varchar',
+    length: 50,
+    nullable: true,
+  })
+  gatewayStatus!: string | null;
+
+  @Column({
+    name: 'failure_reason',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  failureReason!: string | null;
+
+  @Column({
+    name: 'metadata',
+    type: 'jsonb',
+    nullable: true,
+  })
+  metadata!: Record<string, unknown> | null;
 
   @CreateDateColumn({
     name: 'created_at',

@@ -7,7 +7,7 @@ import { HttpRequestLoggingInterceptor } from './common/logging/http-request-log
 import { setupSwagger } from './swagger';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   app.useWebSocketAdapter(new IoAdapter(app));
 
   app.useGlobalPipes(

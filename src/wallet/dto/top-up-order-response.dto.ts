@@ -41,6 +41,12 @@ export class TopUpOrderResponseDto {
   @ApiPropertyOptional()
   paymentReference?: string;
 
+  @ApiPropertyOptional({
+    description: 'Gateway public key ID required by client checkout SDK (e.g. Razorpay Key ID)',
+    example: 'rzp_test_1234567890',
+  })
+  keyId?: string;
+
   @ApiPropertyOptional({ type: MockTopUpInstructionsDto })
   mockInstructions?: MockTopUpInstructionsDto;
 

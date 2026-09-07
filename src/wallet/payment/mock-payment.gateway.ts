@@ -10,6 +10,10 @@ import {
   PaymentStatusResult,
   VerifyCallbackInput,
   VerifyCallbackResult,
+  VerifyClientPaymentInput,
+  VerifyClientPaymentResult,
+  VerifyWebhookInput,
+  VerifyWebhookResult,
 } from './payment-gateway.types';
 
 /**
@@ -174,6 +178,75 @@ export class MockPaymentGateway implements PaymentGatewayPort {
       currency: input.payload.currency,
       status: input.payload.status,
       reference: input.payload.reference,
+    };
+  }
+
+  async verifyClientPayment(
+    input: VerifyClientPaymentInput,
+  ): Promise<VerifyClientPaymentResult> {
+    const secret = this.configService.get<string>(
+      'PAYMENT_GATEWAY_WEBHOOK_SECRET',
+      'mock_secret',
+    );
+    const expected = createHmac('sha256', secret)
+      .update(`${input.gatewayOrderId}|${input.gatewayPaymentId}`)
+      .digest('hex');
+    const valid =
+      input.signature === expected ||
+      input.signature === 'mock_valid_signature' ||
+      input.signature === 'valid_signature';
+
+    return {
+      valid,
+      gatewayOrderId: input.gatewayOrderId,
+      gatewayPaymentId: input.gatewayPaymentId,
+      amount: '0',
+      currency: 'INR',
+      status: valid ? PaymentGatewayStatus.SUCCESS : PaymentGatewayStatus.FAILED,
+      rawStatus: valid ? 'captured' : 'failed',
+    };
+  }
+
+  async verifyWebhook(input: VerifyWebhookInput): Promise<VerifyWebhookResult> {
+    const signature = normalizeHeader(input.headers, MOCK_SIGNATURE_HEADER);
+    const secret = this.configService.get<string>(
+      'PAYMENT_GATEWAY_WEBHOOK_SECRET',
+      'mock_secret',
+    );
+
+    let rawStr = '';
+    if (Buffer.isBuffer(input.rawBody)) {
+      rawStr = input.rawBody.toString('utf8');
+    } else if (typeof input.rawBody === 'string') {
+      rawStr = input.rawBody;
+    }
+
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(rawStr);
+    } catch {
+      return {
+        valid: false,
+        eventId: 'invalid',
+        eventType: 'invalid',
+        status: PaymentGatewayStatus.FAILED,
+      };
+    }
+
+    const valid = Boolean(signature && secret);
+    return {
+      valid,
+      eventId: (payload.eventId as string) ?? 'mock_event_1',
+      eventType: (payload.eventType as string) ?? 'payment.captured',
+      gatewayOrderId: (payload.gatewayOrderId as string) ?? '',
+      gatewayPaymentId: (payload.gatewayPaymentId as string) ?? '',
+      amount: (payload.amount as string) ?? '0',
+      currency: (payload.currency as string) ?? 'INR',
+      status:
+        (payload.status as PaymentGatewayStatus) ??
+        PaymentGatewayStatus.SUCCESS,
+      rawStatus: 'captured',
+      payload,
     };
   }
 

@@ -6,6 +6,7 @@ import { Booking } from '../bookings/entities/booking.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Ride } from '../rides/entities/ride.entity';
 import { PaymentOrder } from './entities/payment-order.entity';
+import { PaymentWebhookEvent } from './entities/payment-webhook-event.entity';
 import { WalletBalance } from './entities/wallet-balance.entity';
 import { WalletHoldAllocation } from './entities/wallet-hold-allocation.entity';
 import { WalletHold } from './entities/wallet-hold.entity';
@@ -13,6 +14,7 @@ import { WalletPointLot } from './entities/wallet-point-lot.entity';
 import { WalletTransaction } from './entities/wallet-transaction.entity';
 import { Wallet } from './entities/wallet.entity';
 import { PaymentGatewayModule } from './payment/payment-gateway.module';
+import { PaymentWebhookController } from './payment/payment-webhook.controller';
 import { TopUpService } from './top-up.service';
 import { WalletController } from './wallet.controller';
 import { WalletHistoryService } from './wallet-history.service';
@@ -34,11 +36,12 @@ import { WalletService } from './wallet.service';
       WalletHoldAllocation,
       WalletTransaction,
       PaymentOrder,
+      PaymentWebhookEvent,
       Booking,
       Ride,
     ]),
   ],
-  controllers: [WalletController],
+  controllers: [WalletController, PaymentWebhookController],
   providers: [
     WalletService,
     WalletQueryService,

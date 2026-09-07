@@ -5,6 +5,7 @@ export enum PaymentGatewayStatus {
   SUCCESS = 'SUCCESS',
   FAILED = 'FAILED',
   CANCELLED = 'CANCELLED',
+  AUTHORIZED = 'AUTHORIZED',
 }
 
 export interface CreateOrderInput {
@@ -17,6 +18,7 @@ export interface CreateOrderInput {
 export interface CreateOrderResult {
   gatewayOrderId: string;
   paymentReference: string;
+  keyId?: string;
   /** Mock-only hints for local/dev testing. Real gateways may return paymentUrl instead. */
   mockInstructions?: {
     callbackPath: string;
@@ -39,6 +41,40 @@ export interface VerifyCallbackResult {
   reference?: string;
 }
 
+export interface VerifyClientPaymentInput {
+  gatewayOrderId: string;
+  gatewayPaymentId: string;
+  signature: string;
+}
+
+export interface VerifyClientPaymentResult {
+  valid: boolean;
+  gatewayOrderId: string;
+  gatewayPaymentId: string;
+  amount: string;
+  currency: string;
+  status: PaymentGatewayStatus;
+  rawStatus?: string;
+}
+
+export interface VerifyWebhookInput {
+  rawBody: Buffer | string;
+  headers: Record<string, string | string[] | undefined>;
+}
+
+export interface VerifyWebhookResult {
+  valid: boolean;
+  eventId: string;
+  eventType: string;
+  gatewayOrderId?: string;
+  gatewayPaymentId?: string;
+  amount?: string;
+  currency?: string;
+  status: PaymentGatewayStatus;
+  rawStatus?: string;
+  payload?: Record<string, unknown>;
+}
+
 export interface PaymentStatusResult {
   gatewayOrderId: string;
   amount: string;
@@ -57,6 +93,8 @@ export function mapGatewayStatusToPaymentOrderStatus(
       return PaymentOrderStatus.FAILED;
     case PaymentGatewayStatus.CANCELLED:
       return PaymentOrderStatus.CANCELLED;
+    case PaymentGatewayStatus.AUTHORIZED:
+      return PaymentOrderStatus.PENDING;
     default: {
       const exhaustive: never = status;
       return exhaustive;

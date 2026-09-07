@@ -1,5 +1,6 @@
 export enum PaymentOrderProvider {
   MOCK = 'MOCK',
+  RAZORPAY = 'RAZORPAY',
 }
 
 export enum PaymentOrderStatus {

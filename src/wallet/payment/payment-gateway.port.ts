@@ -4,6 +4,10 @@ import {
   PaymentStatusResult,
   VerifyCallbackInput,
   VerifyCallbackResult,
+  VerifyClientPaymentInput,
+  VerifyClientPaymentResult,
+  VerifyWebhookInput,
+  VerifyWebhookResult,
 } from './payment-gateway.types';
 
 export const PAYMENT_GATEWAY = Symbol('PAYMENT_GATEWAY');
@@ -16,6 +20,12 @@ export interface PaymentGatewayPort {
   createOrder(input: CreateOrderInput): Promise<CreateOrderResult>;
 
   verifyCallback(input: VerifyCallbackInput): Promise<VerifyCallbackResult>;
+
+  verifyClientPayment(
+    input: VerifyClientPaymentInput,
+  ): Promise<VerifyClientPaymentResult>;
+
+  verifyWebhook(input: VerifyWebhookInput): Promise<VerifyWebhookResult>;
 
   getPaymentStatus(gatewayOrderId: string): Promise<PaymentStatusResult>;
 

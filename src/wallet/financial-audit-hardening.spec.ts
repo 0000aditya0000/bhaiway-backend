@@ -132,6 +132,12 @@ describe('Financial audit hardening', () => {
       const ctx = tracked.pop();
       if (!ctx) continue;
       await dataSource.getRepository(UserCoupon).delete({ userId: ctx.userId });
+      await dataSource
+        .query(
+          `DELETE FROM chat_conversations WHERE booking_id IN (SELECT id FROM bookings WHERE passenger_id = $1)`,
+          [ctx.userId],
+        )
+        .catch(() => {});
       await dataSource.getRepository(Booking).delete({
         passengerId: ctx.userId,
       });
@@ -139,6 +145,12 @@ describe('Financial audit hardening', () => {
         where: { driverId: ctx.userId },
       });
       for (const ride of rides) {
+        await dataSource
+          .query(
+            `DELETE FROM chat_conversations WHERE booking_id IN (SELECT id FROM bookings WHERE ride_id = $1)`,
+            [ride.id],
+          )
+          .catch(() => {});
         await dataSource.getRepository(Booking).delete({ rideId: ride.id });
       }
       await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
