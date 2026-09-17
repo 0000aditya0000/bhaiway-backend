@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as crypto from 'crypto';
 
+import { buildCashfreeVerificationHeaders } from './cashfree-cf-signature';
 import { CashfreeConfigService } from './cashfree.config';
 import {
   CashfreeApiError,
+  extractCashfreeSafeErrorDetails,
   CashfreeWebhookSignatureError,
   CashfreeWebhookTimestampError,
 } from './cashfree.errors';
@@ -68,7 +70,7 @@ export class CashfreeDigiLockerService {
     const redirectUrl = params.redirectUrl ?? config.redirectUrl;
 
     this.logger.log(
-      '[CashfreeDigiLockerService] Using Cashfree verification environment: production',
+      `[CashfreeDigiLockerService] Using Cashfree verification environment: ${config.environment}`,
     );
     this.logger.log(
       `[CashfreeDigiLockerService] DigiLocker endpoint: ${url}`,
@@ -309,12 +311,7 @@ export class CashfreeDigiLockerService {
     },
   ): Promise<unknown> {
     const config = this.configService.getConfig();
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      'x-client-id': config.clientId,
-      'x-client-secret': config.clientSecret,
-    };
+    const headers = buildCashfreeVerificationHeaders(config);
 
     let response: Response;
     try {
@@ -330,13 +327,16 @@ export class CashfreeDigiLockerService {
     }
 
     if (!response.ok) {
-      let errorBody: string = '';
+      let parsedBody: unknown = null;
       try {
-        errorBody = await response.text();
+        parsedBody = await response.json();
       } catch {
-        // ignore
+        // ignore non-JSON error bodies
       }
-      this.logger.warn(`Cashfree rejected request: status=${response.status} url=${url}`);
+      const details = extractCashfreeSafeErrorDetails(parsedBody);
+      this.logger.error(
+        `Cashfree HTTP ${response.status}: endpoint=${url} code=${details.code} message=${details.message} requestId=${details.requestId}`,
+      );
       throw new CashfreeApiError(
         `Cashfree DigiLocker API rejected request with status ${response.status}`,
       );
