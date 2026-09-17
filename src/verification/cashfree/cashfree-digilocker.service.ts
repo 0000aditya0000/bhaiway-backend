@@ -67,6 +67,13 @@ export class CashfreeDigiLockerService {
     const url = `${config.baseUrl}/digilocker`;
     const redirectUrl = params.redirectUrl ?? config.redirectUrl;
 
+    this.logger.log(
+      '[CashfreeDigiLockerService] Using Cashfree verification environment: production',
+    );
+    this.logger.log(
+      `[CashfreeDigiLockerService] DigiLocker endpoint: ${url}`,
+    );
+
     const requestBody = {
       verification_id: params.verificationId,
       document_requested: ['AADHAAR'],

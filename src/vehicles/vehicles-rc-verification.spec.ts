@@ -217,7 +217,8 @@ describe('Cashfree Vehicle RC Verification', () => {
   describe('CashfreeVehicleRcService', () => {
     beforeEach(() => {
       jest.spyOn(cashfreeConfigService, 'getConfig').mockReturnValue({
-        baseUrl: 'https://sandbox.cashfree.com/verification',
+        environment: 'production',
+        baseUrl: 'https://api.cashfree.com/verification',
         clientId: 'mock-client-id',
         clientSecret: 'mock-client-secret',
         redirectUrl: 'https://example.com/callback',
@@ -266,7 +267,7 @@ describe('Cashfree Vehicle RC Verification', () => {
       expect(vId.startsWith('rc_')).toBe(true);
     });
 
-    it('4. Selects production endpoint when CASHFREE_VERIFICATION_ENV=production', async () => {
+    it('4. Uses production vehicle-rc endpoint', async () => {
       const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -277,6 +278,7 @@ describe('Cashfree Vehicle RC Verification', () => {
       } as any);
 
       jest.spyOn(cashfreeConfigService, 'getConfig').mockReturnValueOnce({
+        environment: 'production',
         baseUrl: 'https://api.cashfree.com/verification',
         clientId: 'prod-client-id',
         clientSecret: 'prod-client-secret',
@@ -301,38 +303,7 @@ describe('Cashfree Vehicle RC Verification', () => {
       );
     });
 
-    it('5. Selects sandbox endpoint when CASHFREE_VERIFICATION_ENV=sandbox', async () => {
-      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          status: 'VALID',
-          verification_id: 'test_sb_1',
-          reg_no: 'DL01AB1234',
-        }),
-      } as any);
-
-      jest.spyOn(cashfreeConfigService, 'getConfig').mockReturnValueOnce({
-        baseUrl: 'https://sandbox.cashfree.com/verification',
-        clientId: 'test-client-id',
-        clientSecret: 'test-client-secret',
-        redirectUrl: 'https://example.com/callback',
-        timeoutMs: 5000,
-      });
-
-      await cashfreeRcService.verifyVehicleRc({
-        verificationId: 'test_sb_1',
-        vehicleNumber: 'DL01AB1234',
-      });
-
-      expect(fetchSpy).toHaveBeenCalledWith(
-        'https://sandbox.cashfree.com/verification/vehicle-rc',
-        expect.objectContaining({
-          method: 'POST',
-        }),
-      );
-    });
-
-    it('6. Maps Cashfree 400 Bad Request', async () => {
+    it('5. Maps Cashfree 400 Bad Request', async () => {
       jest.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: false,
         status: 400,
@@ -477,7 +448,8 @@ describe('Cashfree Vehicle RC Verification', () => {
     it('13. Client secret is never exposed in returned error message', async () => {
       const secret = 'SUPER_SECRET_KEY_12345';
       jest.spyOn(cashfreeConfigService, 'getConfig').mockReturnValueOnce({
-        baseUrl: 'https://sandbox.cashfree.com/verification',
+        environment: 'production',
+        baseUrl: 'https://api.cashfree.com/verification',
         clientId: 'my-client-id',
         clientSecret: secret,
         redirectUrl: 'https://example.com',

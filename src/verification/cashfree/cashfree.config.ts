@@ -1,12 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-export const CASHFREE_SANDBOX_BASE_URL =
-  'https://sandbox.cashfree.com/verification';
+/** Cashfree Verification API — production only. */
 export const CASHFREE_PRODUCTION_BASE_URL =
   'https://api.cashfree.com/verification';
 
 export interface CashfreeDigiLockerConfig {
+  environment: 'production';
   baseUrl: string;
   clientId: string;
   clientSecret: string;
@@ -16,21 +16,13 @@ export interface CashfreeDigiLockerConfig {
 
 @Injectable()
 export class CashfreeConfigService {
+  private readonly logger = new Logger(CashfreeConfigService.name);
+  private loggedEnvironment = false;
+
   constructor(private readonly configService: ConfigService) {}
 
   getConfig(): CashfreeDigiLockerConfig {
-    const env = (
-      this.configService.get<string>('CASHFREE_VERIFICATION_ENV') ??
-      process.env.CASHFREE_VERIFICATION_ENV ??
-      'sandbox'
-    )
-      .trim()
-      .toLowerCase();
-
-    const baseUrl =
-      env === 'production'
-        ? CASHFREE_PRODUCTION_BASE_URL
-        : CASHFREE_SANDBOX_BASE_URL;
+    const baseUrl = CASHFREE_PRODUCTION_BASE_URL;
 
     const clientId = (
       this.configService.get<string>('CASHFREE_CLIENT_ID') ||
@@ -50,7 +42,18 @@ export class CashfreeConfigService {
       'https://bhaiway-backend.onrender.com/api/kyc/aadhaar/digilocker/callback'
     ).trim();
 
+    if (!this.loggedEnvironment) {
+      this.loggedEnvironment = true;
+      this.logger.log(
+        '[CashfreeConfig] Using Cashfree verification environment: production',
+      );
+      this.logger.log(
+        `[CashfreeConfig] DigiLocker endpoint: ${baseUrl}/digilocker`,
+      );
+    }
+
     return {
+      environment: 'production',
       baseUrl,
       clientId,
       clientSecret,

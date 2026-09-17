@@ -63,7 +63,6 @@ describe('Cashfree DigiLocker KYC (integration & unit)', () => {
   beforeAll(async () => {
     process.env.CASHFREE_CLIENT_SECRET = TEST_CLIENT_SECRET;
     process.env.CASHFREE_CLIENT_ID = 'cf_test_client_id';
-    process.env.CASHFREE_VERIFICATION_ENV = 'sandbox';
 
     assertSafeTestDatabaseUrl(process.env.DATABASE_URL);
 
@@ -203,7 +202,7 @@ describe('Cashfree DigiLocker KYC (integration & unit)', () => {
         .mockResolvedValueOnce({
           verificationId: 'cf_ver_123',
           referenceId: 'ref_98765',
-          url: 'https://sandbox.cashfree.com/verification/digilocker/test-token',
+          url: 'https://api.cashfree.com/verification/digilocker/test-token',
           status: 'PENDING',
           documentRequested: ['AADHAAR'],
         });
@@ -217,7 +216,7 @@ describe('Cashfree DigiLocker KYC (integration & unit)', () => {
       expect(res.body.referenceId).toBe('ref_98765');
       expect(res.body.status).toBe('PENDING');
       expect(res.body.url).toBe(
-        'https://sandbox.cashfree.com/verification/digilocker/test-token',
+        'https://api.cashfree.com/verification/digilocker/test-token',
       );
       expect(res.body.expiresAt).toBeTruthy();
       expect(res.body).not.toHaveProperty('clientSecret');
@@ -241,7 +240,7 @@ describe('Cashfree DigiLocker KYC (integration & unit)', () => {
         .mockResolvedValueOnce({
           verificationId: 'cf_ver_active_1',
           referenceId: 'ref_active_1',
-          url: 'https://sandbox.cashfree.com/verification/digilocker/active-url',
+          url: 'https://api.cashfree.com/verification/digilocker/active-url',
           status: 'PENDING',
         });
 
