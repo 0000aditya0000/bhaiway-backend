@@ -53,7 +53,7 @@ export class UsersController {
     return this.usersService.createProfile(currentUser.userId, body);
   }
 
-  @Patch('profile')
+  @Patch(['profile', 'me/profile'])
   @ApiOperation({ summary: 'Update user profile (partial)' })
   @ApiOkResponse({ type: ProfileResponseDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
