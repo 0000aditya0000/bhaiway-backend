@@ -117,3 +117,38 @@ export class CashfreeRateLimitError extends HttpException {
   }
 }
 
+export interface CashfreeSafeErrorDetails {
+  code: string;
+  message: string;
+  requestId: string;
+}
+
+/**
+ * Extract non-sensitive Cashfree API error fields for logging.
+ * Never include secrets, signatures, Aadhaar, or RC PII.
+ */
+export function extractCashfreeSafeErrorDetails(
+  data: unknown,
+): CashfreeSafeErrorDetails {
+  const record =
+    data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
+
+  const code = String(record.code ?? record.subCode ?? record.error ?? '').trim();
+  const message = String(
+    record.message ?? record.description ?? '',
+  ).trim();
+  const requestId = String(
+    record.request_id ??
+      record.requestId ??
+      record.reference_id ??
+      record.referenceId ??
+      '',
+  ).trim();
+
+  return {
+    code: code || 'n/a',
+    message: message || 'n/a',
+    requestId: requestId || 'n/a',
+  };
+}
+

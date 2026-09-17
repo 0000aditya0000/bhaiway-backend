@@ -5,10 +5,12 @@ import {
   Logger,
 } from '@nestjs/common';
 
+import { buildCashfreeVerificationHeaders } from './cashfree-cf-signature';
 import { CashfreeConfigService } from './cashfree.config';
 import {
   CashfreeApiError,
   CashfreeRateLimitError,
+  extractCashfreeSafeErrorDetails,
 } from './cashfree.errors';
 
 export interface CashfreeVerifyVehicleRcParams {
@@ -115,18 +117,7 @@ export class CashfreeVehicleRcService {
     }
 
     const url = `${config.baseUrl}/vehicle-rc`;
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      'x-client-id': config.clientId,
-      'x-client-secret': config.clientSecret,
-    };
-
-    const cfSignature = process.env.CASHFREE_CF_SIGNATURE?.trim();
-    if (cfSignature) {
-      headers['x-cf-signature'] = cfSignature;
-    }
+    const headers = buildCashfreeVerificationHeaders(config);
 
     const requestBody = {
       verification_id: params.verificationId,
@@ -173,8 +164,10 @@ export class CashfreeVehicleRcService {
     data: any,
     verificationId: string,
   ): never {
-    const errorCode = data?.code || data?.subCode || data?.error || '';
-    const message = data?.message || data?.description || 'Cashfree verification error';
+    const safe = extractCashfreeSafeErrorDetails(data);
+    const errorCode = safe.code === 'n/a' ? '' : safe.code;
+    const message =
+      safe.message === 'n/a' ? 'Cashfree verification error' : safe.message;
 
     // 400 Bad Request
     if (statusCode === 400) {
@@ -192,12 +185,12 @@ export class CashfreeVehicleRcService {
       throw new CashfreeApiError('Cashfree authentication failed');
     }
 
-    // 403 Forbidden
+    // 403 Forbidden — typically missing/expired x-cf-signature (Public Key 2FA)
     if (statusCode === 403) {
       this.logger.error(
-        `Cashfree 403 Forbidden: code=${errorCode}. IP whitelist or 2FA validation failed.`,
+        `Cashfree HTTP 403: endpoint=/verification/vehicle-rc code=${safe.code} message=${safe.message} requestId=${safe.requestId}`,
       );
-      throw new CashfreeApiError('Cashfree access forbidden (IP whitelist / 2FA)');
+      throw new CashfreeApiError('Cashfree access forbidden (Public Key 2FA / signature)');
     }
 
     // 409 Conflict (Duplicate verification_id)

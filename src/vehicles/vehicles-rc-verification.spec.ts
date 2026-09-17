@@ -221,6 +221,7 @@ describe('Cashfree Vehicle RC Verification', () => {
         baseUrl: 'https://api.cashfree.com/verification',
         clientId: 'mock-client-id',
         clientSecret: 'mock-client-secret',
+        publicKey: null,
         redirectUrl: 'https://example.com/callback',
         timeoutMs: 5000,
       });
@@ -282,6 +283,7 @@ describe('Cashfree Vehicle RC Verification', () => {
         baseUrl: 'https://api.cashfree.com/verification',
         clientId: 'prod-client-id',
         clientSecret: 'prod-client-secret',
+        publicKey: null,
         redirectUrl: 'https://example.com/callback',
         timeoutMs: 5000,
       });
@@ -301,6 +303,39 @@ describe('Cashfree Vehicle RC Verification', () => {
           }),
         }),
       );
+    });
+
+    it('4b. Sandbox vehicle-rc omits x-cf-signature', async () => {
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: 'VALID',
+          verification_id: 'test_sb_1',
+          reg_no: 'DL01AB1234',
+        }),
+      } as any);
+
+      jest.spyOn(cashfreeConfigService, 'getConfig').mockReturnValueOnce({
+        environment: 'sandbox',
+        baseUrl: 'https://sandbox.cashfree.com/verification',
+        clientId: 'sb-client-id',
+        clientSecret: 'sb-client-secret',
+        publicKey: null,
+        redirectUrl: 'https://example.com/callback',
+        timeoutMs: 5000,
+      });
+
+      await cashfreeRcService.verifyVehicleRc({
+        verificationId: 'test_sb_1',
+        vehicleNumber: 'DL01AB1234',
+      });
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://sandbox.cashfree.com/verification/vehicle-rc',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      const headers = (fetchSpy.mock.calls[0][1] as any).headers;
+      expect(headers['x-cf-signature']).toBeUndefined();
     });
 
     it('5. Maps Cashfree 400 Bad Request', async () => {
@@ -452,6 +487,7 @@ describe('Cashfree Vehicle RC Verification', () => {
         baseUrl: 'https://api.cashfree.com/verification',
         clientId: 'my-client-id',
         clientSecret: secret,
+        publicKey: null,
         redirectUrl: 'https://example.com',
         timeoutMs: 5000,
       });
