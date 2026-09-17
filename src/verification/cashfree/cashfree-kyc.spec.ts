@@ -677,6 +677,30 @@ describe('Cashfree DigiLocker KYC (integration & unit)', () => {
       expect(profile.gender).toBe(Gender.FEMALE);
     });
 
+    it('GET /api/kyc/webhooks/cashfree/digilocker responds with 200 OK health check without JWT', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/kyc/webhooks/cashfree/digilocker')
+        .expect(200);
+
+      expect(res.body.status).toBe('ok');
+      expect(res.body.endpoint).toBe('Cashfree DigiLocker Webhook');
+    });
+
+    it('accepts valid HMAC signature with x-cf-signature and x-cf-timestamp header aliases without JWT', async () => {
+      const payload = { type: 'DIGILOCKER_VERIFICATION_FAILURE', data: { verification_id: 'non_existent_fail' } };
+      const rawBody = Buffer.from(JSON.stringify(payload));
+      const timestamp = String(Date.now());
+      const signature = generateValidSignature(rawBody, timestamp);
+
+      await request(app.getHttpServer())
+        .post('/api/kyc/webhooks/cashfree/digilocker')
+        .set('x-cf-signature', signature)
+        .set('x-cf-timestamp', timestamp)
+        .set('Content-Type', 'application/json')
+        .send(JSON.stringify(payload))
+        .expect(200);
+    });
+
     it('rejects invalid signature with 401 Unauthorized', async () => {
       const payload = { type: 'DIGILOCKER_VERIFICATION_SUCCESS' };
       const res = await postWebhook(

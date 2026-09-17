@@ -288,10 +288,23 @@ export class CashfreeKycService {
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
   ): Promise<{ received: boolean; status?: string }> {
-    const signature = this.getHeaderString(headers, 'x-webhook-signature');
-    const timestamp = this.getHeaderString(headers, 'x-webhook-timestamp');
+    const signature =
+      this.getHeaderString(headers, 'x-webhook-signature') ||
+      this.getHeaderString(headers, 'x-cf-signature') ||
+      this.getHeaderString(headers, 'x-cashfree-signature') ||
+      this.getHeaderString(headers, 'signature');
+
+    const timestamp =
+      this.getHeaderString(headers, 'x-webhook-timestamp') ||
+      this.getHeaderString(headers, 'x-cf-timestamp') ||
+      this.getHeaderString(headers, 'x-cashfree-timestamp') ||
+      this.getHeaderString(headers, 'timestamp');
 
     if (!signature || !timestamp) {
+      const headerKeys = Object.keys(headers || {});
+      this.logger.warn(
+        `Missing Cashfree webhook signature or timestamp headers. Present headers: [${headerKeys.join(', ')}]`,
+      );
       throw new CashfreeWebhookSignatureError('Missing webhook signature or timestamp headers');
     }
 

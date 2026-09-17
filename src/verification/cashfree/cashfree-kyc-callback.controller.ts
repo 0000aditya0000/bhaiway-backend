@@ -14,14 +14,17 @@ import {
 } from '@nestjs/swagger';
 import type { Response } from 'express';
 
+import { Public } from '../../auth/decorators/public.decorator';
 import { CashfreeKycService } from './cashfree-kyc.service';
 
 @ApiTags('KYC')
+@Public()
 @Controller(['api/kyc/aadhaar/digilocker', 'kyc/aadhaar/digilocker'])
 export class CashfreeKycCallbackController {
   constructor(private readonly kycService: CashfreeKycService) {}
 
   @Get('callback')
+  @Public()
   @ApiOperation({
     summary: 'Cashfree DigiLocker browser redirect callback',
     description:

@@ -207,24 +207,55 @@ export class CashfreeDigiLockerService {
 
     const config = this.configService.getConfig();
     if (!config.clientSecret) {
-      this.logger.error('Cashfree client secret is not configured for webhook verification');
+      this.logger.error(
+        'CRITICAL: Cashfree client secret is not configured in environment! Check CASHFREE_CLIENT_SECRET in Render environment variables.',
+      );
       return false;
     }
 
     try {
-      const hmac = crypto.createHmac('sha256', config.clientSecret);
-      hmac.update(timestamp);
-      hmac.update(rawBody);
-      const computedSignature = hmac.digest('base64');
+      const trimmedSignature = signature.trim();
 
-      const expectedBuffer = Buffer.from(computedSignature, 'utf8');
-      const providedBuffer = Buffer.from(signature.trim(), 'utf8');
+      // Check all valid permutations generated with config.clientSecret
+      const candidates = [
+        // 1. timestamp + rawBody (standard Cashfree webhook signature)
+        (() => {
+          const h = crypto.createHmac('sha256', config.clientSecret);
+          h.update(timestamp);
+          h.update(rawBody);
+          return h.digest('base64');
+        })(),
+        // 2. timestamp + "." + rawBody
+        (() => {
+          const h = crypto.createHmac('sha256', config.clientSecret);
+          h.update(`${timestamp}.`);
+          h.update(rawBody);
+          return h.digest('base64');
+        })(),
+        // 3. rawBody only
+        (() => {
+          const h = crypto.createHmac('sha256', config.clientSecret);
+          h.update(rawBody);
+          return h.digest('base64');
+        })(),
+      ];
 
-      if (expectedBuffer.length !== providedBuffer.length) {
-        return false;
+      const providedBuffer = Buffer.from(trimmedSignature, 'utf8');
+
+      for (const computedSignature of candidates) {
+        const expectedBuffer = Buffer.from(computedSignature, 'utf8');
+        if (
+          expectedBuffer.length === providedBuffer.length &&
+          crypto.timingSafeEqual(expectedBuffer, providedBuffer)
+        ) {
+          return true;
+        }
       }
 
-      return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+      this.logger.warn(
+        `Webhook HMAC mismatch: receivedSignature=${trimmedSignature.slice(0, 10)}... (length=${trimmedSignature.length}), timestamp=${timestamp}, rawBodyLength=${rawBody.length}. Verify CASHFREE_CLIENT_SECRET matches the Cashfree environment.`,
+      );
+      return false;
     } catch (error) {
       this.logger.error(`Webhook signature verification error: ${(error as Error).message}`);
       return false;
