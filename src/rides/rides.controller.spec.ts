@@ -9,6 +9,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
+import { Gender, UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import {
   VerificationStatus,
@@ -26,7 +27,9 @@ import { VehiclesModule } from '../vehicles/vehicles.module';
 import { VehiclesService } from '../vehicles/vehicles.service';
 import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
+import { WalletPointSource } from '../wallet/entities/wallet-point-lot.entity';
 import { WalletModule } from '../wallet/wallet.module';
+import { WalletService } from '../wallet/wallet.service';
 import {
   assertSafeTestDatabaseUrl,
   cleanupTestWallet,
@@ -43,6 +46,7 @@ describe('RidesController (integration)', () => {
   let authService: AuthService;
   let verificationService: VerificationService;
   let vehiclesService: VehiclesService;
+  let walletService: WalletService;
   const tracked: TestWalletContext[] = [];
 
   beforeAll(async () => {
@@ -90,6 +94,7 @@ describe('RidesController (integration)', () => {
     authService = moduleRef.get(AuthService);
     verificationService = moduleRef.get(VerificationService);
     vehiclesService = moduleRef.get(VehiclesService);
+    walletService = moduleRef.get(WalletService);
   });
 
   afterEach(async () => {
@@ -207,10 +212,11 @@ describe('RidesController (integration)', () => {
       .expect(403);
   });
 
-  it('user without verified DL cannot publish', async () => {
+  it('user without verified DL can publish when identity and vehicle are verified', async () => {
     const login = await createAuthenticatedUser();
     const vehicle = await createVehicleForUser(login.user.id);
     await markVerified(login.user.id, VerificationType.IDENTITY);
+    await markVerified(login.user.id, VerificationType.VEHICLE);
     await rejectVerification(
       verificationService,
       dataSource,
@@ -222,7 +228,7 @@ describe('RidesController (integration)', () => {
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
       .send(ridePayload(vehicle.id))
-      .expect(403);
+      .expect(201);
   });
 
   it('user without verified vehicle cannot publish', async () => {
@@ -580,5 +586,169 @@ describe('RidesController (integration)', () => {
       id: created.body.id,
     });
     expect(row.vehicleId).toBe(second.id);
+  });
+
+  describe('BhaiWay Publishing Verification Rule (Identity + Vehicle RC required, DL optional)', () => {
+    it('1. Regular ride: Identity VERIFIED + RC VERIFIED + active vehicle + DL NOT VERIFIED is allowed (201)', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createVehicleForUser(login.user.id);
+      await markVerified(login.user.id, VerificationType.IDENTITY);
+      await markVerified(login.user.id, VerificationType.VEHICLE);
+
+      const res = await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send(ridePayload(vehicle.id, { rideType: RideType.REGULAR }))
+        .expect(201);
+
+      expect(res.body.rideType).toBe(RideType.REGULAR);
+    });
+
+    it('2. Assured ride: Identity VERIFIED + RC VERIFIED + active vehicle + DL NOT VERIFIED is allowed (201)', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createVehicleForUser(login.user.id);
+      await markVerified(login.user.id, VerificationType.IDENTITY);
+      await markVerified(login.user.id, VerificationType.VEHICLE);
+
+      const wallet = await dataSource
+        .getRepository(Wallet)
+        .findOneByOrFail({ userId: login.user.id });
+      await walletService.creditPoints({
+        walletId: wallet.id,
+        userId: login.user.id,
+        amount: 5000n,
+        sourceType: WalletPointSource.PURCHASED,
+        idempotencyKey: `assured-credit-${login.user.id}-${Date.now()}`,
+      });
+
+      const res = await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send(
+          ridePayload(vehicle.id, {
+            rideType: RideType.ASSURED,
+            sourceLatitude: 28.5355,
+            sourceLongitude: 77.391,
+            destinationLatitude: 28.6139,
+            destinationLongitude: 77.209,
+          }),
+        )
+        .expect(201);
+
+      expect(res.body.rideType).toBe(RideType.ASSURED);
+    });
+
+    it('3. Daily Office Commute: Identity VERIFIED + RC VERIFIED + active vehicle + DL NOT VERIFIED is allowed (201)', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createVehicleForUser(login.user.id);
+      await markVerified(login.user.id, VerificationType.IDENTITY);
+      await markVerified(login.user.id, VerificationType.VEHICLE);
+
+      const res = await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send(ridePayload(vehicle.id, { rideType: RideType.COMMUTE }))
+        .expect(201);
+
+      expect(res.body.rideType).toBe(RideType.COMMUTE);
+    });
+
+    it('4. Women-only ride: Identity VERIFIED + RC VERIFIED + active vehicle + DL NOT VERIFIED is allowed for female driver (201)', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createVehicleForUser(login.user.id);
+      await markVerified(login.user.id, VerificationType.IDENTITY);
+      await markVerified(login.user.id, VerificationType.VEHICLE);
+
+      // Set female gender on profile
+      const profileRepo = dataSource.getRepository(UserProfile);
+      let profile = await profileRepo.findOne({
+        where: { userId: login.user.id },
+      });
+      if (!profile) {
+        profile = profileRepo.create({
+          userId: login.user.id,
+          firstName: 'Priya',
+          gender: Gender.FEMALE,
+        });
+      } else {
+        profile.gender = Gender.FEMALE;
+      }
+      await profileRepo.save(profile);
+
+      const res = await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send(
+          ridePayload(vehicle.id, {
+            rideType: RideType.REGULAR,
+            womenOnly: true,
+          }),
+        )
+        .expect(201);
+
+      expect(res.body.womenOnly).toBe(true);
+    });
+
+    it('5. Identity VERIFIED + RC NOT VERIFIED is rejected (403)', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createVehicleForUser(login.user.id);
+      await markVerified(login.user.id, VerificationType.IDENTITY);
+      // Explicitly reject Vehicle RC
+      await rejectVerification(
+        verificationService,
+        dataSource,
+        login.user.id,
+        VerificationType.VEHICLE,
+      );
+
+      await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send(ridePayload(vehicle.id))
+        .expect(403);
+    });
+
+    it('6. Identity NOT VERIFIED + RC VERIFIED is rejected (403)', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createVehicleForUser(login.user.id);
+      await markVerified(login.user.id, VerificationType.VEHICLE);
+      // Identity is not verified
+
+      await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send(ridePayload(vehicle.id))
+        .expect(403);
+    });
+
+    it('7. Identity VERIFIED + RC VERIFIED + vehicle inactive is rejected (403)', async () => {
+      const login = await createAuthenticatedUser();
+      await createVehicleForUser(login.user.id);
+      const vehicle2 = await createVehicleForUser(login.user.id); // inactive by default
+      expect(vehicle2.isActive).toBe(false);
+
+      await markVerified(login.user.id, VerificationType.IDENTITY);
+      await markVerified(login.user.id, VerificationType.VEHICLE);
+
+      await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send(ridePayload(vehicle2.id))
+        .expect(403);
+    });
+
+    it('8. Identity VERIFIED + RC VERIFIED + DL VERIFIED is allowed (201)', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createVehicleForUser(login.user.id);
+      await markVerified(login.user.id, VerificationType.IDENTITY);
+      await markVerified(login.user.id, VerificationType.DRIVING_LICENSE);
+      await markVerified(login.user.id, VerificationType.VEHICLE);
+
+      await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send(ridePayload(vehicle.id))
+        .expect(201);
+    });
   });
 });

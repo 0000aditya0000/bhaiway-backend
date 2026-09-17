@@ -3,8 +3,11 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   NotFoundException,
   UnauthorizedException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 
 export class CashfreeApiError extends BadGatewayException {
@@ -72,3 +75,45 @@ export class KycForbiddenError extends ForbiddenException {
     });
   }
 }
+
+export class VehicleRcInvalidError extends UnprocessableEntityException {
+  constructor(
+    message = 'Vehicle RC verification failed',
+    code = 'VEHICLE_RC_INVALID',
+    details?: Record<string, any>,
+  ) {
+    super({
+      statusCode: 422,
+      code,
+      message,
+      error: 'Unprocessable Entity',
+      ...(details ? { details } : {}),
+    });
+  }
+}
+
+export class VehicleRcForbiddenError extends ForbiddenException {
+  constructor(message = 'You do not have permission to verify this vehicle') {
+    super({
+      statusCode: 403,
+      code: 'VEHICLE_ACCESS_DENIED',
+      message,
+      error: 'Forbidden',
+    });
+  }
+}
+
+export class CashfreeRateLimitError extends HttpException {
+  constructor(message = 'Upstream Cashfree rate limit exceeded') {
+    super(
+      {
+        statusCode: HttpStatus.TOO_MANY_REQUESTS,
+        code: 'CASHFREE_RATE_LIMIT',
+        message,
+        error: 'Too Many Requests',
+      },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+}
+

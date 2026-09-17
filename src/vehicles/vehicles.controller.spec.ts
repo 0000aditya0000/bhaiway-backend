@@ -562,13 +562,12 @@ describe('VehiclesController (integration)', () => {
     expect(result.missing).toEqual(
       expect.arrayContaining([
         VerificationType.IDENTITY,
-        VerificationType.DRIVING_LICENSE,
         VerificationType.VEHICLE,
       ]),
     );
+    expect(result.missing).not.toContain(VerificationType.DRIVING_LICENSE);
 
     await markVerified(login.user.id, VerificationType.IDENTITY);
-    await markVerified(login.user.id, VerificationType.DRIVING_LICENSE);
     await markVerified(login.user.id, VerificationType.VEHICLE);
 
     result = await verificationService.canPublishRide(

@@ -15,6 +15,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -28,6 +30,8 @@ import type { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 import { VehicleResponseDto } from './dto/vehicle-response.dto';
+import { VehicleRcResponseDto } from './dto/vehicle-rc-response.dto';
+import { VerifyVehicleRcDto } from './dto/verify-vehicle-rc.dto';
 import { VehiclesService } from './vehicles.service';
 
 @ApiTags('Vehicles')
@@ -127,5 +131,27 @@ export class VehiclesController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.vehiclesService.setActiveVehicle(currentUser.userId, id);
+  }
+
+  @Post(':id/verify-rc')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Verify vehicle RC via Cashfree',
+    description:
+      'Initiates server-side Cashfree RC verification for an owned vehicle. ' +
+      'Returns 200 on VALID RC and marks vehicle verified; returns 422 if RC is INVALID.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOkResponse({ type: VehicleRcResponseDto })
+  @ApiBadRequestResponse({
+    description: 'Invalid vehicle number format or request data',
+  })
+  @ApiNotFoundResponse({ description: 'Vehicle not found' })
+  verifyRc(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body?: VerifyVehicleRcDto,
+  ) {
+    return this.vehiclesService.verifyRc(currentUser.userId, id, body);
   }
 }

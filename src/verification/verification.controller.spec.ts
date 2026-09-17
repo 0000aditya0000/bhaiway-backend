@@ -344,18 +344,41 @@ describe('VerificationModule (integration)', () => {
       .send({ documentType: 'IDENTITY_SCAN' })
       .expect(201);
 
-    const dlRecord = await currentRecord(
+    const vehicleRecord = await currentRecord(
       login.user.id,
-      VerificationType.DRIVING_LICENSE,
+      VerificationType.VEHICLE,
     );
-    await verificationService.applyTrustedVerificationDecision(dlRecord.id, {
+    await verificationService.applyTrustedVerificationDecision(vehicleRecord.id, {
       status: VerificationStatus.REJECTED,
       rejectionReason: 'Manual test rejection',
     });
 
     const result = await verificationService.canPublishRide(login.user.id);
     expect(result.allowed).toBe(false);
-    expect(result.missing).toContain(VerificationType.DRIVING_LICENSE);
+    expect(result.missing).toContain(VerificationType.VEHICLE);
+  });
+
+  it('canPublishRide() succeeds even when DL verification is rejected/missing', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/verification/identity')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ documentType: 'IDENTITY_SCAN' })
+      .expect(201);
+
+    const dlRecord = await currentRecord(
+      login.user.id,
+      VerificationType.DRIVING_LICENSE,
+    );
+    await verificationService.applyTrustedVerificationDecision(dlRecord.id, {
+      status: VerificationStatus.REJECTED,
+      rejectionReason: 'DL rejected',
+    });
+
+    const result = await verificationService.canPublishRide(login.user.id);
+    expect(result.allowed).toBe(true);
+    expect(result.missing).toEqual([]);
   });
 
   it('cannot submit using another userId from the body', async () => {
@@ -547,7 +570,6 @@ describe('VerificationModule (integration)', () => {
     expect(result.allowed).toBe(false);
     expect(result.missing).toEqual([
       VerificationType.IDENTITY,
-      VerificationType.DRIVING_LICENSE,
       VerificationType.VEHICLE,
     ]);
     expect(result.vehicleEligible).toBeNull();

@@ -160,9 +160,10 @@ export class VerificationService {
   }
 
   /**
-   * Publishers require identity, driving license, and vehicle verification.
+   * Publishers require identity and vehicle verification.
    * When vehicleId is provided, the selected vehicle must also belong to the
    * user, be active, and not be soft-deleted.
+   * Driving license verification is optional and does NOT block publishing.
    */
   async canPublishRide(
     userId: string,
@@ -172,7 +173,6 @@ export class VerificationService {
 
     const required = [
       VerificationType.IDENTITY,
-      VerificationType.DRIVING_LICENSE,
       VerificationType.VEHICLE,
     ];
 

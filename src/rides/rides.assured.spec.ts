@@ -112,6 +112,10 @@ describe('Assured Ride Phase 1 (integration)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
+        await dataSource.query(
+          `DELETE FROM chat_conversations WHERE booking_id IN (SELECT id FROM bookings WHERE passenger_id = $1)`,
+          [ctx.userId],
+        );
         await dataSource.getRepository(Booking).delete({
           passengerId: ctx.userId,
         });
@@ -119,6 +123,10 @@ describe('Assured Ride Phase 1 (integration)', () => {
           where: { driverId: ctx.userId },
         });
         for (const ride of rides) {
+          await dataSource.query(
+            `DELETE FROM chat_conversations WHERE booking_id IN (SELECT id FROM bookings WHERE ride_id = $1)`,
+            [ride.id],
+          );
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
         }
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
@@ -323,12 +331,25 @@ describe('Assured Ride Phase 1 (integration)', () => {
       const noDl = await createAuthenticatedUser();
       const vehicleC = await createVehicle(noDl.login.user.id);
       await markVerified(noDl.login.user.id, VerificationType.IDENTITY);
+      await markVerified(noDl.login.user.id, VerificationType.VEHICLE);
       await rejectVerification(
         verificationService,
         dataSource,
         noDl.login.user.id,
         VerificationType.DRIVING_LICENSE,
       );
+      await walletService.creditPoints({
+        walletId: noDl.wallet.id,
+        userId: noDl.login.user.id,
+        amount: 5000n,
+        sourceType: WalletPointSource.PURCHASED,
+        idempotencyKey: uniqueIdempotencyKey('nodl-fund'),
+      });
+      await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${noDl.login.accessToken}`)
+        .send(assuredPayload(vehicleC.id))
+        .expect(201);
 
       const noVehicle = await createAuthenticatedUser();
       const vehicleD = await createVehicle(noVehicle.login.user.id);
@@ -339,12 +360,6 @@ describe('Assured Ride Phase 1 (integration)', () => {
         noVehicle.login.user.id,
         VerificationType.VEHICLE,
       );
-      await request(app.getHttpServer())
-        .post('/rides')
-        .set('Authorization', `Bearer ${noDl.login.accessToken}`)
-        .send(assuredPayload(vehicleC.id))
-        .expect(403);
-
       await request(app.getHttpServer())
         .post('/rides')
         .set('Authorization', `Bearer ${noVehicle.login.accessToken}`)

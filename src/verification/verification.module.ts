@@ -8,8 +8,10 @@ import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { CashfreeWebhookEvent } from './entities/cashfree-webhook-event.entity';
 import { UserIdentityVerification } from './entities/user-identity-verification.entity';
 import { UserVerification } from './entities/user-verification.entity';
+import { VehicleRcVerification } from './entities/vehicle-rc-verification.entity';
 import { CashfreeConfigService } from './cashfree/cashfree.config';
 import { CashfreeDigiLockerService } from './cashfree/cashfree-digilocker.service';
+import { CashfreeVehicleRcService } from './cashfree/cashfree-vehicle-rc.service';
 import { CashfreeKycService } from './cashfree/cashfree-kyc.service';
 import { CashfreeKycController } from './cashfree/cashfree-kyc.controller';
 import { CashfreeKycCallbackController } from './cashfree/cashfree-kyc-callback.controller';
@@ -28,6 +30,7 @@ import { VerificationService } from './verification.service';
       UserIdentityVerification,
       CashfreeWebhookEvent,
       Vehicle,
+      VehicleRcVerification,
     ]),
     AuthModule,
   ],
@@ -41,6 +44,7 @@ import { VerificationService } from './verification.service';
     VerificationService,
     CashfreeConfigService,
     CashfreeDigiLockerService,
+    CashfreeVehicleRcService,
     CashfreeKycService,
     StubVerificationProvider,
     {
@@ -52,6 +56,7 @@ import { VerificationService } from './verification.service';
     TypeOrmModule,
     VerificationService,
     CashfreeDigiLockerService,
+    CashfreeVehicleRcService,
     CashfreeKycService,
   ],
 })
