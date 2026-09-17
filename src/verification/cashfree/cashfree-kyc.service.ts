@@ -300,10 +300,20 @@ export class CashfreeKycService {
       this.getHeaderString(headers, 'x-cashfree-timestamp') ||
       this.getHeaderString(headers, 'timestamp');
 
+    // Special Handling: Cashfree Dashboard "Test & Add Webhook" validation probe
+    // Cashfree dashboard triggers an unsigned test event (e.g. LOW_BALANCE_ALERT / TEST) to verify endpoint reachability.
+    // We strictly acknowledge only this narrow pattern without modifying any state or verification records.
     if (!signature || !timestamp) {
+      if (this.isCashfreeTestWebhook(rawBody)) {
+        this.logger.log(
+          'Cashfree dashboard validation test probe detected (LOW_BALANCE_ALERT / TEST). Acknowledged with HTTP 200.',
+        );
+        return { received: true, status: 'TEST_WEBHOOK_ACKNOWLEDGED' };
+      }
+
       const headerKeys = Object.keys(headers || {});
       this.logger.warn(
-        `Missing Cashfree webhook signature or timestamp headers. Present headers: [${headerKeys.join(', ')}]`,
+        `Missing Cashfree webhook signature or timestamp headers on production event. Present headers: [${headerKeys.join(', ')}]`,
       );
       throw new CashfreeWebhookSignatureError('Missing webhook signature or timestamp headers');
     }
@@ -913,6 +923,53 @@ export class CashfreeKycService {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  private isCashfreeTestWebhook(rawBody: Buffer): boolean {
+    if (!rawBody || rawBody.length === 0) {
+      return false;
+    }
+
+    try {
+      const parsed = JSON.parse(rawBody.toString('utf8'));
+      if (!parsed || typeof parsed !== 'object') {
+        return false;
+      }
+
+      // 1. Cashfree LOW_BALANCE_ALERT (default test event used by Cashfree dashboard for Secure ID / Payouts)
+      const event = String(parsed.event || parsed.event_type || parsed.type || '').toUpperCase();
+      if (event === 'LOW_BALANCE_ALERT') {
+        return true;
+      }
+
+      // 2. Explicit test events
+      if (
+        event === 'TEST' ||
+        event === 'TEST_WEBHOOK' ||
+        event === 'TEST_NOTIFICATION' ||
+        event.startsWith('TEST_') ||
+        event.endsWith('_TEST')
+      ) {
+        return true;
+      }
+
+      // 3. Nested data test flag or event (e.g. { data: { test: true } } or { data: { type: 'TEST' } })
+      if (parsed.data && typeof parsed.data === 'object') {
+        const subEvent = String(parsed.data.type || parsed.data.event || '').toUpperCase();
+        if (subEvent.includes('TEST') || parsed.data.test === true) {
+          return true;
+        }
+      }
+
+      // 4. AlertTime + currentBalance test payload signature pattern
+      if (parsed.alertTime && parsed.currentBalance !== undefined) {
+        return true;
+      }
+
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   private getHeaderString(

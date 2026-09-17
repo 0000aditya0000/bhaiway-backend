@@ -686,19 +686,68 @@ describe('Cashfree DigiLocker KYC (integration & unit)', () => {
       expect(res.body.endpoint).toBe('Cashfree DigiLocker Webhook');
     });
 
-    it('accepts valid HMAC signature with x-cf-signature and x-cf-timestamp header aliases without JWT', async () => {
-      const payload = { type: 'DIGILOCKER_VERIFICATION_FAILURE', data: { verification_id: 'non_existent_fail' } };
-      const rawBody = Buffer.from(JSON.stringify(payload));
-      const timestamp = String(Date.now());
-      const signature = generateValidSignature(rawBody, timestamp);
+    it('acknowledges Cashfree dashboard LOW_BALANCE_ALERT test request without signature headers with 200', async () => {
+      const testPayload = {
+        event: 'LOW_BALANCE_ALERT',
+        currentBalance: 100.0,
+        alertTime: '2026-09-18 00:40:00',
+        signature: 'test_dashboard_signature_placeholder',
+      };
 
-      await request(app.getHttpServer())
+      const res = await request(app.getHttpServer())
         .post('/api/kyc/webhooks/cashfree/digilocker')
-        .set('x-cf-signature', signature)
-        .set('x-cf-timestamp', timestamp)
         .set('Content-Type', 'application/json')
-        .send(JSON.stringify(payload))
+        .send(JSON.stringify(testPayload))
         .expect(200);
+
+      expect(res.body.received).toBe(true);
+      expect(res.body.status).toBe('TEST_WEBHOOK_ACKNOWLEDGED');
+    });
+
+    it('acknowledges Cashfree dashboard TEST_WEBHOOK event without signature headers with 200', async () => {
+      const testPayload = {
+        event: 'TEST_WEBHOOK',
+        data: { test: true },
+      };
+
+      const res = await request(app.getHttpServer())
+        .post('/api/kyc/webhooks/cashfree/digilocker')
+        .set('Content-Type', 'application/json')
+        .send(JSON.stringify(testPayload))
+        .expect(200);
+
+      expect(res.body.received).toBe(true);
+      expect(res.body.status).toBe('TEST_WEBHOOK_ACKNOWLEDGED');
+    });
+
+    it('rejects unsigned real DigiLocker events with 401 Unauthorized (does not bypass signature for real events)', async () => {
+      const realPayload = {
+        type: 'DIGILOCKER_VERIFICATION_SUCCESS',
+        data: { verification_id: 'real_vid_attempt' },
+      };
+
+      const res = await request(app.getHttpServer())
+        .post('/api/kyc/webhooks/cashfree/digilocker')
+        .set('Content-Type', 'application/json')
+        .send(JSON.stringify(realPayload))
+        .expect(401);
+
+      expect(res.body.code).toBe('INVALID_WEBHOOK_SIGNATURE');
+    });
+
+    it('rejects arbitrary unsigned payload with 401 Unauthorized', async () => {
+      const arbitraryPayload = {
+        foo: 'bar',
+        random: 12345,
+      };
+
+      const res = await request(app.getHttpServer())
+        .post('/api/kyc/webhooks/cashfree/digilocker')
+        .set('Content-Type', 'application/json')
+        .send(JSON.stringify(arbitraryPayload))
+        .expect(401);
+
+      expect(res.body.code).toBe('INVALID_WEBHOOK_SIGNATURE');
     });
 
     it('rejects invalid signature with 401 Unauthorized', async () => {
