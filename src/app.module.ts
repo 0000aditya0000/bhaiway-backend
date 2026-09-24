@@ -6,6 +6,7 @@ import { AuthModule } from './auth/auth.module';
 import { BookingsModule } from './bookings/bookings.module';
 import { ChatModule } from './chat/chat.module';
 import { DatabaseModule } from './database/database.module';
+import { EmailVerificationModule } from './email-verification/email-verification.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RatingsModule } from './ratings/ratings.module';
 import { RidesModule } from './rides/rides.module';
@@ -25,6 +26,7 @@ import { WalletModule } from './wallet/wallet.module';
     DatabaseModule,
     AuthModule,
     UsersModule,
+    EmailVerificationModule,
     WalletModule,
     SettingsModule,
     VerificationModule,

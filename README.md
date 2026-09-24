@@ -93,6 +93,10 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 - Website - [https://nestjs.com](https://nestjs.com/)
 - Twitter - [@nestframework](https://twitter.com/nestframework)
 
+## Email verification
+
+See [docs/email-verification.md](docs/email-verification.md) for SMTP environment variables, send/verify/status endpoints, OTP expiry, and rate limits.
+
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).

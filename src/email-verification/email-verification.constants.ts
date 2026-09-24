@@ -1,0 +1,9 @@
+export const EMAIL_OTP_LENGTH = 4;
+export const EMAIL_OTP_MIN = 1000;
+export const EMAIL_OTP_MAX_EXCLUSIVE = 10_000;
+export const EMAIL_OTP_TTL_MS = 10 * 60 * 1000;
+export const EMAIL_OTP_MAX_ATTEMPTS = 5;
+export const EMAIL_OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+export const EMAIL_OTP_MAX_SENDS_PER_HOUR = 5;
+export const EMAIL_OTP_SEND_WINDOW_MS = 60 * 60 * 1000;
+export const EMAIL_OTP_HASH_PREFIX = 'v1';
