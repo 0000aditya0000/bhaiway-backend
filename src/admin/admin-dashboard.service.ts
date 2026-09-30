@@ -146,7 +146,7 @@ export class AdminDashboardService {
 
   async getLiveMap(filter: AdminLiveMapFilter = AdminLiveMapFilter.ACTIVE) {
     if (filter === AdminLiveMapFilter.SOS) {
-      return { filter, items: [] };
+      return { filter, trackingAvailable: true, items: [] };
     }
 
     const qb = this.rideRepository
@@ -168,14 +168,14 @@ export class AdminDashboardService {
       .getMany();
 
     if (rides.length === 0) {
-      return { filter, items: [] };
+      return { filter, trackingAvailable: true, items: [] };
     }
 
     const rideIds = rides.map((r) => r.id);
     const driverIds = [...new Set(rides.map((r) => r.driverId))];
     const vehicleIds = [...new Set(rides.map((r) => r.vehicleId))];
 
-    const [locations, profiles, vehicles] = await Promise.all([
+    const [locationResult, profiles, vehicles] = await Promise.all([
       this.trackingService.getStoredLocationsForRides(rideIds),
       this.userProfileRepository.find({
         where: { userId: In(driverIds) },
@@ -185,6 +185,7 @@ export class AdminDashboardService {
       }),
     ]);
 
+    const locations = locationResult.locations;
     const profileByUser = new Map(profiles.map((p) => [p.userId, p]));
     const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
 
@@ -199,6 +200,13 @@ export class AdminDashboardService {
           .join(' ')
           .trim() ||
         null;
+
+      const hasLiveLocation = location != null;
+      const locationStatus = !locationResult.redisReady
+        ? 'TRACKING_UNAVAILABLE'
+        : hasLiveLocation
+          ? 'AVAILABLE'
+          : 'MISSING';
 
       return {
         rideId: ride.id,
@@ -216,11 +224,17 @@ export class AdminDashboardService {
         locationUpdatedAt: location?.updatedAt ?? null,
         heading: location?.heading ?? null,
         speed: location?.speed ?? null,
+        hasLiveLocation,
+        locationStatus,
         sosActive: false,
       };
     });
 
-    return { filter, items };
+    return {
+      filter,
+      trackingAvailable: locationResult.redisReady,
+      items,
+    };
   }
 
   async getRecentActivity(limit = 20, cursor?: string) {
