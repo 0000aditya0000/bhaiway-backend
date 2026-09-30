@@ -443,7 +443,8 @@ describe('Past ride history (integration)', () => {
     expect(detail.body.earnings.passengerTotal).toBe(sum.toString());
     expect(detail.body.earnings.total).toBe('300');
     expect(detail.body.ride.startedAt).toBeNull();
-    expect(detail.body.ride.completedAt).toBeNull();
+    expect(detail.body.ride.completedAt).toEqual(expect.any(String));
+    expect(Date.parse(detail.body.ride.completedAt)).not.toBeNaN();
     expect(detail.body.ride.durationMinutes).toBeNull();
     expect(JSON.stringify(detail.body)).not.toMatch(/INV-/);
 

@@ -371,6 +371,78 @@ export class TrackingService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Admin live-map: batch-read latest stored locations for IN_PROGRESS rides.
+   * Uses existing Redis keys only — no secondary location store.
+   * Returns an empty map when Redis is unavailable (does not throw).
+   */
+  async getStoredLocationsForRides(
+    rideIds: string[],
+  ): Promise<
+    Map<
+      string,
+      {
+        latitude: number;
+        longitude: number;
+        updatedAt: string;
+        heading?: number;
+        speed?: number;
+      }
+    >
+  > {
+    const result = new Map<
+      string,
+      {
+        latitude: number;
+        longitude: number;
+        updatedAt: string;
+        heading?: number;
+        speed?: number;
+      }
+    >();
+    if (rideIds.length === 0) {
+      return result;
+    }
+
+    try {
+      if (String(this.redis.status) !== 'ready') {
+        return result;
+      }
+      const keys = rideIds.map((id) => rideTrackingKey(id));
+      const values = await this.redis.mget(...keys);
+      for (let i = 0; i < rideIds.length; i += 1) {
+        const raw = values[i];
+        if (!raw) {
+          continue;
+        }
+        try {
+          const parsed = JSON.parse(raw) as StoredRideLocation;
+          if (
+            typeof parsed.latitude !== 'number' ||
+            typeof parsed.longitude !== 'number'
+          ) {
+            continue;
+          }
+          result.set(rideIds[i], {
+            latitude: parsed.latitude,
+            longitude: parsed.longitude,
+            updatedAt: parsed.updatedAt,
+            heading: parsed.heading,
+            speed: parsed.speed,
+          });
+        } catch {
+          // skip malformed payloads
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `[Tracking][admin] batch location read failed err=${safeRedisErrorMessage(error)}`,
+      );
+    }
+
+    return result;
+  }
+
   private async readStoredLocation(
     rideId: string,
   ): Promise<StoredRideLocation | null> {

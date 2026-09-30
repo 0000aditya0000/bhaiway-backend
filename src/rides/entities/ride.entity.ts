@@ -315,6 +315,13 @@ export class Ride {
   })
   cancelledByUserId!: string | null;
 
+  @Column({
+    name: 'completed_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  completedAt!: Date | null;
+
   /** Seats already paid via platform partial-fill (lifetime cap 2). */
   @Column({
     name: 'partial_fill_compensated_seats',

@@ -97,6 +97,10 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 
 See [docs/email-verification.md](docs/email-verification.md) for SMTP environment variables, send/verify/status endpoints, OTP expiry, and rate limits.
 
+## Admin dashboard
+
+See [docs/admin-dashboard.md](docs/admin-dashboard.md) for summary/live-map/activity endpoints, IST day metrics, platform revenue definition, and `ADMIN_DASHBOARD_VIEW` authorization.
+
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).

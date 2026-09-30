@@ -1913,6 +1913,7 @@ export class RidesService {
         }
 
         ride.status = RideStatus.COMPLETED;
+        ride.completedAt = new Date();
         await this.ratingsService.createRatingTasksInTransaction(manager, ride);
         await manager.getRepository(Ride).save(ride);
 
@@ -2506,7 +2507,7 @@ export class RidesService {
       departureDate: this.toCivilDate(ride.departureDate),
       departureTime: this.formatTime(ride.departureTime),
       startedAt: null,
-      completedAt: null,
+      completedAt: ride.completedAt?.toISOString() ?? null,
       cancelledAt: ride.cancelledAt?.toISOString() ?? null,
       durationMinutes: null,
       distanceKm: null,

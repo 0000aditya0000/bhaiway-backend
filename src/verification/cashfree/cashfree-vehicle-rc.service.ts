@@ -3,8 +3,14 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 
+import {
+  AdminAlertCategory,
+  AdminAlertSeverity,
+} from '../../admin/entities/admin-alert.entity';
+import { AdminAlertService } from '../../admin/admin-alert.service';
 import { buildCashfreeVerificationHeaders } from './cashfree-cf-signature';
 import { CashfreeConfigService } from './cashfree.config';
 import {
@@ -12,6 +18,8 @@ import {
   CashfreeRateLimitError,
   extractCashfreeSafeErrorDetails,
 } from './cashfree.errors';
+
+const RC_UNAVAILABLE_INCIDENT = 'cashfree:vehicle-rc:unavailable';
 
 export interface CashfreeVerifyVehicleRcParams {
   verificationId: string;
@@ -63,7 +71,10 @@ export interface CashfreeVehicleRcApiResponse {
 export class CashfreeVehicleRcService {
   private readonly logger = new Logger(CashfreeVehicleRcService.name);
 
-  constructor(private readonly configService: CashfreeConfigService) {}
+  constructor(
+    private readonly configService: CashfreeConfigService,
+    @Optional() private readonly adminAlertService?: AdminAlertService,
+  ) {}
 
   /**
    * Normalizes a vehicle registration number by removing all whitespace and hyphens
@@ -136,6 +147,10 @@ export class CashfreeVehicleRcService {
       this.logger.error(
         `Failed to reach Cashfree Vehicle RC API: ${(error as Error).message}`,
       );
+      void this.reportRcUnavailable(
+        'network',
+        (error as Error).message || 'network error',
+      );
       throw new CashfreeApiError(
         'Failed to communicate with Cashfree Vehicle RC service',
       );
@@ -155,6 +170,12 @@ export class CashfreeVehicleRcService {
     if (!responseData || typeof responseData !== 'object') {
       throw new CashfreeApiError('Cashfree returned invalid response format');
     }
+
+    void this.adminAlertService?.resolveIncident(
+      RC_UNAVAILABLE_INCIDENT,
+      null,
+      'RC Verification recovered',
+    );
 
     return this.mapToNormalizedResponse(responseData, params.verificationId);
   }
@@ -229,12 +250,38 @@ export class CashfreeVehicleRcService {
     // 500 Internal Server Error
     if (statusCode === 500) {
       this.logger.error(`Cashfree 500 Internal Error: message=${message}`);
+      void this.reportRcUnavailable('http_500', message);
       throw new CashfreeApiError('Cashfree internal server error');
     }
 
     // 502 / 503 / 504 Gateway errors
     this.logger.error(`Cashfree Upstream Error: status=${statusCode}, message=${message}`);
+    if (statusCode >= 502 && statusCode <= 504) {
+      void this.reportRcUnavailable(`http_${statusCode}`, message);
+    }
     throw new CashfreeApiError(`Cashfree upstream error (status ${statusCode})`);
+  }
+
+  private async reportRcUnavailable(
+    reason: string,
+    detail: string,
+  ): Promise<void> {
+    if (!this.adminAlertService) {
+      return;
+    }
+    try {
+      await this.adminAlertService.reportIncident({
+        incidentKey: RC_UNAVAILABLE_INCIDENT,
+        category: AdminAlertCategory.VEHICLE_VERIFICATION,
+        severity: AdminAlertSeverity.CRITICAL,
+        title: 'RC Verification unavailable',
+        message: `RC Verification API unavailable (${reason})`,
+        source: 'cashfree-vehicle-rc',
+        metadata: { reason, detail: detail.slice(0, 200) },
+      });
+    } catch {
+      // Never fail the RC call path because of alert persistence.
+    }
   }
 
   private mapToNormalizedResponse(

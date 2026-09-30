@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AuthModule } from '../auth/auth.module';
+import { AdminModule } from '../admin/admin.module';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { User } from '../users/entities/user.entity';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
@@ -33,6 +34,7 @@ import { VerificationService } from './verification.service';
       VehicleRcVerification,
     ]),
     AuthModule,
+    AdminModule,
   ],
   controllers: [
     VerificationController,

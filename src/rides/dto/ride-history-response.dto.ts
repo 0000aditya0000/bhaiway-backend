@@ -60,7 +60,7 @@ export class RideHistoryTripDto {
     format: 'date-time',
     nullable: true,
     description:
-      'Null for completed rides (no completedAt column). Cancelled rides use cancelledAt when present.',
+      'Set when the ride moves to COMPLETED. Cancelled rides use cancelledAt.',
   })
   completedAt!: string | null;
 
