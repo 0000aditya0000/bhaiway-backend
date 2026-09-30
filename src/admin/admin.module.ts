@@ -10,6 +10,8 @@ import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import { WalletTransaction } from '../wallet/entities/wallet-transaction.entity';
 import { AdminAlertService } from './admin-alert.service';
+import { AdminAuthController } from './admin-auth.controller';
+import { AdminAuthService } from './admin-auth.service';
 import { AdminDashboardController } from './admin-dashboard.controller';
 import { AdminDashboardService } from './admin-dashboard.service';
 import { AdminActivityEvent } from './entities/admin-activity-event.entity';
@@ -33,12 +35,18 @@ import { AdminPermissionGuard } from './guards/admin-permission.guard';
       WalletTransaction,
     ]),
   ],
-  controllers: [AdminDashboardController],
+  controllers: [AdminAuthController, AdminDashboardController],
   providers: [
+    AdminAuthService,
     AdminDashboardService,
     AdminAlertService,
     AdminPermissionGuard,
   ],
-  exports: [AdminAlertService, AdminPermissionGuard, TypeOrmModule],
+  exports: [
+    AdminAuthService,
+    AdminAlertService,
+    AdminPermissionGuard,
+    TypeOrmModule,
+  ],
 })
 export class AdminModule {}

@@ -4,25 +4,45 @@ Operations command-center APIs for the BhaiWay Admin Dashboard.
 
 ## Authorization
 
-All routes require:
+### Login
 
-1. Valid BhaiWay JWT (`Authorization: Bearer …`)
+`POST /admin/auth/login`
+
+```json
+{ "username": "lucifer", "password": "***" }
+```
+
+Response:
+
+```json
+{
+  "accessToken": "<jwt>",
+  "admin": {
+    "id": "...",
+    "username": "lucifer",
+    "permissions": ["ADMIN_DASHBOARD_VIEW"]
+  }
+}
+```
+
+Credentials are configured via environment variables:
+
+```
+ADMIN_USERNAME=lucifer
+ADMIN_PASSWORD=
+```
+
+The password is hashed with scrypt and stored on `admin_users.password_hash`. It is never returned in API responses or logged.
+
+On startup, when `ADMIN_PASSWORD` is set, the backend bootstraps/updates the `lucifer` admin account with `ADMIN_DASHBOARD_VIEW`.
+
+### Protected routes
+
+All dashboard routes require:
+
+1. Valid BhaiWay JWT from admin login (`Authorization: Bearer …`)
 2. Active row in `admin_users` for that user
 3. Permission `ADMIN_DASHBOARD_VIEW`
-
-There was no prior admin auth system. This module adds the minimal `admin_users` foundation used by dashboard routes.
-
-Grant access (SQL example):
-
-```sql
-INSERT INTO admin_users (id, user_id, permissions, is_active)
-VALUES (
-  gen_random_uuid(),
-  '<existing-user-uuid>',
-  ARRAY['ADMIN_DASHBOARD_VIEW'],
-  true
-);
-```
 
 ## Endpoints
 
@@ -113,6 +133,5 @@ Create Coupon / Send Notification / Support are navigation-only on the frontend.
 
 ## Migration
 
-`1786580000000-AdminDashboardFoundation`
-
-Adds `rides.completed_at`, admin tables, and supporting indexes.
+`1786580000000-AdminDashboardFoundation` — admin tables + `rides.completed_at`  
+`1786581000000-AdminLoginCredentials` — `admin_users.username` / `password_hash`

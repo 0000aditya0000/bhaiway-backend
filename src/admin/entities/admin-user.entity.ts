@@ -24,6 +24,13 @@ export class AdminUser {
   @Column({ name: 'user_id', type: 'uuid', unique: true })
   userId!: string;
 
+  /** Optional username/password login for the admin dashboard. */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  username!: string | null;
+
+  @Column({ name: 'password_hash', type: 'varchar', length: 255, nullable: true })
+  passwordHash!: string | null;
+
   @Column({ type: 'text', array: true, default: '{}' })
   permissions!: string[];
 

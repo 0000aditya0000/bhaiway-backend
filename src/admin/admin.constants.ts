@@ -14,3 +14,9 @@ export const PLATFORM_REVENUE_TRANSACTION_TYPES: readonly WalletTransactionType[
   ] as const;
 
 export const ADMIN_PERMISSION_DASHBOARD_VIEW = 'ADMIN_DASHBOARD_VIEW';
+
+/** Reserved backing user for the bootstrap dashboard admin (not the platform wallet user). */
+export const ADMIN_BOOTSTRAP_USER_ID =
+  '00000000-0000-4000-8000-000000000099';
+export const ADMIN_BOOTSTRAP_PHONE = '+10000000099';
+export const ADMIN_BOOTSTRAP_USERNAME_DEFAULT = 'lucifer';
