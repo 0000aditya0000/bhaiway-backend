@@ -374,12 +374,15 @@ export class TrackingService implements OnModuleDestroy {
   /**
    * Admin live-map: batch-read latest stored locations for IN_PROGRESS rides.
    * Uses existing Redis keys only — no secondary location store.
-   * Returns an empty map when Redis is unavailable (does not throw).
+   *
+   * Location exists only after the driver publishes GPS via
+   * POST /tracking/rides/:id/location (or the tracking socket).
+   * Keys expire after RIDE_TRACKING_TTL_SECONDS (120s).
    */
   async getStoredLocationsForRides(
     rideIds: string[],
-  ): Promise<
-    Map<
+  ): Promise<{
+    locations: Map<
       string,
       {
         latitude: number;
@@ -388,9 +391,10 @@ export class TrackingService implements OnModuleDestroy {
         heading?: number;
         speed?: number;
       }
-    >
-  > {
-    const result = new Map<
+    >;
+    redisReady: boolean;
+  }> {
+    const locations = new Map<
       string,
       {
         latitude: number;
@@ -401,15 +405,22 @@ export class TrackingService implements OnModuleDestroy {
       }
     >();
     if (rideIds.length === 0) {
-      return result;
+      return { locations, redisReady: String(this.redis.status) === 'ready' };
     }
 
     try {
-      if (String(this.redis.status) !== 'ready') {
-        return result;
-      }
+      await this.ensureRedisReady('admin', 'GET');
+    } catch {
+      this.logger.warn(
+        `[Tracking][admin] batch location read skipped: redis not ready (status=${this.redis.status})`,
+      );
+      return { locations, redisReady: false };
+    }
+
+    try {
       const keys = rideIds.map((id) => rideTrackingKey(id));
       const values = await this.redis.mget(...keys);
+      let hits = 0;
       for (let i = 0; i < rideIds.length; i += 1) {
         const raw = values[i];
         if (!raw) {
@@ -423,7 +434,8 @@ export class TrackingService implements OnModuleDestroy {
           ) {
             continue;
           }
-          result.set(rideIds[i], {
+          hits += 1;
+          locations.set(rideIds[i], {
             latitude: parsed.latitude,
             longitude: parsed.longitude,
             updatedAt: parsed.updatedAt,
@@ -434,13 +446,16 @@ export class TrackingService implements OnModuleDestroy {
           // skip malformed payloads
         }
       }
+      this.logger.log(
+        `[Tracking][admin] batch location read rides=${rideIds.length} hits=${hits} misses=${rideIds.length - hits}`,
+      );
+      return { locations, redisReady: true };
     } catch (error) {
       this.logger.warn(
         `[Tracking][admin] batch location read failed err=${safeRedisErrorMessage(error)}`,
       );
+      return { locations, redisReady: false };
     }
-
-    return result;
   }
 
   private async readStoredLocation(
@@ -491,7 +506,7 @@ export class TrackingService implements OnModuleDestroy {
    * briefly before failing the HTTP request.
    */
   private async ensureRedisReady(
-    actor: 'driver' | 'passenger',
+    actor: 'driver' | 'passenger' | 'admin',
     op: 'SET' | 'GET',
   ): Promise<void> {
     const currentStatus = (): string => String(this.redis.status);

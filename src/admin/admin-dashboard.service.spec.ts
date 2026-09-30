@@ -20,7 +20,10 @@ describe('AdminDashboardService', () => {
       createQueryBuilder: jest.fn(),
     };
     const trackingService = {
-      getStoredLocationsForRides: jest.fn().mockResolvedValue(new Map()),
+      getStoredLocationsForRides: jest.fn().mockResolvedValue({
+        locations: new Map(),
+        redisReady: true,
+      }),
     };
     const adminAlertService = {
       getAttentionSummary: jest.fn().mockResolvedValue({
@@ -142,7 +145,11 @@ describe('AdminDashboardService', () => {
   it('SOS live-map filter returns empty without querying rides', async () => {
     const ctx = makeService();
     const result = await ctx.service.getLiveMap(AdminLiveMapFilter.SOS);
-    expect(result).toEqual({ filter: 'SOS', items: [] });
+    expect(result).toEqual({
+      filter: 'SOS',
+      trackingAvailable: true,
+      items: [],
+    });
     expect(ctx.rideRepository.createQueryBuilder).not.toHaveBeenCalled();
   });
 
@@ -159,8 +166,9 @@ describe('AdminDashboardService', () => {
       },
     ]);
     ctx.rideRepository.createQueryBuilder.mockReturnValue(qb);
-    ctx.trackingService.getStoredLocationsForRides.mockResolvedValue(
-      new Map([
+    ctx.trackingService.getStoredLocationsForRides.mockResolvedValue({
+      redisReady: true,
+      locations: new Map([
         [
           'ride-1',
           {
@@ -172,7 +180,7 @@ describe('AdminDashboardService', () => {
           },
         ],
       ]),
-    );
+    });
 
     const result = await ctx.service.getLiveMap(
       AdminLiveMapFilter.OFFICE_COMMUTE,
@@ -185,9 +193,36 @@ describe('AdminDashboardService', () => {
       rideId: 'ride-1',
       latitude: 28.6,
       longitude: 77.2,
+      hasLiveLocation: true,
+      locationStatus: 'AVAILABLE',
       sosActive: false,
     });
+    expect(result.trackingAvailable).toBe(true);
     expect(result.items[0]).not.toHaveProperty('clientSecret');
+  });
+
+  it('marks MISSING when ride is IN_PROGRESS but Redis has no GPS fix', async () => {
+    const ctx = makeService();
+    const qb = mockCountQb(0);
+    qb.getMany.mockResolvedValue([
+      {
+        id: 'ride-2',
+        rideType: RideType.REGULAR,
+        status: RideStatus.IN_PROGRESS,
+        driverId: 'd1',
+        vehicleId: 'v1',
+      },
+    ]);
+    ctx.rideRepository.createQueryBuilder.mockReturnValue(qb);
+
+    const result = await ctx.service.getLiveMap(AdminLiveMapFilter.ACTIVE);
+    expect(result.items[0]).toMatchObject({
+      rideId: 'ride-2',
+      latitude: null,
+      longitude: null,
+      hasLiveLocation: false,
+      locationStatus: 'MISSING',
+    });
   });
 
   it('filters OUTSTATION to REGULAR + ASSURED (no OUTSTATION type exists)', async () => {

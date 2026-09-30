@@ -168,6 +168,19 @@ export class AdminLiveMapItemDto {
   speed!: number | null;
 
   @ApiProperty({
+    description:
+      'True only when Redis currently holds a live GPS fix for this ride',
+  })
+  hasLiveLocation!: boolean;
+
+  @ApiProperty({
+    description:
+      'AVAILABLE = coords present. MISSING = IN_PROGRESS but no recent driver GPS in Redis (TTL 120s). TRACKING_UNAVAILABLE = Redis not ready.',
+    example: 'MISSING',
+  })
+  locationStatus!: 'AVAILABLE' | 'MISSING' | 'TRACKING_UNAVAILABLE';
+
+  @ApiProperty({
     description: 'SOS is not implemented in the current ride model',
     example: false,
   })
@@ -177,6 +190,11 @@ export class AdminLiveMapItemDto {
 export class AdminLiveMapResponseDto {
   @ApiProperty()
   filter!: string;
+
+  @ApiProperty({
+    description: 'False when Redis tracking store is unavailable',
+  })
+  trackingAvailable!: boolean;
 
   @ApiProperty({ type: [AdminLiveMapItemDto] })
   items!: AdminLiveMapItemDto[];
