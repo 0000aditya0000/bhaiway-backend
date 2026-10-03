@@ -71,6 +71,12 @@ import {
   WalletHoldStatus,
   WalletHoldType,
 } from '../wallet/entities/wallet-hold.entity';
+import {
+  WalletTransaction,
+  WalletTransactionDirection,
+  WalletTransactionStatus,
+  WalletTransactionType,
+} from '../wallet/entities/wallet-transaction.entity';
 import { Wallet, WalletStatus } from '../wallet/entities/wallet.entity';
 import { WalletService } from '../wallet/wallet.service';
 import { CompleteRideResponseDto } from './dto/complete-ride-response.dto';
@@ -800,6 +806,8 @@ export class RidesService {
         name: profile?.displayName ?? profile?.firstName ?? null,
         profileImage: profile?.profilePhoto ?? null,
         fare: booking.totalAmount,
+        driverShare: booking.driverShareAmount,
+        platformShare: booking.platformShareAmount,
         seats: booking.seats,
         bookingStatus: booking.status,
       };
@@ -815,13 +823,28 @@ export class RidesService {
       )
       .reduce((sum, booking) => sum + booking.seats, 0);
 
+    const timing = this.computeHistoryTripTiming(ride, bookings);
+    const earnings = this.calculateHistoryEarnings(bookings);
+    const bonuses = await this.loadRideDriverBonusEarnings(
+      ride.driverId,
+      ride.id,
+      bookings.map((booking) => booking.id),
+    );
+    earnings.assuredBonus = bonuses.assuredBonus;
+    earnings.otherEarnings = bonuses.otherEarnings;
+    earnings.total = (
+      BigInt(earnings.driverShare) +
+      BigInt(bonuses.assuredBonus ?? '0') +
+      BigInt(bonuses.otherEarnings ?? '0')
+    ).toString();
+
     return {
-      ride: this.toHistoryTrip(ride, bookedSeats),
+      ride: this.toHistoryTrip(ride, bookedSeats, timing),
       vehicle: vehicle
         ? this.toHistoryVehicle(vehicle, vehicleVerified)
         : null,
       passengers,
-      earnings: this.calculateHistoryEarnings(bookings),
+      earnings,
     };
   }
 
@@ -2439,6 +2462,9 @@ export class RidesService {
           seats: true,
           status: true,
           totalAmount: true,
+          driverShareAmount: true,
+          platformShareAmount: true,
+          pickupVerifiedAt: true,
         },
       }),
       this.vehicleRepository.find({
@@ -2466,6 +2492,16 @@ export class RidesService {
         VerificationType.VEHICLE,
       );
 
+    const bonusByRideId = await this.loadRideDriverBonusEarningsBatch(
+      rides.map((ride) => ({
+        rideId: ride.id,
+        driverId: ride.driverId,
+        bookingIds: (bookingsByRideId.get(ride.id) ?? []).map(
+          (booking) => booking.id,
+        ),
+      })),
+    );
+
     return rides.map((ride) => {
       const rideBookings = bookingsByRideId.get(ride.id) ?? [];
       const bookedSeats = rideBookings
@@ -2478,39 +2514,59 @@ export class RidesService {
         )
         .reduce((sum, booking) => sum + booking.seats, 0);
       const vehicle = vehicleById.get(ride.vehicleId) ?? null;
+      const earnings = this.calculateHistoryEarnings(rideBookings);
+      const bonuses = bonusByRideId.get(ride.id) ?? {
+        assuredBonus: null,
+        otherEarnings: null,
+      };
+      earnings.assuredBonus = bonuses.assuredBonus;
+      earnings.otherEarnings = bonuses.otherEarnings;
+      earnings.total = (
+        BigInt(earnings.driverShare) +
+        BigInt(bonuses.assuredBonus ?? '0') +
+        BigInt(bonuses.otherEarnings ?? '0')
+      ).toString();
 
       return {
-        ride: this.toHistoryTrip(ride, bookedSeats),
+        ride: this.toHistoryTrip(
+          ride,
+          bookedSeats,
+          this.computeHistoryTripTiming(ride, rideBookings),
+        ),
         vehicle: vehicle
           ? this.toHistoryVehicle(
               vehicle,
               vehicleVerifiedByUserId.get(vehicle.userId) === true,
             )
           : null,
-        earnings: this.calculateHistoryEarnings(rideBookings),
+        earnings,
         passengerCount: rideBookings.length,
       };
     });
   }
 
-  private toHistoryTrip(ride: Ride, bookedSeats: number): RideHistoryTripDto {
+  private toHistoryTrip(
+    ride: Ride,
+    bookedSeats: number,
+    timing?: { startedAt: string | null; durationMinutes: number | null },
+  ): RideHistoryTripDto {
     return {
       id: ride.id,
       status: ride.status,
       rideType: ride.rideType,
       source: ride.source,
       destination: ride.destination,
-      sourceLatitude: null,
-      sourceLongitude: null,
-      destinationLatitude: null,
-      destinationLongitude: null,
+      sourceLatitude: ride.sourceLatitude,
+      sourceLongitude: ride.sourceLongitude,
+      destinationLatitude: ride.destinationLatitude,
+      destinationLongitude: ride.destinationLongitude,
       departureDate: this.toCivilDate(ride.departureDate),
       departureTime: this.formatTime(ride.departureTime),
-      startedAt: null,
+      startedAt: timing?.startedAt ?? null,
       completedAt: ride.completedAt?.toISOString() ?? null,
       cancelledAt: ride.cancelledAt?.toISOString() ?? null,
-      durationMinutes: null,
-      distanceKm: null,
+      durationMinutes: timing?.durationMinutes ?? null,
+      distanceKm: this.metersToDistanceKm(ride.routeLengthMeters),
       totalSeats: ride.totalSeats,
       bookedSeats,
       pricePerSeat: ride.pricePerSeat,
@@ -2524,27 +2580,221 @@ export class RidesService {
     return {
       id: vehicle.id,
       name: `${vehicle.make} ${vehicle.model}`.trim(),
+      vehicleType: vehicle.vehicleType,
       make: vehicle.make,
       model: vehicle.model,
+      variant: vehicle.variant,
       color: vehicle.color,
       registrationNumber: vehicle.registrationNumber,
+      registrationYear: vehicle.registrationYear,
+      seatingCapacity: vehicle.seatingCapacity,
       isVerified,
     };
   }
 
   private calculateHistoryEarnings(
-    bookings: Array<Pick<Booking, 'status' | 'totalAmount'>>,
+    bookings: Array<
+      Pick<
+        Booking,
+        'status' | 'totalAmount' | 'driverShareAmount' | 'platformShareAmount'
+      >
+    >,
   ): RideHistoryEarningsDto {
-    const passengerTotal = bookings
-      .filter((booking) => booking.status === BookingStatus.COMPLETED)
-      .reduce((sum, booking) => sum + BigInt(booking.totalAmount), 0n);
+    let passengerTotal = 0n;
+    let driverShare = 0n;
+    let platformShare = 0n;
+
+    for (const booking of bookings) {
+      if (booking.status !== BookingStatus.COMPLETED) {
+        continue;
+      }
+
+      const fare = BigInt(booking.totalAmount);
+      passengerTotal += fare;
+
+      if (booking.driverShareAmount != null) {
+        driverShare += BigInt(booking.driverShareAmount);
+        platformShare += BigInt(booking.platformShareAmount ?? '0');
+      } else {
+        driverShare += fare;
+      }
+    }
 
     return {
       passengerTotal: passengerTotal.toString(),
+      driverShare: driverShare.toString(),
+      platformShare: platformShare > 0n ? platformShare.toString() : null,
       assuredBonus: null,
       otherEarnings: null,
-      total: passengerTotal.toString(),
+      total: driverShare.toString(),
     };
+  }
+
+  private computeHistoryTripTiming(
+    ride: Ride,
+    bookings: Array<Pick<Booking, 'pickupVerifiedAt'>>,
+  ): { startedAt: string | null; durationMinutes: number | null } {
+    const pickupTimes = bookings
+      .map((booking) => booking.pickupVerifiedAt)
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => a.getTime() - b.getTime());
+
+    const startedAt = pickupTimes[0] ?? null;
+    if (!startedAt || !ride.completedAt) {
+      return {
+        startedAt: startedAt?.toISOString() ?? null,
+        durationMinutes: null,
+      };
+    }
+
+    const durationMinutes = Math.round(
+      (ride.completedAt.getTime() - startedAt.getTime()) / 60_000,
+    );
+
+    return {
+      startedAt: startedAt.toISOString(),
+      durationMinutes: durationMinutes >= 0 ? durationMinutes : null,
+    };
+  }
+
+  private metersToDistanceKm(meters: number | null): number | null {
+    if (meters == null || !Number.isFinite(meters) || meters < 0) {
+      return null;
+    }
+    return Math.round((meters / 1000) * 100) / 100;
+  }
+
+  private async loadRideDriverBonusEarnings(
+    driverId: string,
+    rideId: string,
+    bookingIds: string[],
+  ): Promise<{ assuredBonus: string | null; otherEarnings: string | null }> {
+    const batch = await this.loadRideDriverBonusEarningsBatch([
+      { rideId, driverId, bookingIds },
+    ]);
+    return (
+      batch.get(rideId) ?? {
+        assuredBonus: null,
+        otherEarnings: null,
+      }
+    );
+  }
+
+  private async loadRideDriverBonusEarningsBatch(
+    rides: Array<{ rideId: string; driverId: string; bookingIds: string[] }>,
+  ): Promise<
+    Map<string, { assuredBonus: string | null; otherEarnings: string | null }>
+  > {
+    const result = new Map<
+      string,
+      { assuredBonus: string | null; otherEarnings: string | null }
+    >();
+    for (const ride of rides) {
+      result.set(ride.rideId, { assuredBonus: null, otherEarnings: null });
+    }
+    if (rides.length === 0) {
+      return result;
+    }
+
+    const rideIds = rides.map((ride) => ride.rideId);
+    const bookingIds = [
+      ...new Set(rides.flatMap((ride) => ride.bookingIds).filter(Boolean)),
+    ];
+    const driverIds = [...new Set(rides.map((ride) => ride.driverId))];
+
+    const txRepository = this.dataSource.getRepository(WalletTransaction);
+    const qb = txRepository
+      .createQueryBuilder('tx')
+      .where('tx.user_id IN (:...driverIds)', { driverIds })
+      .andWhere('tx.direction = :direction', {
+        direction: WalletTransactionDirection.CREDIT,
+      })
+      .andWhere('tx.status = :status', {
+        status: WalletTransactionStatus.POSTED,
+      });
+
+    qb.andWhere(
+      new Brackets((sub) => {
+        sub.where(
+          `tx.transaction_type = :assuredBonusType
+           AND tx.reference_type = :rideRefType
+           AND tx.reference_id IN (:...rideIds)`,
+          {
+            assuredBonusType:
+              WalletTransactionType.ASSURED_PARTIAL_FILL_COMPENSATION,
+            rideRefType: 'ASSURED_PARTIAL_FILL_COMPENSATION',
+            rideIds,
+          },
+        );
+
+        if (bookingIds.length > 0) {
+          sub.orWhere(
+            `tx.transaction_type IN (:...otherTypes)
+             AND tx.reference_type IN (:...bookingRefTypes)
+             AND tx.reference_id IN (:...bookingIds)`,
+            {
+              otherTypes: [
+                WalletTransactionType.ASSURED_PASSENGER_CANCEL_DEPOSIT_DRIVER,
+                WalletTransactionType.ASSURED_PASSENGER_CANCEL_FARE_DRIVER,
+              ],
+              bookingRefTypes: [
+                'ASSURED_PASSENGER_CANCEL_DEPOSIT',
+                'ASSURED_PASSENGER_CANCEL_FARE',
+              ],
+              bookingIds,
+            },
+          );
+        }
+      }),
+    );
+
+    const rows = await qb.getMany();
+
+    const bookingToRideId = new Map<string, string>();
+    for (const ride of rides) {
+      for (const bookingId of ride.bookingIds) {
+        bookingToRideId.set(bookingId, ride.rideId);
+      }
+    }
+
+    const assuredByRide = new Map<string, bigint>();
+    const otherByRide = new Map<string, bigint>();
+
+    for (const tx of rows) {
+      if (
+        tx.transactionType ===
+          WalletTransactionType.ASSURED_PARTIAL_FILL_COMPENSATION &&
+        tx.referenceId
+      ) {
+        const amount = BigInt(tx.amount);
+        assuredByRide.set(
+          tx.referenceId,
+          (assuredByRide.get(tx.referenceId) ?? 0n) + amount,
+        );
+        continue;
+      }
+
+      if (!tx.referenceId) {
+        continue;
+      }
+      const rideId = bookingToRideId.get(tx.referenceId);
+      if (!rideId) {
+        continue;
+      }
+      const amount = BigInt(tx.amount);
+      otherByRide.set(rideId, (otherByRide.get(rideId) ?? 0n) + amount);
+    }
+
+    for (const ride of rides) {
+      const assured = assuredByRide.get(ride.rideId) ?? 0n;
+      const other = otherByRide.get(ride.rideId) ?? 0n;
+      result.set(ride.rideId, {
+        assuredBonus: assured > 0n ? assured.toString() : null,
+        otherEarnings: other > 0n ? other.toString() : null,
+      });
+    }
+
+    return result;
   }
 
   private async resolveVerificationFlags(

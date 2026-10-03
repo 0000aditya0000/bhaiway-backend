@@ -99,13 +99,53 @@ describe('Past ride history (integration)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        const driverRides = await dataSource.getRepository(Ride).find({
+          where: { driverId: ctx.userId },
+          select: { id: true },
+        });
+        const driverBookingIds = (
+          await Promise.all(
+            driverRides.map((ride) =>
+              dataSource.getRepository(Booking).find({
+                where: { rideId: ride.id },
+                select: { id: true },
+              }),
+            ),
+          )
+        ).flat();
+        const bookingIds = [
+          ...new Set(
+            [...passengerBookings, ...driverBookingIds].map(
+              (booking) => booking.id,
+            ),
+          ),
+        ];
+
+        if (bookingIds.length > 0) {
+          await dataSource.query(
+            `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+            [bookingIds],
+          );
+          await dataSource.query(
+            `DELETE FROM chat_messages WHERE conversation_id IN (
+               SELECT id FROM chat_conversations WHERE booking_id = ANY($1::uuid[])
+             )`,
+            [bookingIds],
+          );
+          await dataSource.query(
+            `DELETE FROM chat_conversations WHERE booking_id = ANY($1::uuid[])`,
+            [bookingIds],
+          );
+        }
+
         await dataSource.getRepository(Booking).delete({
           passengerId: ctx.userId,
         });
-        const rides = await dataSource.getRepository(Ride).find({
-          where: { driverId: ctx.userId },
-        });
-        for (const ride of rides) {
+        for (const ride of driverRides) {
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
         }
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
@@ -161,19 +201,39 @@ describe('Past ride history (integration)', () => {
     );
   }
 
-  async function publishableDriver(totalSeats = 3) {
-    const login = await createAuthenticatedUser();
-    await dataSource.getRepository(UserProfile).save(
-      dataSource.getRepository(UserProfile).create({
-        userId: login.user.id,
-        firstName: 'History',
-        lastName: 'Driver',
-        displayName: 'History Driver',
+  async function upsertProfile(
+    userId: string,
+    patch: Partial<UserProfile> & {
+      firstName: string;
+      displayName: string;
+    },
+  ) {
+    const repo = dataSource.getRepository(UserProfile);
+    const existing = await repo.findOne({ where: { userId } });
+    if (existing) {
+      Object.assign(existing, patch);
+      return repo.save(existing);
+    }
+    return repo.save(
+      repo.create({
+        userId,
+        lastName: null,
         gender: null,
         dateOfBirth: null,
-        profilePhoto: 'https://cdn.example.com/driver.jpg',
+        profilePhoto: null,
+        ...patch,
       }),
     );
+  }
+
+  async function publishableDriver(totalSeats = 3) {
+    const login = await createAuthenticatedUser();
+    await upsertProfile(login.user.id, {
+      firstName: 'History',
+      lastName: 'Driver',
+      displayName: 'History Driver',
+      profilePhoto: 'https://cdn.example.com/driver.jpg',
+    });
 
     const vehicle = await vehiclesService.create(login.user.id, {
       vehicleType: VehicleType.CAR,
@@ -210,17 +270,12 @@ describe('Past ride history (integration)', () => {
   async function verifiedPassenger(displayName: string) {
     const login = await createAuthenticatedUser();
     await markVerified(login.user.id, VerificationType.IDENTITY);
-    await dataSource.getRepository(UserProfile).save(
-      dataSource.getRepository(UserProfile).create({
-        userId: login.user.id,
-        firstName: displayName.split(' ')[0] ?? 'Passenger',
-        lastName: displayName.split(' ')[1] ?? null,
-        displayName,
-        gender: null,
-        dateOfBirth: null,
-        profilePhoto: `https://cdn.example.com/${displayName.replace(/\s+/g, '-').toLowerCase()}.jpg`,
-      }),
-    );
+    await upsertProfile(login.user.id, {
+      firstName: displayName.split(' ')[0] ?? 'Passenger',
+      lastName: displayName.split(' ')[1] ?? null,
+      displayName,
+      profilePhoto: `https://cdn.example.com/${displayName.replace(/\s+/g, '-').toLowerCase()}.jpg`,
+    });
     const wallet = await dataSource.getRepository(Wallet).findOneByOrFail({
       userId: login.user.id,
     });
@@ -299,11 +354,14 @@ describe('Past ride history (integration)', () => {
     );
     expect(item).toBeTruthy();
     expect(item.ride.status).toBe(RideStatus.COMPLETED);
-    expect(item.ride.sourceLatitude).toBeNull();
-    expect(item.ride.distanceKm).toBeNull();
     expect(item.earnings.passengerTotal).toBe('300');
+    expect(item.earnings.driverShare).toBe('300');
+    expect(item.earnings.platformShare).toBeNull();
     expect(item.earnings.assuredBonus).toBeNull();
     expect(item.earnings.total).toBe('300');
+    expect(item.vehicle.make).toBe('Tata');
+    expect(item.vehicle.vehicleType).toBeTruthy();
+    expect(item.vehicle.seatingCapacity).toBe(5);
 
     const detail = await request(app.getHttpServer())
       .get(`/rides/history/${completed.ride.id}`)
@@ -324,6 +382,15 @@ describe('Past ride history (integration)', () => {
       completed.vehicle.registrationNumber,
     );
     expect(detail.body.vehicle.name).toContain('Tata');
+    expect(detail.body.vehicle.make).toBe('Tata');
+    expect(detail.body.vehicle.model).toBe('Nexon');
+    expect(detail.body.vehicle.color).toBe('Black');
+    expect(detail.body.vehicle.seatingCapacity).toBe(5);
+    expect(detail.body.earnings.driverShare).toBe('300');
+    expect(detail.body.earnings.passengerTotal).toBe('300');
+    expect(detail.body.ride.startedAt).toEqual(expect.any(String));
+    expect(detail.body.ride.durationMinutes).toEqual(expect.any(Number));
+    expect(detail.body.ride.durationMinutes).toBeGreaterThanOrEqual(0);
 
     await request(app.getHttpServer())
       .get(`/rides/history/${completed.ride.id}`)
@@ -357,8 +424,9 @@ describe('Past ride history (integration)', () => {
 
     expect(detail.body.invoice.invoiceId).toBeNull();
     expect(detail.body.payment.paymentMethod).toBe('PAY_LATER');
-    expect(detail.body.payment.paymentStatus).toBe('PAID');
-    expect(detail.body.fare.totalPaid).toBe('150');
+    // REGULAR PAY_LATER stays UNPAID until the passenger settles post-ride.
+    expect(detail.body.payment.paymentStatus).toBe('UNPAID');
+    expect(detail.body.fare.totalPaid).toBe('0');
 
     await request(app.getHttpServer())
       .get(`/bookings/history/${completed.b1.id}`)
@@ -441,11 +509,17 @@ describe('Past ride history (integration)', () => {
       0n,
     );
     expect(detail.body.earnings.passengerTotal).toBe(sum.toString());
+    expect(detail.body.earnings.driverShare).toBe('300');
     expect(detail.body.earnings.total).toBe('300');
-    expect(detail.body.ride.startedAt).toBeNull();
+    expect(detail.body.ride.startedAt).toEqual(expect.any(String));
     expect(detail.body.ride.completedAt).toEqual(expect.any(String));
     expect(Date.parse(detail.body.ride.completedAt)).not.toBeNaN();
-    expect(detail.body.ride.durationMinutes).toBeNull();
+    expect(detail.body.ride.durationMinutes).toEqual(expect.any(Number));
+    expect(detail.body.vehicle).toMatchObject({
+      make: 'Tata',
+      model: 'Nexon',
+      color: 'Black',
+    });
     expect(JSON.stringify(detail.body)).not.toMatch(/INV-/);
 
     const rider = await request(app.getHttpServer())

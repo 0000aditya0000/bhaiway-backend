@@ -131,7 +131,7 @@ export class RidesController {
   @ApiOperation({
     summary: 'Paginated past rides for the authenticated driver',
     description:
-      'Returns COMPLETED and CANCELLED rides owned by the JWT subject only. PUBLISHED and IN_PROGRESS are excluded. Earnings use real booking totalAmount sums (COMPLETED bookings). Coordinates/duration/distance/startedAt are null when not stored.',
+      'Returns COMPLETED and CANCELLED rides owned by the JWT subject only. PUBLISHED and IN_PROGRESS are excluded. Includes vehicle details, route distance when stored, trip duration when pickup+completion timestamps exist, and an earnings breakdown (passengerTotal, driverShare, platformShare, bonuses).',
   })
   @ApiOkResponse({ type: RideHistoryPageDto })
   @ApiBadRequestResponse({ description: 'Invalid query parameters' })
@@ -146,7 +146,7 @@ export class RidesController {
   @ApiOperation({
     summary: 'Past ride detail for the owning driver',
     description:
-      'Includes passenger fare lines and earnings from real bookings. Only COMPLETED/CANCELLED rides owned by the JWT subject.',
+      'Includes passengers, vehicle information, distance/duration when available, and earnings breakdown from real bookings/ledger. Only COMPLETED/CANCELLED rides owned by the JWT subject.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: RideHistoryDetailDto })

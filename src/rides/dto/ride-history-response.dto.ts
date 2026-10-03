@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { BookingStatus } from '../../bookings/enums/booking.enums';
+import { VehicleType } from '../../vehicles/enums/vehicle-type.enum';
 import { RideStatus, RideType } from '../enums/ride.enums';
 
 export class RideHistoryTripDto {
@@ -21,25 +22,25 @@ export class RideHistoryTripDto {
 
   @ApiPropertyOptional({
     nullable: true,
-    description: 'Not stored on rides yet — always null',
+    description: 'Stored ride source latitude when available',
   })
   sourceLatitude!: number | null;
 
   @ApiPropertyOptional({
     nullable: true,
-    description: 'Not stored on rides yet — always null',
+    description: 'Stored ride source longitude when available',
   })
   sourceLongitude!: number | null;
 
   @ApiPropertyOptional({
     nullable: true,
-    description: 'Not stored on rides yet — always null',
+    description: 'Stored ride destination latitude when available',
   })
   destinationLatitude!: number | null;
 
   @ApiPropertyOptional({
     nullable: true,
-    description: 'Not stored on rides yet — always null',
+    description: 'Stored ride destination longitude when available',
   })
   destinationLongitude!: number | null;
 
@@ -52,7 +53,8 @@ export class RideHistoryTripDto {
   @ApiPropertyOptional({
     format: 'date-time',
     nullable: true,
-    description: 'Not stored on rides yet — always null',
+    description:
+      'Earliest passenger pickup verification time on this ride, when available',
   })
   startedAt!: string | null;
 
@@ -72,13 +74,16 @@ export class RideHistoryTripDto {
 
   @ApiPropertyOptional({
     nullable: true,
-    description: 'Not stored on rides yet — always null',
+    description:
+      'Trip duration in whole minutes from earliest pickup verification to completedAt, when both exist',
   })
   durationMinutes!: number | null;
 
   @ApiPropertyOptional({
     nullable: true,
-    description: 'Not stored on rides yet — always null',
+    description:
+      'Route distance in km derived from stored routeLengthMeters (null when route geometry was not stored)',
+    example: 12.45,
   })
   distanceKm!: number | null;
 
@@ -91,7 +96,7 @@ export class RideHistoryTripDto {
   bookedSeats!: number;
 
   @ApiProperty({
-    description: 'Integer points per seat as string (1 point = ₹1)',
+    description: 'Integer points per seat as string (1 Coin = ₹1)',
   })
   pricePerSeat!: string;
 }
@@ -103,6 +108,9 @@ export class RideHistoryVehicleDto {
   @ApiProperty({ description: 'make + model' })
   name!: string;
 
+  @ApiProperty({ enum: VehicleType, enumName: 'VehicleType' })
+  vehicleType!: VehicleType;
+
   @ApiProperty()
   make!: string;
 
@@ -110,10 +118,19 @@ export class RideHistoryVehicleDto {
   model!: string;
 
   @ApiPropertyOptional({ nullable: true })
+  variant!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
   color!: string | null;
 
   @ApiProperty()
   registrationNumber!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  registrationYear!: number | null;
+
+  @ApiProperty()
+  seatingCapacity!: number;
 
   @ApiProperty({
     description:
@@ -136,10 +153,26 @@ export class RideHistoryPassengerDto {
   profileImage!: string | null;
 
   @ApiProperty({
-    description: 'Booking totalAmount in points (1 point = ₹1)',
+    description: 'Booking totalAmount in points (1 Coin = ₹1)',
     example: '500',
   })
   fare!: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Driver share of this booking when a split exists (e.g. Commute). Null for full-fare Regular/Assured bookings.',
+    example: '136',
+  })
+  driverShare!: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Platform share of this booking when a split exists (e.g. Commute margin). Null otherwise.',
+    example: '14',
+  })
+  platformShare!: string | null;
 
   @ApiProperty({ example: 1 })
   seats!: number;
@@ -151,26 +184,43 @@ export class RideHistoryPassengerDto {
 export class RideHistoryEarningsDto {
   @ApiProperty({
     description:
-      'Sum of totalAmount for COMPLETED bookings on this ride (points)',
+      'Sum of totalAmount for COMPLETED bookings on this ride (points paid by passengers)',
     example: '450',
   })
   passengerTotal!: string;
 
+  @ApiProperty({
+    description:
+      'Driver share of COMPLETED bookings (uses driverShareAmount when set, otherwise full booking totalAmount)',
+    example: '408',
+  })
+  driverShare!: string;
+
   @ApiPropertyOptional({
     nullable: true,
     description:
-      'Null unless a real Assured bonus amount is available for this ride',
+      'Platform share of COMPLETED bookings when fare splits exist (e.g. Commute). Null when there is no platform cut.',
+    example: '42',
+  })
+  platformShare!: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Assured partial-fill / assurance compensation credited to the driver for this ride, when present',
   })
   assuredBonus!: string | null;
 
   @ApiPropertyOptional({
     nullable: true,
-    description: 'Null unless other real earning components exist',
+    description:
+      'Other driver credits tied to this ride (e.g. passenger-cancel Assured compensation), when present',
   })
   otherEarnings!: string | null;
 
   @ApiProperty({
-    description: 'passengerTotal + assuredBonus + otherEarnings (points)',
+    description:
+      'Net driver earnings for this ride: driverShare + assuredBonus + otherEarnings (points)',
     example: '450',
   })
   total!: string;
