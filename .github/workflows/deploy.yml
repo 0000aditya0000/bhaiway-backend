@@ -1,0 +1,83 @@
+
+name: Deploy BhaiWay Backend
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bhaiway-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build NestJS application
+        run: npm run build
+
+      - name: Verify build output
+        run: test -s dist/main.js
+
+      - name: Set up SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/bhaiway_key
+          chmod 600 ~/.ssh/bhaiway_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Prepare remote upload directory
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+        run: |
+          ssh -i ~/.ssh/bhaiway_key \
+            -p "$VPS_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            'mkdir -p /opt/bhaiway-deploy/incoming/dist'
+
+      - name: Transfer build using rsync
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/bhaiway_key -p $VPS_PORT" \
+            dist/ \
+            "$VPS_USER@$VPS_HOST:/opt/bhaiway-deploy/incoming/dist/"
+
+      - name: Deploy on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+        run: |
+          ssh -i ~/.ssh/bhaiway_key \
+            -p "$VPS_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            'sudo /usr/local/sbin/deploy-bhaiway'
