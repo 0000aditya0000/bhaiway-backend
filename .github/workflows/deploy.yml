@@ -54,10 +54,12 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/bhaiway_key
           chmod 600 ~/.ssh/bhaiway_key
+
           if [[ -z "$VPS_KNOWN_HOSTS" ]]; then
-            echo "VPS_KNOWN_HOSTS secret is empty or missing."
+            echo "VPS_KNOWN_HOSTS secret is missing."
             exit 1
           fi
+
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
@@ -88,7 +90,7 @@ jobs:
             "$VPS_USER@$VPS_HOST:/opt/bhaiway-deploy/incoming/dist/"
 
       - name: Deploy on VPS
-        if: github.event_name == 'workflow_dispatch' && inputs.deploy_production
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy_production)
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
