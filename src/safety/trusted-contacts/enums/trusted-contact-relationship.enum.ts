@@ -1,0 +1,13 @@
+export enum TrustedContactRelationship {
+  PARENT = 'PARENT',
+  MOTHER = 'MOTHER',
+  FATHER = 'FATHER',
+  BROTHER = 'BROTHER',
+  SISTER = 'SISTER',
+  SPOUSE = 'SPOUSE',
+  PARTNER = 'PARTNER',
+  FRIEND = 'FRIEND',
+  RELATIVE = 'RELATIVE',
+  COLLEAGUE = 'COLLEAGUE',
+  OTHER = 'OTHER',
+}

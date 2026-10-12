@@ -13,6 +13,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { RatingsModule } from './ratings/ratings.module';
 import { ReferralsModule } from './referrals/referrals.module';
 import { RidesModule } from './rides/rides.module';
+import { SafetyModule } from './safety/safety.module';
 import { SettingsModule } from './settings/settings.module';
 import { TrackingModule } from './tracking/tracking.module';
 import { UsersModule } from './users/users.module';
@@ -44,6 +45,7 @@ import { WalletModule } from './wallet/wallet.module';
     TrackingModule,
     ChatModule,
     NotificationsModule,
+    SafetyModule,
   ],
 })
 export class AppModule {}
