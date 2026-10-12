@@ -1,3 +1,4 @@
+
 import 'dotenv/config';
 import { DataSource } from 'typeorm';
 
@@ -8,11 +9,12 @@ const AppDataSource = new DataSource({
   url: process.env.DATABASE_URL,
   ssl: postgresSslFromUrl(process.env.DATABASE_URL),
 
-  entities: ['src/**/*.entity.ts'],
+  // Supports both TypeScript source and compiled JavaScript.
+  entities: [__dirname + '/../**/*.entity{.ts,.js}'],
 
-  migrations: ['src/database/migrations/*.ts'],
+  migrations: [__dirname + '/migrations/*{.ts,.js}'],
 
-  // Allow individual migrations to opt out (e.g. PostgreSQL ENUM ADD VALUE).
+  // Allow individual migrations to opt out when necessary.
   migrationsTransactionMode: 'each',
 
   synchronize: false,
