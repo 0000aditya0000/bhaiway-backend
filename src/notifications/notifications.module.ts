@@ -1,4 +1,4 @@
-import { Logger, Module } from '@nestjs/common';
+import { Logger, Module, forwardRef } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
@@ -16,7 +16,8 @@ import { MockNotificationProvider } from './providers/mock-notification.provider
 @Module({
   imports: [
     ConfigModule,
-    AuthModule,
+    // forwardRef: Auth → Referrals → Wallet/Notifications → Auth
+    forwardRef(() => AuthModule),
     TypeOrmModule.forFeature([Notification, NotificationDevice, UserProfile]),
   ],
   controllers: [NotificationsController],

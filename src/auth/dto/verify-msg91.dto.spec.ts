@@ -33,6 +33,18 @@ describe('VerifyMsg91Dto', () => {
     });
   });
 
+  it('accepts optional referralCode normalized to uppercase', async () => {
+    await expect(
+      transform({
+        accessToken: 'MSG91_ACCESS_TOKEN',
+        referralCode: ' bhw7k4p9 ',
+      }),
+    ).resolves.toEqual({
+      accessToken: 'MSG91_ACCESS_TOKEN',
+      referralCode: 'BHW7K4P9',
+    });
+  });
+
   it('rejects non-string accessToken', async () => {
     await expect(transform({ accessToken: 12345 })).rejects.toMatchObject({
       response: {

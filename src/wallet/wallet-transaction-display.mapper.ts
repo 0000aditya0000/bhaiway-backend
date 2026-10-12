@@ -64,6 +64,12 @@ function refundTitleFromIdempotencyKey(idempotencyKey: string): string | null {
   if (idempotencyKey.startsWith('aadhaar-verification-reward:')) {
     return 'Aadhaar Verification Reward';
   }
+  if (
+    idempotencyKey.startsWith('referral-reward:referrer:') ||
+    idempotencyKey.startsWith('referral-reward:referred:')
+  ) {
+    return 'Referral Reward';
+  }
   return null;
 }
 
@@ -114,6 +120,12 @@ function resolveWalletTransactionDisplay(
       };
 
     case WalletTransactionType.PROMOTIONAL_CREDIT:
+      if (tx.referenceType === 'REFERRAL') {
+        return {
+          displayTitle: 'Referral Reward',
+          displayCategory: WalletTransactionDisplayCategory.BONUS,
+        };
+      }
       return {
         displayTitle: 'Bonus coins added',
         displayCategory: WalletTransactionDisplayCategory.BONUS,
@@ -286,6 +298,12 @@ function categoryForIdempotency(
     return WalletTransactionDisplayCategory.DEPOSIT;
   }
   if (idempotencyKey.startsWith('aadhaar-verification-reward:')) {
+    return WalletTransactionDisplayCategory.BONUS;
+  }
+  if (
+    idempotencyKey.startsWith('referral-reward:referrer:') ||
+    idempotencyKey.startsWith('referral-reward:referred:')
+  ) {
     return WalletTransactionDisplayCategory.BONUS;
   }
   return WalletTransactionDisplayCategory.REFUND;

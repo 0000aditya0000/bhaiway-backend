@@ -47,6 +47,18 @@ import {
       default: false,
     })
     emailVerified!: boolean;
+
+    /**
+     * Stable unique invite code (e.g. BHW7K4P9). Backend-generated; immutable for users.
+     */
+    @Column({
+      name: 'referral_code',
+      type: 'varchar',
+      length: 32,
+      unique: true,
+      nullable: true,
+    })
+    referralCode!: string | null;
   
     @Column({
       type: 'enum',

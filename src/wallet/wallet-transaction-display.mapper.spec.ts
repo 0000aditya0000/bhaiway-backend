@@ -45,6 +45,20 @@ describe('wallet-transaction-display.mapper', () => {
     });
   });
 
+  it('labels referral reward by reference and idempotency key', () => {
+    expect(
+      getWalletTransactionDisplay({
+        ...base,
+        transactionType: WalletTransactionType.PROMOTIONAL_CREDIT,
+        referenceType: 'REFERRAL',
+        idempotencyKey: 'referral-reward:referrer:ref-1',
+      }),
+    ).toEqual({
+      displayTitle: 'Referral Reward',
+      displayCategory: WalletTransactionDisplayCategory.BONUS,
+    });
+  });
+
   it('labels commute booking payment', () => {
     expect(
       getWalletTransactionDisplay(

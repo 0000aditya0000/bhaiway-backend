@@ -6,12 +6,16 @@ import {
   NotFoundException,
   BadRequestException,
   UnauthorizedException,
+  forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, QueryFailedError, Repository } from 'typeorm';
 
+import { SelfReferralNotAllowedError } from '../referrals/errors/referral.errors';
+import { ReferralService } from '../referrals/referral.service';
+import { normalizeReferralCode } from '../referrals/referral-code.util';
 import { User, UserStatus } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { isProfileCompleted } from '../users/profile-completion';
@@ -68,19 +72,28 @@ export class AuthService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(UserProfile)
     private readonly userProfileRepository: Repository<UserProfile>,
+    @Inject(forwardRef(() => ReferralService))
+    private readonly referralService: ReferralService,
   ) {}
 
   /**
    * Verifies the MSG91 access token, then authenticates with the verified phone.
    * Phone is taken only from MSG91 response.message — never from the client.
    */
-  async verifyMsg91AccessToken(accessToken: string): Promise<AuthLoginResult> {
+  async verifyMsg91AccessToken(
+    accessToken: string,
+    referralCode?: string | null,
+  ): Promise<AuthLoginResult> {
     if (!accessToken?.trim()) {
       throw new Msg91InvalidAccessTokenError();
     }
 
     const verified = await this.otpProvider.verifyAccessToken(accessToken);
-    return this.authenticateVerifiedPhone(verified.phone, verified.email);
+    return this.authenticateVerifiedPhone(
+      verified.phone,
+      verified.email,
+      referralCode,
+    );
   }
 
   /**
@@ -88,25 +101,28 @@ export class AuthService {
    *
    * - accessToken → normal MSG91 widget path (unchanged)
    * - phone + otp → Play Store review path only when all three env conditions match
+   * - referralCode → applied only when creating a NEW user
    */
   async verifyMsg91(input: {
     accessToken?: string;
     phone?: string;
     otp?: string;
+    referralCode?: string | null;
   }): Promise<AuthLoginResult> {
     const accessToken = input.accessToken?.trim();
     const phone = input.phone?.trim();
     const otp = input.otp?.trim();
+    const referralCode = normalizeReferralCode(input.referralCode);
 
     const hasPhoneOtp = Boolean(phone && otp);
     const hasAccessToken = Boolean(accessToken);
 
     if (hasPhoneOtp) {
-      return this.verifyPlayReviewCredentials(phone!, otp!);
+      return this.verifyPlayReviewCredentials(phone!, otp!, referralCode);
     }
 
     if (hasAccessToken) {
-      return this.verifyMsg91AccessToken(accessToken!);
+      return this.verifyMsg91AccessToken(accessToken!, referralCode);
     }
 
     throw new Msg91InvalidAccessTokenError(
@@ -154,11 +170,13 @@ export class AuthService {
   async authenticateVerifiedPhone(
     phone: string,
     email?: string,
+    referralCode?: string | null,
   ): Promise<AuthLoginResult> {
     return this.loginOrRegisterWithVerifiedIdentity({
       phone,
       email,
       verified: true,
+      referralCode,
     });
   }
 
@@ -182,7 +200,7 @@ export class AuthService {
    * Completes BhaiWay login/signup once a verified phone is available.
    */
   async loginOrRegisterWithVerifiedIdentity(
-    identity: VerifiedOtpUser,
+    identity: VerifiedOtpUser & { referralCode?: string | null },
   ): Promise<AuthLoginResult> {
     if (!identity.verified || !identity.phone?.trim()) {
       throw new Msg91InvalidAccessTokenError(
@@ -192,14 +210,20 @@ export class AuthService {
 
     const phone = this.normalizePhone(identity.phone);
     this.assertNotPlatformIdentity(phone);
+    const referralCode = normalizeReferralCode(identity.referralCode);
 
     let user = await this.userRepository.findOne({ where: { phone } });
 
     if (!user) {
       try {
-        user = await this.createUserWithWallet(phone, identity.email);
+        user = await this.createUserWithWallet(
+          phone,
+          identity.email,
+          referralCode,
+        );
       } catch (error) {
         // Concurrent first login: unique phone constraint → reuse winner.
+        // Winner already owns any referral; loser must not create another.
         if (this.isUniquePhoneViolation(error)) {
           user = await this.userRepository.findOne({ where: { phone } });
           if (!user) {
@@ -210,6 +234,7 @@ export class AuthService {
         }
       }
     }
+    // Existing users: referralCode is intentionally ignored.
 
     this.assertNotPlatformIdentity(user.phone, user.id);
     user.phoneVerified = true;
@@ -280,6 +305,7 @@ export class AuthService {
   private async verifyPlayReviewCredentials(
     phoneRaw: string,
     otpRaw: string,
+    referralCode?: string | null,
   ): Promise<AuthLoginResult> {
     const phone = this.normalizePhone(phoneRaw);
     const otp = otpRaw.trim();
@@ -311,7 +337,11 @@ export class AuthService {
 
     this.logger.log('[AUTH] Play review authentication used');
 
-    return this.authenticateVerifiedPhone(configuredPhone);
+    return this.authenticateVerifiedPhone(
+      configuredPhone,
+      undefined,
+      referralCode,
+    );
   }
 
   private getConfiguredReviewPhone(): string | null {
@@ -405,13 +435,24 @@ export class AuthService {
   private async createUserWithWallet(
     phone: string,
     email?: string,
+    referralCode?: string | null,
   ): Promise<User> {
     return this.dataSource.transaction(async (manager) => {
+      // Validate referral BEFORE creating the user so invalid codes never leave a partial account.
+      const referrer = await this.referralService.resolveReferrerInTransaction(
+        manager,
+        referralCode,
+      );
+
+      const ownCode =
+        await this.referralService.allocateUniqueReferralCode(manager);
+
       const user = manager.create(User, {
         phone,
         phoneVerified: true,
         email: email ?? null,
         emailVerified: false,
+        referralCode: ownCode,
         status: UserStatus.ACTIVE,
         lastLoginAt: new Date(),
       });
@@ -433,6 +474,17 @@ export class AuthService {
         driverEarnedHeld: '0',
       });
       await manager.save(WalletBalance, balance);
+
+      if (referrer) {
+        if (referrer.id === savedUser.id) {
+          throw new SelfReferralNotAllowedError();
+        }
+        await this.referralService.applyReferralRewardsInTransaction(manager, {
+          referrer,
+          referredUserId: savedUser.id,
+          referralCode: referrer.referralCode!,
+        });
+      }
 
       return savedUser;
     });

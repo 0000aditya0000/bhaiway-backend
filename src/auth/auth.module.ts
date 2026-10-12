@@ -1,9 +1,10 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { ReferralsModule } from '../referrals/referrals.module';
 import { User } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
@@ -36,6 +37,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       },
     }),
     TypeOrmModule.forFeature([User, UserProfile, Wallet, WalletBalance]),
+    forwardRef(() => ReferralsModule),
   ],
   controllers: [AuthController],
   providers: [

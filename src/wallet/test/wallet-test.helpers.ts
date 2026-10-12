@@ -133,6 +133,13 @@ export async function cleanupTestWallet(
   await lotRepository.delete({ walletId: ctx.walletId });
   await balanceRepository.delete({ walletId: ctx.walletId });
   await walletRepository.delete({ id: ctx.walletId });
+
+  // Referral FKs are RESTRICT — remove rows where this user is either side.
+  await dataSource.query(
+    `DELETE FROM referrals WHERE referrer_user_id = $1 OR referred_user_id = $1`,
+    [ctx.userId],
+  );
+
   await profileRepository.delete({ userId: ctx.userId });
   await userRepository.delete({ id: ctx.userId });
 }

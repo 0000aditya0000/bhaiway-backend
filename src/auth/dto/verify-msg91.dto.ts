@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, ValidateIf } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsOptional, IsString, MaxLength, ValidateIf } from 'class-validator';
 
 /**
  * MSG91 Widget verify payload.
@@ -9,6 +10,8 @@ import { IsOptional, IsString, ValidateIf } from 'class-validator';
  *
  * Play Store review path (only when PLAY_REVIEW_LOGIN_ENABLED=true):
  *   { "phone": "<configured review phone>", "otp": "<configured review OTP>" }
+ *
+ * Optional referralCode is applied only when the backend creates a NEW user.
  *
  * Phone/OTP credentials are never hard-coded in source; they come from env.
  */
@@ -42,4 +45,17 @@ export class VerifyMsg91Dto {
   @IsString()
   @IsOptional()
   otp?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional referral code for NEW users only. Trimmed and uppercased. Ignored for existing accounts.',
+    example: 'BHW7K4P9',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  referralCode?: string;
 }

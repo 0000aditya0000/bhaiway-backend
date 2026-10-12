@@ -11,6 +11,7 @@ import { CorporateIdentityModule } from './corporate-identity/corporate-identity
 import { EmailVerificationModule } from './email-verification/email-verification.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RatingsModule } from './ratings/ratings.module';
+import { ReferralsModule } from './referrals/referrals.module';
 import { RidesModule } from './rides/rides.module';
 import { SettingsModule } from './settings/settings.module';
 import { TrackingModule } from './tracking/tracking.module';
@@ -31,6 +32,7 @@ import { WalletModule } from './wallet/wallet.module';
     UsersModule,
     EmailVerificationModule,
     CorporateIdentityModule,
+    ReferralsModule,
     WalletModule,
     SettingsModule,
     VerificationModule,

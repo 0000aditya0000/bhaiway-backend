@@ -54,12 +54,19 @@ export class AuthController {
       typeof body?.accessToken === 'string' ? body.accessToken : undefined;
     const phone = typeof body?.phone === 'string' ? body.phone : undefined;
     const otp = typeof body?.otp === 'string' ? body.otp : undefined;
+    const referralCode =
+      typeof body?.referralCode === 'string' ? body.referralCode : undefined;
 
     if (!accessToken?.trim() && !(phone?.trim() && otp?.trim())) {
       throw new Msg91InvalidAccessTokenError();
     }
 
-    return this.authService.verifyMsg91({ accessToken, phone, otp });
+    return this.authService.verifyMsg91({
+      accessToken,
+      phone,
+      otp,
+      referralCode,
+    });
   }
 
   /**
