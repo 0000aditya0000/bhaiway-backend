@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import {
   DataSource,
   EntityManager,
+  In,
   QueryFailedError,
   Repository,
 } from 'typeorm';
@@ -312,11 +313,17 @@ export class WalletService {
   }
 
   /**
-   * Create an Assured deposit hold using an existing EntityManager.
-   * Assured-only: holdType must be ASSURED_DEPOSIT.
+   * Create a hold using an existing EntityManager.
+   * Supported hold types: ASSURED_DEPOSIT, WITHDRAWAL.
    *
-   * Ledger note (M1): ASSURED_DEPOSIT_HOLD is recorded as DEBIT because it
-   * reduces *spendable* (available) balance. Total wallet value is unchanged
+   * ASSURED_DEPOSIT: consumes spendable lots (promo → purchased → earned),
+   * ledger type ASSURED_DEPOSIT_HOLD.
+   *
+   * WITHDRAWAL: only DRIVER_EARNED lots/balance are eligible; purchased and
+   * promotional coins can never be held for withdrawal. Ledger type WITHDRAWAL.
+   *
+   * Ledger note (M1): the hold row is recorded as DEBIT because it reduces
+   * *spendable* (available) balance. Total wallet value is unchanged
    * (available ↓, held ↑). This is a restriction, not value destruction.
    * Callers must own the surrounding transaction and lock ordering.
    */
@@ -325,11 +332,18 @@ export class WalletService {
     input: CreateHoldInput,
   ): Promise<WalletOperationResult> {
     this.assertPositiveAmount(input.amount);
-    if (input.holdType !== WalletHoldType.ASSURED_DEPOSIT) {
+    if (
+      input.holdType !== WalletHoldType.ASSURED_DEPOSIT &&
+      input.holdType !== WalletHoldType.WITHDRAWAL
+    ) {
       throw new WalletOperationConflictError(
-        'createHoldInTransaction only supports ASSURED_DEPOSIT holds',
+        'createHoldInTransaction only supports ASSURED_DEPOSIT and WITHDRAWAL holds',
       );
     }
+    const isWithdrawal = input.holdType === WalletHoldType.WITHDRAWAL;
+    const sourceTypes: WalletPointSource[] | undefined = isWithdrawal
+      ? [WalletPointSource.DRIVER_EARNED]
+      : undefined;
     this.assertPlatformWalletAccess(input.walletId, null, {
       allowPlatformOperations: false,
     });
@@ -365,13 +379,20 @@ export class WalletService {
       );
     }
 
-    if (this.getAvailableBalance(balance) < input.amount) {
+    const spendable = isWithdrawal
+      ? BigInt(balance.driverEarnedAvailable)
+      : this.getAvailableBalance(balance);
+    if (spendable < input.amount) {
       throw new InsufficientWalletBalanceError();
     }
 
     const balanceBefore = this.getTotalBalance(balance);
-    const lots = await this.lockAvailablePointLots(manager, input.walletId);
-    const plans = this.planLotConsumption(lots, input.amount);
+    const lots = await this.lockAvailablePointLots(
+      manager,
+      input.walletId,
+      sourceTypes,
+    );
+    const plans = this.planLotConsumption(lots, input.amount, sourceTypes);
 
     const hold = manager.create(WalletHold, {
       walletId: input.walletId,
@@ -425,8 +446,10 @@ export class WalletService {
     const transaction = manager.create(WalletTransaction, {
       walletId: input.walletId,
       userId: wallet.userId,
-      transactionType: WalletTransactionType.ASSURED_DEPOSIT_HOLD,
-      pointSource: null,
+      transactionType: isWithdrawal
+        ? WalletTransactionType.WITHDRAWAL
+        : WalletTransactionType.ASSURED_DEPOSIT_HOLD,
+      pointSource: isWithdrawal ? WalletPointSource.DRIVER_EARNED : null,
       direction: WalletTransactionDirection.DEBIT,
       amount: this.toAmountString(input.amount),
       balanceBefore: this.toAmountString(balanceBefore),
@@ -782,7 +805,9 @@ export class WalletService {
     }
 
     if (
-      transaction.transactionType === WalletTransactionType.ASSURED_DEPOSIT_HOLD
+      transaction.transactionType ===
+        WalletTransactionType.ASSURED_DEPOSIT_HOLD ||
+      transaction.transactionType === WalletTransactionType.WITHDRAWAL
     ) {
       return (
         (await holdRepository.findOne({
@@ -1059,18 +1084,23 @@ export class WalletService {
   private async lockAvailablePointLots(
     manager: EntityManager,
     walletId: string,
+    sourceTypes?: WalletPointSource[],
   ): Promise<WalletPointLot[]> {
     const now = new Date();
 
-    const lots = await manager
+    const qb = manager
       .getRepository(WalletPointLot)
       .createQueryBuilder('lot')
       .setLock('pessimistic_write')
       .where('lot.wallet_id = :walletId', { walletId })
       .andWhere('lot.available_amount > 0')
-      .andWhere('(lot.expires_at IS NULL OR lot.expires_at > :now)', { now })
-      .orderBy('lot.id', 'ASC')
-      .getMany();
+      .andWhere('(lot.expires_at IS NULL OR lot.expires_at > :now)', { now });
+
+    if (sourceTypes && sourceTypes.length > 0) {
+      qb.andWhere('lot.source_type IN (:...sourceTypes)', { sourceTypes });
+    }
+
+    const lots = await qb.orderBy('lot.id', 'ASC').getMany();
 
     return lots.sort((a, b) => {
       const sourceDiff =
@@ -1108,11 +1138,16 @@ export class WalletService {
   private planLotConsumption(
     lots: WalletPointLot[],
     amount: bigint,
+    sourceTypes?: WalletPointSource[],
   ): LotAllocationPlan[] {
     let remaining = amount;
     const plans: LotAllocationPlan[] = [];
+    const allowedOrder =
+      sourceTypes && sourceTypes.length > 0
+        ? CONSUMPTION_SOURCE_ORDER.filter((s) => sourceTypes.includes(s))
+        : CONSUMPTION_SOURCE_ORDER;
 
-    for (const sourceType of CONSUMPTION_SOURCE_ORDER) {
+    for (const sourceType of allowedOrder) {
       const sourceLots = lots.filter((lot) => lot.sourceType === sourceType);
       for (const lot of sourceLots) {
         if (remaining <= 0n) {
@@ -1169,7 +1204,10 @@ export class WalletService {
     return manager.findOne(WalletTransaction, {
       where: {
         walletId: hold.walletId,
-        transactionType: WalletTransactionType.ASSURED_DEPOSIT_HOLD,
+        transactionType: In([
+          WalletTransactionType.ASSURED_DEPOSIT_HOLD,
+          WalletTransactionType.WITHDRAWAL,
+        ]),
         referenceType: hold.referenceType,
         referenceId: hold.referenceId,
       },

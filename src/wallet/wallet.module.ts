@@ -11,8 +11,15 @@ import { WalletBalance } from './entities/wallet-balance.entity';
 import { WalletHoldAllocation } from './entities/wallet-hold-allocation.entity';
 import { WalletHold } from './entities/wallet-hold.entity';
 import { WalletPointLot } from './entities/wallet-point-lot.entity';
+import { UserPaymentMethod } from './entities/user-payment-method.entity';
 import { WalletTransaction } from './entities/wallet-transaction.entity';
 import { Wallet } from './entities/wallet.entity';
+import { WithdrawalStatusHistory } from './entities/withdrawal-status-history.entity';
+import { Withdrawal } from './entities/withdrawal.entity';
+import { PaymentMethodService } from './payment-method.service';
+import { WalletPaymentMethodsController } from './wallet-payment-methods.controller';
+import { WalletWithdrawalsController } from './wallet-withdrawals.controller';
+import { WithdrawalService } from './withdrawal.service';
 import { PaymentGatewayModule } from './payment/payment-gateway.module';
 import { PaymentWebhookController } from './payment/payment-webhook.controller';
 import { TopUpService } from './top-up.service';
@@ -39,11 +46,21 @@ import { WalletService } from './wallet.service';
       PaymentWebhookEvent,
       Booking,
       Ride,
+      UserPaymentMethod,
+      Withdrawal,
+      WithdrawalStatusHistory,
     ]),
   ],
-  controllers: [WalletController, PaymentWebhookController],
+  controllers: [
+    WalletController,
+    WalletPaymentMethodsController,
+    WalletWithdrawalsController,
+    PaymentWebhookController,
+  ],
   providers: [
     WalletService,
+    PaymentMethodService,
+    WithdrawalService,
     WalletQueryService,
     WalletHistoryService,
     TopUpService,
@@ -53,6 +70,8 @@ import { WalletService } from './wallet.service';
   exports: [
     TypeOrmModule,
     WalletService,
+    PaymentMethodService,
+    WithdrawalService,
     WalletQueryService,
     WalletReconciliationService,
     WalletLotExpiryService,

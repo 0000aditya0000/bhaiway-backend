@@ -44,7 +44,8 @@ export interface CreateHoldInput {
   walletId: string;
   amount: bigint;
   /**
-   * Assured-deposit holds only. Other hold types are not supported by this API.
+   * ASSURED_DEPOSIT (spends any available lots) or WITHDRAWAL (DRIVER_EARNED
+   * only). BOOKING_PAYMENT holds are not supported by this API.
    */
   holdType: WalletHoldType;
   referenceType: string;

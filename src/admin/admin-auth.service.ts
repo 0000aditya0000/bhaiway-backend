@@ -17,6 +17,7 @@ import {
   ADMIN_BOOTSTRAP_USER_ID,
   ADMIN_BOOTSTRAP_USERNAME_DEFAULT,
   ADMIN_PERMISSION_DASHBOARD_VIEW,
+  ADMIN_PERMISSION_WITHDRAWALS_MANAGE,
 } from './admin.constants';
 import {
   hashAdminPassword,
@@ -162,6 +163,7 @@ export class AdminAuthService implements OnModuleInit {
         new Set([
           ...(admin?.permissions ?? []),
           ADMIN_PERMISSION_DASHBOARD_VIEW,
+          ADMIN_PERMISSION_WITHDRAWALS_MANAGE,
         ]),
       );
 
@@ -184,7 +186,7 @@ export class AdminAuthService implements OnModuleInit {
     });
 
     this.logger.log(
-      `Bootstrap admin ready username=${username} permission=${ADMIN_PERMISSION_DASHBOARD_VIEW}`,
+      `Bootstrap admin ready username=${username} permissions=${ADMIN_PERMISSION_DASHBOARD_VIEW},${ADMIN_PERMISSION_WITHDRAWALS_MANAGE}`,
     );
   }
 }

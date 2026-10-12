@@ -36,6 +36,9 @@ import {
   formatInrAmount,
   redactToken,
   walletCreditedKey,
+  withdrawalCompletedKey,
+  withdrawalInitiatedKey,
+  withdrawalProcessingKey,
 } from './notifications.helpers';
 import type { EnqueueNotificationInput } from './notifications.types';
 
@@ -480,6 +483,76 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
         bookingId: params.bookingId,
       },
       idempotencyKey: chatMessageKey(params.messageId),
+    });
+  }
+
+  /** Withdrawal request recorded (outbox row in the business TX). */
+  async safeNotifyWithdrawalInitiatedInTransaction(
+    manager: EntityManager,
+    params: {
+      userId: string;
+      withdrawalId: string;
+      referenceId: string;
+      amount: string | number | bigint;
+    },
+  ): Promise<void> {
+    const amount = formatInrAmount(params.amount);
+    await this.safeEnqueueInTransaction(manager, {
+      recipientUserId: params.userId,
+      type: NotificationType.WITHDRAWAL_INITIATED,
+      title: 'Withdrawal requested',
+      body: `Your withdrawal request for ${amount} Coins has been received.`,
+      data: {
+        type: NotificationType.WITHDRAWAL_INITIATED,
+        withdrawalId: params.withdrawalId,
+        referenceId: params.referenceId,
+        amount,
+      },
+      idempotencyKey: withdrawalInitiatedKey(params.withdrawalId),
+    });
+  }
+
+  async safeNotifyWithdrawalProcessing(params: {
+    userId: string;
+    withdrawalId: string;
+    referenceId: string;
+    amount: string | number | bigint;
+  }): Promise<void> {
+    const amount = formatInrAmount(params.amount);
+    await this.safeEnqueue({
+      recipientUserId: params.userId,
+      type: NotificationType.WITHDRAWAL_PROCESSING,
+      title: 'Withdrawal is being processed',
+      body: `Your withdrawal of ${amount} Coins is being processed.`,
+      data: {
+        type: NotificationType.WITHDRAWAL_PROCESSING,
+        withdrawalId: params.withdrawalId,
+        referenceId: params.referenceId,
+        amount,
+      },
+      idempotencyKey: withdrawalProcessingKey(params.withdrawalId),
+    });
+  }
+
+  async safeNotifyWithdrawalCompleted(params: {
+    userId: string;
+    withdrawalId: string;
+    referenceId: string;
+    amount: string | number | bigint;
+  }): Promise<void> {
+    const amount = formatInrAmount(params.amount);
+    await this.safeEnqueue({
+      recipientUserId: params.userId,
+      type: NotificationType.WITHDRAWAL_COMPLETED,
+      title: 'Withdrawal completed',
+      body: `Your withdrawal of ${amount} Coins has been completed.`,
+      data: {
+        type: NotificationType.WITHDRAWAL_COMPLETED,
+        withdrawalId: params.withdrawalId,
+        referenceId: params.referenceId,
+        amount,
+      },
+      idempotencyKey: withdrawalCompletedKey(params.withdrawalId),
     });
   }
 

@@ -38,6 +38,18 @@ export function walletCreditedKey(walletTransactionId: string): string {
   return `wallet-credited:${walletTransactionId}`;
 }
 
+export function withdrawalInitiatedKey(withdrawalId: string): string {
+  return `withdrawal-initiated:${withdrawalId}`;
+}
+
+export function withdrawalProcessingKey(withdrawalId: string): string {
+  return `withdrawal-processing:${withdrawalId}`;
+}
+
+export function withdrawalCompletedKey(withdrawalId: string): string {
+  return `withdrawal-completed:${withdrawalId}`;
+}
+
 export function chatMessageKey(messageId: string): string {
   return `chat-message:${messageId}`;
 }
@@ -81,4 +93,7 @@ export const NOTIFICATION_TYPE_LABEL: Record<NotificationType, string> = {
   [NotificationType.ASSURED_RIDE_PUBLISHED]: 'ASSURED_RIDE_PUBLISHED',
   [NotificationType.WALLET_CREDITED]: 'WALLET_CREDITED',
   [NotificationType.CHAT_MESSAGE]: 'CHAT_MESSAGE',
+  [NotificationType.WITHDRAWAL_INITIATED]: 'WITHDRAWAL_INITIATED',
+  [NotificationType.WITHDRAWAL_PROCESSING]: 'WITHDRAWAL_PROCESSING',
+  [NotificationType.WITHDRAWAL_COMPLETED]: 'WITHDRAWAL_COMPLETED',
 };

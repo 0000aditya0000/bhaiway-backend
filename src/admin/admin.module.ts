@@ -9,7 +9,9 @@ import { User } from '../users/entities/user.entity';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import { WalletTransaction } from '../wallet/entities/wallet-transaction.entity';
+import { WalletModule } from '../wallet/wallet.module';
 import { AdminAlertService } from './admin-alert.service';
+import { AdminWithdrawalsController } from './admin-withdrawals.controller';
 import { AdminAuthController } from './admin-auth.controller';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminDashboardController } from './admin-dashboard.controller';
@@ -23,6 +25,7 @@ import { AdminPermissionGuard } from './guards/admin-permission.guard';
   imports: [
     AuthModule,
     TrackingModule,
+    WalletModule,
     TypeOrmModule.forFeature([
       AdminUser,
       AdminAlert,
@@ -35,7 +38,11 @@ import { AdminPermissionGuard } from './guards/admin-permission.guard';
       WalletTransaction,
     ]),
   ],
-  controllers: [AdminAuthController, AdminDashboardController],
+  controllers: [
+    AdminAuthController,
+    AdminDashboardController,
+    AdminWithdrawalsController,
+  ],
   providers: [
     AdminAuthService,
     AdminDashboardService,
