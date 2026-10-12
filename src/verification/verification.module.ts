@@ -3,9 +3,12 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AuthModule } from '../auth/auth.module';
 import { AdminModule } from '../admin/admin.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { User } from '../users/entities/user.entity';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
+import { WalletModule } from '../wallet/wallet.module';
+import { AadhaarVerificationRewardService } from './aadhaar-verification-reward.service';
 import { CashfreeWebhookEvent } from './entities/cashfree-webhook-event.entity';
 import { UserIdentityVerification } from './entities/user-identity-verification.entity';
 import { UserVerification } from './entities/user-verification.entity';
@@ -35,6 +38,8 @@ import { VerificationService } from './verification.service';
     ]),
     AuthModule,
     AdminModule,
+    WalletModule,
+    NotificationsModule,
   ],
   controllers: [
     VerificationController,
@@ -48,6 +53,7 @@ import { VerificationService } from './verification.service';
     CashfreeDigiLockerService,
     CashfreeVehicleRcService,
     CashfreeKycService,
+    AadhaarVerificationRewardService,
     StubVerificationProvider,
     {
       provide: VERIFICATION_PROVIDER,
@@ -60,6 +66,7 @@ import { VerificationService } from './verification.service';
     CashfreeDigiLockerService,
     CashfreeVehicleRcService,
     CashfreeKycService,
+    AadhaarVerificationRewardService,
   ],
 })
 export class VerificationModule {}

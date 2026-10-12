@@ -61,6 +61,9 @@ function refundTitleFromIdempotencyKey(idempotencyKey: string): string | null {
   if (idempotencyKey.startsWith('top-up-credit:')) {
     return 'Coins purchased';
   }
+  if (idempotencyKey.startsWith('aadhaar-verification-reward:')) {
+    return 'Aadhaar Verification Reward';
+  }
   return null;
 }
 
@@ -281,6 +284,9 @@ function categoryForIdempotency(
   }
   if (idempotencyKey.startsWith('assured-deposit-release:')) {
     return WalletTransactionDisplayCategory.DEPOSIT;
+  }
+  if (idempotencyKey.startsWith('aadhaar-verification-reward:')) {
+    return WalletTransactionDisplayCategory.BONUS;
   }
   return WalletTransactionDisplayCategory.REFUND;
 }

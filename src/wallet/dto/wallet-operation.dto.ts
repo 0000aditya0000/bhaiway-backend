@@ -22,6 +22,11 @@ export interface CreditPointsInput {
    * Normal user-facing flows must leave this false/undefined.
    */
   allowPlatformOperations?: boolean;
+  /**
+   * When true, skips the default WALLET_CREDITED push so callers can send a
+   * more specific notification (e.g. Aadhaar verification reward).
+   */
+  suppressWalletCreditNotification?: boolean;
 }
 
 export interface DebitPointsInput {

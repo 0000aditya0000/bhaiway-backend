@@ -33,6 +33,7 @@ import {
   KycAlreadyVerifiedError,
   KycVerificationNotFoundError,
 } from './cashfree.errors';
+import { AadhaarVerificationRewardService } from '../aadhaar-verification-reward.service';
 import {
   CashfreeKycStatusResponseDto,
   CashfreeStartVerificationResponseDto,
@@ -52,6 +53,7 @@ export class CashfreeKycService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly cashfreeService: CashfreeDigiLockerService,
+    private readonly aadhaarRewardService: AadhaarVerificationRewardService,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     @InjectRepository(UserProfile)
@@ -209,8 +211,12 @@ export class CashfreeKycService {
       throw new KycVerificationNotFoundError('No verification session found for user');
     }
 
-    // If already verified, return idempotent view
+    // If already verified, ensure one-time reward (idempotent) then return.
     if (latest.status === IdentityVerificationStatus.VERIFIED) {
+      await this.aadhaarRewardService.creditForUser({
+        userId: latest.userId,
+        identityVerificationId: latest.id,
+      });
       return this.toMobileStatusDto(latest);
     }
 
@@ -511,8 +517,12 @@ export class CashfreeKycService {
         throw new NotFoundException('Verification record not found');
       }
 
-      // Idempotency: if already verified, return immediately
+      // Idempotency: if already verified, still ensure reward (exactly once).
       if (record.status === IdentityVerificationStatus.VERIFIED) {
+        await this.aadhaarRewardService.creditInTransaction(manager, {
+          userId: record.userId,
+          identityVerificationId: record.id,
+        });
         return record;
       }
 
@@ -616,6 +626,12 @@ export class CashfreeKycService {
       }
 
       await genericVerifRepo.save(genericVerif);
+
+      // 4. One-time 50 Coins PROMOTIONAL reward (non-withdrawable)
+      await this.aadhaarRewardService.creditInTransaction(manager, {
+        userId: record.userId,
+        identityVerificationId: savedIdentity.id,
+      });
 
       return savedIdentity;
     });

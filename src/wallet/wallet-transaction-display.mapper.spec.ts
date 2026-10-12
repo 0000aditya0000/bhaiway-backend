@@ -32,6 +32,19 @@ describe('wallet-transaction-display.mapper', () => {
     });
   });
 
+  it('labels Aadhaar verification reward', () => {
+    expect(
+      getWalletTransactionDisplay({
+        ...base,
+        transactionType: WalletTransactionType.PROMOTIONAL_CREDIT,
+        idempotencyKey: 'aadhaar-verification-reward:user-1',
+      }),
+    ).toEqual({
+      displayTitle: 'Aadhaar Verification Reward',
+      displayCategory: WalletTransactionDisplayCategory.BONUS,
+    });
+  });
+
   it('labels commute booking payment', () => {
     expect(
       getWalletTransactionDisplay(

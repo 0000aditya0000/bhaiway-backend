@@ -190,7 +190,10 @@ export class WalletService {
       transaction,
     );
 
-    if (this.notificationsService) {
+    if (
+      this.notificationsService &&
+      input.suppressWalletCreditNotification !== true
+    ) {
       await this.notificationsService.safeNotifyWalletCreditedInTransaction(
         manager,
         {
