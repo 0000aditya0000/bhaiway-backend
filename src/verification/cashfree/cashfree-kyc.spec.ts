@@ -689,7 +689,7 @@ describe('Cashfree DigiLocker KYC (integration & unit)', () => {
       const testPayload = {
         event: 'LOW_BALANCE_ALERT',
         currentBalance: 100.0,
-        alertTime: '2026-09-18 00:40:00',
+        alertTime: '2027-09-18 00:40:00',
         signature: 'test_dashboard_signature_placeholder',
       };
 

@@ -270,7 +270,7 @@ describe('Tracking (integration — Redis)', () => {
       .send({
         latitude: 28.6139,
         longitude: 77.209,
-        timestamp: '2026-08-22T18:30:00.000Z',
+        timestamp: '2027-08-22T18:30:00.000Z',
       })
       .expect(200);
 
@@ -280,7 +280,7 @@ describe('Tracking (integration — Redis)', () => {
       driverCoordinate: {
         latitude: 28.6139,
         longitude: 77.209,
-        timestamp: '2026-08-22T18:30:00.000Z',
+        timestamp: '2027-08-22T18:30:00.000Z',
       },
       isStale: false,
     });
@@ -294,7 +294,7 @@ describe('Tracking (integration — Redis)', () => {
     expect(passengerView.body.driverCoordinate).toEqual({
       latitude: 28.6139,
       longitude: 77.209,
-      timestamp: '2026-08-22T18:30:00.000Z',
+      timestamp: '2027-08-22T18:30:00.000Z',
     });
     expect(passengerView.body.isStale).toBe(false);
 

@@ -47,7 +47,7 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   let verificationService: VerificationService;
   let vehiclesService: VehiclesService;
   const tracked: TestWalletContext[] = [];
-  const departureDate = '2026-09-15';
+  const departureDate = '2027-09-15';
 
   beforeAll(async () => {
     assertSafeTestDatabaseUrl(process.env.DATABASE_URL);
@@ -418,7 +418,7 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
     const res = await searchQuery(login.accessToken, {
       source: 'Noida',
       destination: 'Dehradun',
-      date: '2026-09-16',
+      date: '2027-09-16',
       pickupLatitude: NOIDA.latitude,
       pickupLongitude: NOIDA.longitude,
       dropoffLatitude: DEHRADUN.latitude,

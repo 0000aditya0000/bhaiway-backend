@@ -195,7 +195,7 @@ describe('Regular ride modify (PATCH /rides/:id)', () => {
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
         destination: 'Connaught Place, Delhi',
-        departureDate: '2026-08-20',
+        departureDate: '2027-08-20',
         departureTime: '09:00',
         totalSeats,
         pricePerSeat: 250,
@@ -243,7 +243,7 @@ describe('Regular ride modify (PATCH /rides/:id)', () => {
       .send({
         source: 'Ghaziabad',
         destination: 'Gurgaon',
-        departureDate: '2026-08-21',
+        departureDate: '2027-08-21',
         departureTime: '10:30',
         pricePerSeat: 300,
         totalSeats: 3,
@@ -253,7 +253,7 @@ describe('Regular ride modify (PATCH /rides/:id)', () => {
     expect(updated.body).toMatchObject({
       source: 'Ghaziabad',
       destination: 'Gurgaon',
-      departureDate: '2026-08-21',
+      departureDate: '2027-08-21',
       totalSeats: 3,
       availableSeats: 3,
       pricePerSeat: '300',
@@ -348,7 +348,7 @@ describe('Regular ride modify (PATCH /rides/:id)', () => {
     await request(app.getHttpServer())
       .patch(`/rides/${ride.id}`)
       .set(auth)
-      .send({ departureDate: '2026-08-22' })
+      .send({ departureDate: '2027-08-22' })
       .expect(409);
 
     await request(app.getHttpServer())

@@ -423,10 +423,10 @@ describe('Wallet API (integration)', () => {
       });
       const txRepo = dataSource.getRepository(WalletTransaction);
       await txRepo.update(txs[0].id, {
-        createdAt: new Date('2026-08-01T12:00:00.000Z'),
+        createdAt: new Date('2027-08-01T12:00:00.000Z'),
       });
       await txRepo.update(txs[1].id, {
-        createdAt: new Date('2026-08-15T12:00:00.000Z'),
+        createdAt: new Date('2027-08-15T12:00:00.000Z'),
       });
 
       const response = await request(app.getHttpServer())

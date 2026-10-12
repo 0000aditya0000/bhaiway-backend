@@ -42,12 +42,12 @@ describe('assured-queue-key', () => {
   it('same route + same date + same hour window share queue key', () => {
     const a = calculateAssuredQueueIdentity({
       ...noidaDehradunCoords,
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       departureTime: '13:15:00',
     });
     const b = calculateAssuredQueueIdentity({
       ...noidaDehradunCoords,
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       departureTime: '13:40:00',
     });
     expect(a.queueKey).toBe(b.queueKey);
@@ -57,12 +57,12 @@ describe('assured-queue-key', () => {
   it('same route + same date + different hour window differ', () => {
     const morning = calculateAssuredQueueIdentity({
       ...noidaDehradunCoords,
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       departureTime: '13:15:00',
     });
     const evening = calculateAssuredQueueIdentity({
       ...noidaDehradunCoords,
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       departureTime: '17:10:00',
     });
     expect(morning.queueKey).not.toBe(evening.queueKey);
@@ -72,7 +72,7 @@ describe('assured-queue-key', () => {
   it('different route + same date + same hour differ', () => {
     const dehradun = calculateAssuredQueueIdentity({
       ...noidaDehradunCoords,
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       departureTime: '13:15:00',
     });
     const haridwar = calculateAssuredQueueIdentity({
@@ -80,7 +80,7 @@ describe('assured-queue-key', () => {
       destination: 'Haridwar',
       destinationLatitude: 29.9457,
       destinationLongitude: 78.1642,
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       departureTime: '13:15:00',
     });
     expect(dehradun.queueKey).not.toBe(haridwar.queueKey);
@@ -89,12 +89,12 @@ describe('assured-queue-key', () => {
   it('same route + different date differ', () => {
     const day1 = calculateAssuredQueueIdentity({
       ...noidaDehradunCoords,
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       departureTime: '13:15:00',
     });
     const day2 = calculateAssuredQueueIdentity({
       ...noidaDehradunCoords,
-      departureDate: '2026-08-31',
+      departureDate: '2027-08-31',
       departureTime: '13:15:00',
     });
     expect(day1.queueKey).not.toBe(day2.queueKey);
@@ -103,7 +103,7 @@ describe('assured-queue-key', () => {
   it('buildAssuredQueueKey is deterministic', () => {
     const key = buildAssuredQueueKey({
       routeIdentity: 'coord:1:2:3:4',
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       windowId: '13-14',
     });
     expect(key).toBe('coord:1:2:3:4|2026-08-30|13-14');

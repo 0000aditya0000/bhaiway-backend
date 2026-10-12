@@ -145,13 +145,13 @@ describe('assured-route-compatibility', () => {
 
   it('coarse lock keys are deterministic and sorted', () => {
     const a = buildAssuredQueueCoarseLockKeys({
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       windowId: '13-14',
       destinationLatitude: 30.3165,
       destinationLongitude: 78.0322,
     });
     const b = buildAssuredQueueCoarseLockKeys({
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       windowId: '13-14',
       destinationLatitude: 30.3165,
       destinationLongitude: 78.0322,

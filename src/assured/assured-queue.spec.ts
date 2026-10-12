@@ -282,7 +282,7 @@ describe('Assured Queue Engine (integration)', () => {
     return {
       rideType: RideType.ASSURED,
       vehicleId,
-      departureDate: '2026-08-30',
+      departureDate: '2027-08-30',
       departureTime: '13:15',
       totalSeats: 4,
       pricePerSeat: 300,
@@ -308,7 +308,7 @@ describe('Assured Queue Engine (integration)', () => {
     return res.body as { id: string; status: RideStatus };
   }
 
-  async function searchAssured(passengerToken: string, date = '2026-08-30') {
+  async function searchAssured(passengerToken: string, date = '2027-08-30') {
     const res = await request(app.getHttpServer())
       .get('/rides/search')
       .query({
@@ -589,7 +589,7 @@ describe('Assured Queue Engine (integration)', () => {
   it('14–15: FORCE_PUBLISH promotes at most one eligible PENDING ride', async () => {
     const d1 = await publishableDriver();
     const d2 = await publishableDriver();
-    const forceDate = '2026-09-15';
+    const forceDate = '2027-09-15';
 
     const active = await publishAssured(d1.login.accessToken, d1.vehicle.id, {
       departureDate: forceDate,

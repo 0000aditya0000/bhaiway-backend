@@ -282,7 +282,7 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
       .send({
         rideType: RideType.ASSURED,
         vehicleId,
-        departureDate: '2026-10-10',
+        departureDate: '2027-10-10',
         departureTime: '13:15',
         totalSeats: 4,
         pricePerSeat: 300,
@@ -476,7 +476,7 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
   it('CRITICAL: duplicate successful FORCE with same key is idempotent', async () => {
     const d1 = await publishableDriver();
     const d2 = await publishableDriver();
-    const forceDate = '2026-10-11';
+    const forceDate = '2027-10-11';
 
     const active = await publishAssured(d1.login.accessToken, d1.vehicle.id, {
       departureDate: forceDate,
@@ -558,7 +558,7 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
 
     const d1 = await publishableDriver();
     const first = await publishAssured(d1.login.accessToken, d1.vehicle.id, {
-      departureDate: '2026-10-12',
+      departureDate: '2027-10-12',
       departureTime: '10:15',
     });
     const firstRow = await dataSource
@@ -586,7 +586,7 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
 
     const d2 = await publishableDriver();
     const second = await publishAssured(d2.login.accessToken, d2.vehicle.id, {
-      departureDate: '2026-10-12',
+      departureDate: '2027-10-12',
       departureTime: '10:40',
       source: 'Corridor Mid Hub',
       destination: 'Near Dehradun Mid',
@@ -608,7 +608,7 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
   it('HIGH: CHECK rejects Assured ACTIVE/PENDING with NULL assured_queue_id', async () => {
     const d1 = await publishableDriver();
     const ride = await publishAssured(d1.login.accessToken, d1.vehicle.id, {
-      departureDate: '2026-10-13',
+      departureDate: '2027-10-13',
       departureTime: '09:15',
     });
 
@@ -661,7 +661,7 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
       .query({
         source: NOIDA.source,
         destination: NOIDA.destination,
-        date: '2026-10-10',
+        date: '2027-10-10',
         rideType: RideType.ASSURED,
       })
       .set('Authorization', `Bearer ${passenger.login.accessToken}`)

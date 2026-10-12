@@ -229,7 +229,7 @@ describe('Commute completion settlement (integration)', () => {
         vehicleId: vehicle.id,
         source: 'Gurgaon Cyber City',
         destination: 'Noida Sector 62',
-        departureDate: '2026-09-01',
+        departureDate: '2027-09-01',
         departureTime: '08:30',
         totalSeats,
         pricePerSeat,

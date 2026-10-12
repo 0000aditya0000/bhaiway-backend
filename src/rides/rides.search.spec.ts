@@ -210,7 +210,7 @@ describe('Rides search (integration)', () => {
         vehicleId,
         source: 'Noida Sector 62',
         destination: 'Connaught Place, Delhi',
-        departureDate: '2026-08-20',
+        departureDate: '2027-08-20',
         departureTime: '09:00',
         totalSeats: 3,
         pricePerSeat: 250,
@@ -233,7 +233,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
       })
       .expect(401);
   });
@@ -257,7 +257,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
       })
       .expect(200);
 
@@ -270,7 +270,7 @@ describe('Rides search (integration)', () => {
     const { login, vehicle } = await publishableDriver();
     const onDate = await createRide(login.accessToken, vehicle.id);
     await createRide(login.accessToken, vehicle.id, {
-      departureDate: '2026-08-21',
+      departureDate: '2027-08-21',
       departureTime: '09:00',
     });
 
@@ -280,7 +280,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
       })
       .expect(200);
 
@@ -304,7 +304,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
         time: '09:00',
       })
       .expect(200);
@@ -331,7 +331,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
         seats: 2,
       })
       .expect(200);
@@ -353,7 +353,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
       })
       .expect(200);
 
@@ -372,7 +372,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
       })
       .expect(200);
 
@@ -397,7 +397,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida Filter',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
         rideType: RideType.REGULAR,
       })
       .expect(200);
@@ -410,7 +410,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida Filter',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
         rideType: RideType.ASSURED,
       })
       .expect(200);
@@ -423,7 +423,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida Filter',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
       })
       .expect(200);
     expect(both.body.items).toHaveLength(2);
@@ -445,7 +445,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
       })
       .expect(200);
 
@@ -460,7 +460,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
         page: 1,
         limit: 2,
       })
@@ -476,7 +476,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
         limit: 51,
       })
       .expect(400);
@@ -503,7 +503,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
       })
       .expect(200);
 
@@ -527,7 +527,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
         seats: 1,
       })
       .expect(200);
@@ -549,7 +549,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
       })
       .expect(200);
 
@@ -591,42 +591,42 @@ describe('Rides search (integration)', () => {
       {
         source: 'Faridabad',
         destination: 'Gurgaon',
-        departureDate: '2026-08-01',
+        departureDate: '2027-08-01',
         departureTime: '06:00',
         status: RideStatus.COMPLETED,
       },
       {
         source: 'Ghaziabad',
         destination: 'Meerut',
-        departureDate: '2026-08-10',
+        departureDate: '2027-08-10',
         departureTime: '08:00',
         status: RideStatus.COMPLETED,
       },
       {
         source: 'Kanpur',
         destination: 'Lucknow',
-        departureDate: '2026-08-12',
+        departureDate: '2027-08-12',
         departureTime: '11:00',
         status: RideStatus.CANCELLED,
       },
       {
         source: 'Varanasi',
         destination: 'Allahabad',
-        departureDate: '2026-08-13',
+        departureDate: '2027-08-13',
         departureTime: '09:30',
         status: RideStatus.COMPLETED,
       },
       {
         source: 'Jaipur',
         destination: 'Ajmer',
-        departureDate: '2026-08-14',
+        departureDate: '2027-08-14',
         departureTime: '10:00',
         status: RideStatus.CANCELLED,
       },
       {
         source: 'Agra',
         destination: 'Mathura',
-        departureDate: '2026-08-15',
+        departureDate: '2027-08-15',
         departureTime: '14:00',
         status: RideStatus.COMPLETED,
       },
@@ -662,7 +662,7 @@ describe('Rides search (integration)', () => {
     const live = await createRide(login.accessToken, vehicle.id, {
       source: 'Noida Sector 62',
       destination: 'Connaught Place, Delhi',
-      departureDate: '2026-08-20',
+      departureDate: '2027-08-20',
       departureTime: '09:00',
     });
 
@@ -683,7 +683,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
       })
       .expect(200);
 

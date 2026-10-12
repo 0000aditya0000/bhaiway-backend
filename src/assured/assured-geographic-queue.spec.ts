@@ -280,7 +280,7 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
       .send({
         rideType: RideType.ASSURED,
         vehicleId,
-        departureDate: '2026-08-30',
+        departureDate: '2027-08-30',
         departureTime: '13:15',
         totalSeats: 4,
         pricePerSeat: 300,
@@ -348,7 +348,7 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
       departureTime: '17:10',
     });
     const nextDay = await publishAssured(d3.login.accessToken, d3.vehicle.id, {
-      departureDate: '2026-08-31',
+      departureDate: '2027-08-31',
       departureTime: '13:15',
     });
 
@@ -419,7 +419,7 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
 
     const d1 = await publishableDriver();
     const first = await publishAssured(d1.login.accessToken, d1.vehicle.id, {
-      departureDate: '2026-09-01',
+      departureDate: '2027-09-01',
       departureTime: '10:15',
     });
     const firstQueue = await dataSource
@@ -431,7 +431,7 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
 
     const d2 = await publishableDriver();
     const second = await publishAssured(d2.login.accessToken, d2.vehicle.id, {
-      departureDate: '2026-09-02',
+      departureDate: '2027-09-02',
       departureTime: '10:15',
       sourceLatitude: 28.5355 + 0.5,
       sourceLongitude: 77.391 + 0.5,
@@ -455,7 +455,7 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
         vehicleId: driver.vehicle.id,
         source: 'Mystery Source',
         destination: 'Mystery Destination',
-        departureDate: '2026-08-30',
+        departureDate: '2027-08-30',
         departureTime: '13:15',
         totalSeats: 4,
         pricePerSeat: 300,
@@ -466,7 +466,7 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
   it('15: FORCE_PUBLISH promotes exactly one eligible PENDING ride', async () => {
     const d1 = await publishableDriver();
     const d2 = await publishableDriver();
-    const forceDate = '2026-09-20';
+    const forceDate = '2027-09-20';
 
     const active = await publishAssured(d1.login.accessToken, d1.vehicle.id, {
       departureDate: forceDate,

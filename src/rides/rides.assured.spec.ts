@@ -236,7 +236,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
       vehicleId,
       source: 'Noida Assured Hub',
       destination: 'Delhi Assured Dest',
-      departureDate: '2026-08-21',
+      departureDate: '2027-08-21',
       departureTime: '08:30',
       totalSeats: 3,
       pricePerSeat: 300,
@@ -454,7 +454,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
-          date: '2026-08-21',
+          date: '2027-08-21',
         })
         .expect(200);
       expect(both.body.items).toHaveLength(2);
@@ -468,7 +468,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
-          date: '2026-08-21',
+          date: '2027-08-21',
           rideType: RideType.ASSURED,
         })
         .expect(200);
@@ -481,7 +481,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
-          date: '2026-08-21',
+          date: '2027-08-21',
           rideType: RideType.REGULAR,
         })
         .expect(200);
@@ -494,7 +494,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
-          date: '2026-08-21',
+          date: '2027-08-21',
           time: '08:00',
         })
         .expect(200);
@@ -507,7 +507,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
-          date: '2026-08-21',
+          date: '2027-08-21',
           seats: 4,
         })
         .expect(200);
@@ -520,7 +520,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
-          date: '2026-08-22',
+          date: '2027-08-22',
         })
         .expect(200);
       expect(wrongDate.body.items).toHaveLength(0);
@@ -531,7 +531,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
-          date: '2026-08-21',
+          date: '2027-08-21',
           page: 1,
           limit: 1,
         })
@@ -552,7 +552,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
-          date: '2026-08-21',
+          date: '2027-08-21',
         })
         .expect(200);
       const seatsAfter = (

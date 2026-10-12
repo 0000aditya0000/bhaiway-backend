@@ -257,7 +257,7 @@ describe('Past ride history (integration)', () => {
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
         destination: 'Connaught Place, Delhi',
-        departureDate: '2026-08-20',
+        departureDate: '2027-08-20',
         departureTime: '09:00',
         totalSeats,
         pricePerSeat: 150,

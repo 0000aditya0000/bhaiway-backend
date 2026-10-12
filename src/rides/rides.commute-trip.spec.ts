@@ -234,7 +234,7 @@ describe('Commute trip lifecycle (integration)', () => {
         vehicleId: driver.vehicle.id,
         source: 'Gurgaon',
         destination: 'Noida',
-        departureDate: '2026-09-15',
+        departureDate: '2027-09-15',
         departureTime: '08:30',
         totalSeats: 4,
         pricePerSeat: 100,

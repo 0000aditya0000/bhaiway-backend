@@ -76,7 +76,7 @@ describe('Commute route match percentage (GET /rides/search)', () => {
   let vehiclesService: VehiclesService;
   let walletService: WalletService;
   const tracked: TestWalletContext[] = [];
-  const departureDate = '2026-09-20';
+  const departureDate = '2027-09-20';
 
   beforeAll(async () => {
     assertSafeTestDatabaseUrl(process.env.DATABASE_URL);

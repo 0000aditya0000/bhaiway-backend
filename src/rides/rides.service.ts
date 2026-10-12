@@ -31,6 +31,11 @@ import {
   isCommutePublishedStatus,
   isRegularPublishedStatus,
 } from '../assured/assured-ride-status';
+import { ActiveAssuredRideExistsError } from './errors/ride-publishing.errors';
+import {
+  ACTIVE_ASSURED_RIDE_STATUSES,
+  assertDepartureIsInFuture,
+} from './ride-publishing.rules';
 import {
   AssuredRideLifecycleResponseDto,
   HalfTimeDecisionResponseDto,
@@ -393,6 +398,11 @@ export class RidesService {
   ): Promise<RideResponseDto> {
     await this.assertDriverCanPublish(driverId, dto.vehicleId);
 
+    assertDepartureIsInFuture(
+      dto.departureDate,
+      this.normalizeTime(dto.departureTime),
+    );
+
     if (dto.rideType === RideType.ASSURED) {
       return this.createAssuredRide(driverId, dto, options?.idempotencyKey);
     }
@@ -561,6 +571,13 @@ export class RidesService {
           }
         }
 
+        // Serialize Assured publishes per driver; partial unique index is the hard guarantee.
+        await manager.query(
+          `SELECT pg_advisory_xact_lock(hashtext($1))`,
+          [`assured-one-active:${driverId}`],
+        );
+        await this.assertNoActiveAssuredRideInTransaction(manager, driverId);
+
         const wallet = await this.lockWalletForUpdate(manager, driverId);
         this.assertWalletAllowsDeposit(wallet);
 
@@ -645,6 +662,9 @@ export class RidesService {
           return this.toResponse(recovered);
         }
       }
+      if (this.isActiveAssuredRideUniqueViolation(error)) {
+        throw new ActiveAssuredRideExistsError();
+      }
       throw error;
     }
   }
@@ -705,6 +725,45 @@ export class RidesService {
       (constraint.includes('publish_idempotency') ||
         detail.includes('publish_idempotency_key'))
     );
+  }
+
+  private isActiveAssuredRideUniqueViolation(error: unknown): boolean {
+    if (!(error instanceof QueryFailedError)) {
+      return false;
+    }
+    const driverError = error.driverError as {
+      code?: string;
+      constraint?: string;
+      detail?: string;
+    };
+    const code = driverError?.code ?? (error as { code?: string }).code;
+    const constraint =
+      driverError?.constraint ??
+      (error as { constraint?: string }).constraint ??
+      '';
+    const detail = driverError?.detail ?? '';
+    return (
+      code === '23505' &&
+      (constraint.includes('one_active_assured') ||
+        detail.includes('UQ_rides_one_active_assured_per_driver'))
+    );
+  }
+
+  private async assertNoActiveAssuredRideInTransaction(
+    manager: EntityManager,
+    driverId: string,
+  ): Promise<void> {
+    const existing = await manager.getRepository(Ride).findOne({
+      where: {
+        driverId,
+        rideType: RideType.ASSURED,
+        status: In([...ACTIVE_ASSURED_RIDE_STATUSES]),
+      },
+      order: { createdAt: 'ASC' },
+    });
+    if (existing) {
+      throw new ActiveAssuredRideExistsError();
+    }
   }
 
   async findMine(driverId: string): Promise<RideResponseDto[]> {
@@ -1289,6 +1348,12 @@ export class RidesService {
     }
     if (dto.departureTime !== undefined) {
       ride.departureTime = this.normalizeTime(dto.departureTime);
+    }
+    if (dto.departureDate !== undefined || dto.departureTime !== undefined) {
+      assertDepartureIsInFuture(
+        this.toCivilDate(ride.departureDate),
+        this.normalizeTime(this.formatTime(ride.departureTime)),
+      );
     }
     if (!options.skipSeats && dto.totalSeats !== undefined) {
       const bookedSeats = ride.totalSeats - ride.availableSeats;

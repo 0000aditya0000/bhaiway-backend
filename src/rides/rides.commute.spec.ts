@@ -52,7 +52,7 @@ describe('Daily Office Commute (integration)', () => {
     rideType: RideType.COMMUTE,
     source: 'Gurgaon Cyber City',
     destination: 'Noida Sector 62',
-    departureDate: '2026-09-01',
+    departureDate: '2027-09-01',
     departureTime: '08:30',
     totalSeats: 3,
     pricePerSeat: 100,
@@ -253,7 +253,7 @@ describe('Daily Office Commute (integration)', () => {
       rideType: RideType.REGULAR,
       source: 'Noida Sector 62',
       destination: 'Connaught Place, Delhi',
-      departureDate: '2026-08-20',
+      departureDate: '2027-08-20',
       departureTime: '09:00',
       pricePerSeat: 250,
     });
@@ -269,7 +269,7 @@ describe('Daily Office Commute (integration)', () => {
       rideType: RideType.ASSURED,
       source: 'Noida Sector 62',
       destination: 'Connaught Place, Delhi',
-      departureDate: '2026-08-20',
+      departureDate: '2027-08-20',
       departureTime: '09:00',
       totalSeats: 1,
       pricePerSeat: 500,
@@ -330,7 +330,7 @@ describe('Daily Office Commute (integration)', () => {
       .query({
         source: 'Gurgaon Commute',
         destination: 'Noida',
-        date: '2026-09-01',
+        date: '2027-09-01',
         rideType: RideType.COMMUTE,
       })
       .expect(200);
@@ -365,7 +365,7 @@ describe('Daily Office Commute (integration)', () => {
       rideType: RideType.REGULAR,
       source: 'Noida Regular Commute Test',
       destination: 'Delhi',
-      departureDate: '2026-08-20',
+      departureDate: '2027-08-20',
       departureTime: '09:00',
       pricePerSeat: 250,
     });
@@ -376,7 +376,7 @@ describe('Daily Office Commute (integration)', () => {
       .query({
         source: 'Noida Regular Commute',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
         rideType: RideType.REGULAR,
       })
       .expect(200);
@@ -394,7 +394,7 @@ describe('Daily Office Commute (integration)', () => {
       rideType: RideType.ASSURED,
       source: 'Noida Assured Commute Test',
       destination: 'Delhi',
-      departureDate: '2026-08-20',
+      departureDate: '2027-08-20',
       departureTime: '09:00',
       totalSeats: 1,
       pricePerSeat: 500,
@@ -406,7 +406,7 @@ describe('Daily Office Commute (integration)', () => {
       .query({
         source: 'Noida Assured Commute',
         destination: 'Delhi',
-        date: '2026-08-20',
+        date: '2027-08-20',
         rideType: RideType.ASSURED,
       })
       .expect(200);
@@ -427,7 +427,7 @@ describe('Daily Office Commute (integration)', () => {
       .query({
         source: 'Gurgaon',
         destination: 'Noida',
-        date: '2026-09-01',
+        date: '2027-09-01',
         rideType: RideType.COMMUTE,
       })
       .expect(200);

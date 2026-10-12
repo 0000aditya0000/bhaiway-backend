@@ -451,7 +451,7 @@ describe('Assured ride trip lifecycle (integration)', () => {
       .send({
         latitude: 28.6139,
         longitude: 77.209,
-        timestamp: '2026-08-22T18:30:00.000Z',
+        timestamp: '2027-08-22T18:30:00.000Z',
       })
       .expect(200);
 

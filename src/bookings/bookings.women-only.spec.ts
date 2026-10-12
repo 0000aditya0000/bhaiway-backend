@@ -122,12 +122,40 @@ describe('Women Only ride booking (integration)', () => {
       if (!ctx) {
         continue;
       }
+      await dataSource.query(
+        `DELETE FROM chat_messages WHERE conversation_id IN (
+           SELECT id FROM chat_conversations WHERE booking_id IN (
+             SELECT id FROM bookings WHERE passenger_id = $1
+           )
+         )`,
+        [ctx.userId],
+      );
+      await dataSource.query(
+        `DELETE FROM chat_conversations WHERE booking_id IN (
+           SELECT id FROM bookings WHERE passenger_id = $1
+         )`,
+        [ctx.userId],
+      );
       await dataSource.getRepository(Booking).delete({ passengerId: ctx.userId });
       const rides = await dataSource.getRepository(Ride).find({
         where: { driverId: ctx.userId },
         select: { id: true },
       });
       for (const ride of rides) {
+        await dataSource.query(
+          `DELETE FROM chat_messages WHERE conversation_id IN (
+             SELECT id FROM chat_conversations WHERE booking_id IN (
+               SELECT id FROM bookings WHERE ride_id = $1
+             )
+           )`,
+          [ride.id],
+        );
+        await dataSource.query(
+          `DELETE FROM chat_conversations WHERE booking_id IN (
+             SELECT id FROM bookings WHERE ride_id = $1
+           )`,
+          [ride.id],
+        );
         await dataSource.getRepository(Booking).delete({ rideId: ride.id });
         await dataSource.getRepository(Ride).delete({ id: ride.id });
       }
@@ -241,7 +269,7 @@ describe('Women Only ride booking (integration)', () => {
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
         destination: 'Connaught Place',
-        departureDate: '2026-09-20',
+        departureDate: '2027-09-20',
         departureTime: '09:00',
         totalSeats: 3,
         pricePerSeat: 100,
