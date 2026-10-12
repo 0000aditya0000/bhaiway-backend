@@ -12,11 +12,17 @@ import {
 } from 'typeorm';
 
 import { User } from '../../users/entities/user.entity';
+import { EmailOtpPurpose } from '../enums/email-otp-purpose.enum';
 
 @Entity('email_verification_otps')
 @Index('IDX_email_verification_otps_user_id', ['userId'])
 @Index('IDX_email_verification_otps_email', ['email'])
 @Index('IDX_email_verification_otps_user_sent', ['userId', 'sentAt'])
+@Index('IDX_email_verification_otps_user_purpose_sent', [
+  'userId',
+  'purpose',
+  'sentAt',
+])
 export class EmailVerificationOtp {
   @PrimaryColumn('uuid')
   id!: string;
@@ -27,6 +33,13 @@ export class EmailVerificationOtp {
 
   @Column({ name: 'user_id', type: 'uuid' })
   userId!: string;
+
+  @Column({
+    type: 'varchar',
+    length: 40,
+    default: EmailOtpPurpose.EMAIL_VERIFICATION,
+  })
+  purpose!: EmailOtpPurpose;
 
   @Column({ type: 'varchar', length: 255 })
   email!: string;

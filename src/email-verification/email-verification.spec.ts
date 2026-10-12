@@ -23,6 +23,7 @@ import {
 import { WalletModule } from '../wallet/wallet.module';
 import { EmailVerificationModule } from './email-verification.module';
 import { EmailVerificationOtp } from './entities/email-verification-otp.entity';
+import { EmailOtpPurpose } from './enums/email-otp-purpose.enum';
 import {
   EMAIL_OTP_MAX_ATTEMPTS,
   EMAIL_OTP_MAX_SENDS_PER_HOUR,
@@ -241,6 +242,7 @@ describe('Email verification (integration)', () => {
         repo.create({
           userId: login.user.id,
           email,
+          purpose: EmailOtpPurpose.EMAIL_VERIFICATION,
           otpHash: `v1$seed${i}$hash`,
           expiresAt: new Date(now + 60_000),
           attempts: 0,

@@ -23,12 +23,15 @@ export function hashEmailOtp(params: {
   otp: string;
   userId: string;
   email: string;
+  purpose: string;
   pepper: string;
   saltHex?: string;
 }): string {
   const saltHex = params.saltHex ?? randomBytes(16).toString('hex');
   const digest = createHmac('sha256', params.pepper)
-    .update(`${saltHex}:${params.userId}:${params.email}:${params.otp}`)
+    .update(
+      `${saltHex}:${params.userId}:${params.purpose}:${params.email}:${params.otp}`,
+    )
     .digest('hex');
   return `${EMAIL_OTP_HASH_PREFIX}$${saltHex}$${digest}`;
 }
@@ -38,6 +41,7 @@ export function emailOtpHashesMatch(
   candidateOtp: string,
   userId: string,
   email: string,
+  purpose: string,
   pepper: string,
 ): boolean {
   const parts = storedHash.split('$');
@@ -49,6 +53,7 @@ export function emailOtpHashesMatch(
     otp: candidateOtp,
     userId,
     email,
+    purpose,
     pepper,
     saltHex: parts[1],
   });

@@ -42,6 +42,7 @@ describe('email-otp.util', () => {
       otp,
       userId: 'user-1',
       email: 'user@example.com',
+      purpose: 'EMAIL_VERIFICATION',
       pepper,
     });
     expect(hash).not.toContain(otp);
@@ -55,28 +56,68 @@ describe('email-otp.util', () => {
       otp,
       userId: 'user-1',
       email: 'user@example.com',
+      purpose: 'EMAIL_VERIFICATION',
       pepper,
     });
     expect(
-      emailOtpHashesMatch(hash, otp, 'user-1', 'user@example.com', pepper),
+      emailOtpHashesMatch(
+        hash,
+        otp,
+        'user-1',
+        'user@example.com',
+        'EMAIL_VERIFICATION',
+        pepper,
+      ),
     ).toBe(true);
     expect(
-      emailOtpHashesMatch(hash, '0000', 'user-1', 'user@example.com', pepper),
+      emailOtpHashesMatch(
+        hash,
+        '0000',
+        'user-1',
+        'user@example.com',
+        'EMAIL_VERIFICATION',
+        pepper,
+      ),
     ).toBe(false);
   });
 
-  it('does not accept the same hash for a different user or email', () => {
+  it('does not accept the same hash for a different user, email, or purpose', () => {
     const hash = hashEmailOtp({
       otp: '4827',
       userId: 'user-1',
       email: 'user@example.com',
+      purpose: 'EMAIL_VERIFICATION',
       pepper,
     });
     expect(
-      emailOtpHashesMatch(hash, '4827', 'user-2', 'user@example.com', pepper),
+      emailOtpHashesMatch(
+        hash,
+        '4827',
+        'user-2',
+        'user@example.com',
+        'EMAIL_VERIFICATION',
+        pepper,
+      ),
     ).toBe(false);
     expect(
-      emailOtpHashesMatch(hash, '4827', 'user-1', 'other@example.com', pepper),
+      emailOtpHashesMatch(
+        hash,
+        '4827',
+        'user-1',
+        'other@example.com',
+        'EMAIL_VERIFICATION',
+        pepper,
+      ),
+    ).toBe(false);
+    expect(
+      emailOtpHashesMatch(
+        hash,
+        '4827',
+        'user-1',
+        'user@example.com',
+        'CORPORATE_IDENTITY',
+        pepper,
+      ),
     ).toBe(false);
   });
 

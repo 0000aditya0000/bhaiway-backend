@@ -7,6 +7,7 @@ import { AdminModule } from './admin/admin.module';
 import { BookingsModule } from './bookings/bookings.module';
 import { ChatModule } from './chat/chat.module';
 import { DatabaseModule } from './database/database.module';
+import { CorporateIdentityModule } from './corporate-identity/corporate-identity.module';
 import { EmailVerificationModule } from './email-verification/email-verification.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RatingsModule } from './ratings/ratings.module';
@@ -29,6 +30,7 @@ import { WalletModule } from './wallet/wallet.module';
     AdminModule,
     UsersModule,
     EmailVerificationModule,
+    CorporateIdentityModule,
     WalletModule,
     SettingsModule,
     VerificationModule,
