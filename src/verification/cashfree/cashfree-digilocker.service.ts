@@ -75,6 +75,16 @@ export class CashfreeDigiLockerService {
     this.logger.log(
       `[CashfreeDigiLockerService] DigiLocker endpoint: ${url}`,
     );
+    try {
+      const parsed = new URL(redirectUrl);
+      this.logger.log(
+        `[CashfreeDigiLockerService] DigiLocker redirect_url: ${parsed.origin}${parsed.pathname}`,
+      );
+    } catch {
+      this.logger.error(
+        '[CashfreeDigiLockerService] DigiLocker redirect_url is invalid',
+      );
+    }
 
     const requestBody = {
       verification_id: params.verificationId,

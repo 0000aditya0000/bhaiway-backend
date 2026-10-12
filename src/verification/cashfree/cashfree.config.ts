@@ -8,6 +8,14 @@ export const CASHFREE_SANDBOX_BASE_URL =
 export const CASHFREE_PRODUCTION_BASE_URL =
   'https://api.cashfree.com/verification';
 
+/**
+ * DigiLocker browser redirect after consent.
+ * Must match the public production API host (Cashfree redirects the WebView here).
+ * Do not use the retired Render hostname.
+ */
+export const DEFAULT_CASHFREE_DIGILOCKER_REDIRECT_URL =
+  'https://api.bhaiway.com/api/kyc/aadhaar/digilocker/callback';
+
 export type CashfreeVerificationEnvironment = 'production' | 'sandbox';
 
 export interface CashfreeDigiLockerConfig {
@@ -29,6 +37,15 @@ function stripEnvQuotes(raw: string): string {
     value = value.slice(1, -1).trim();
   }
   return value;
+}
+
+/** Host only — never log query strings or secrets. */
+function safeUrlHost(raw: string): string {
+  try {
+    return new URL(raw).origin + new URL(raw).pathname;
+  } catch {
+    return '(invalid-redirect-url)';
+  }
 }
 
 /**
@@ -102,7 +119,7 @@ export class CashfreeConfigService {
     const redirectUrl = (
       this.configService.get<string>('CASHFREE_DIGILOCKER_REDIRECT_URL') ||
       process.env.CASHFREE_DIGILOCKER_REDIRECT_URL ||
-      'https://bhaiway-backend.onrender.com/api/kyc/aadhaar/digilocker/callback'
+      DEFAULT_CASHFREE_DIGILOCKER_REDIRECT_URL
     ).trim();
 
     if (!this.loggedEnvironment) {
@@ -114,8 +131,16 @@ export class CashfreeConfigService {
         `[CashfreeConfig] DigiLocker endpoint: ${baseUrl}/digilocker`,
       );
       this.logger.log(
+        `[CashfreeConfig] DigiLocker redirect_url host: ${safeUrlHost(redirectUrl)}`,
+      );
+      this.logger.log(
         `[CashfreeConfig] Public Key 2FA: ${publicKey ? 'enabled' : 'disabled'}`,
       );
+      if (redirectUrl.includes('onrender.com')) {
+        this.logger.error(
+          '[CashfreeConfig] CASHFREE_DIGILOCKER_REDIRECT_URL still points at Render. DigiLocker consent redirects will show Verification Record Not Found. Set it to https://api.bhaiway.com/api/kyc/aadhaar/digilocker/callback',
+        );
+      }
     }
 
     return {

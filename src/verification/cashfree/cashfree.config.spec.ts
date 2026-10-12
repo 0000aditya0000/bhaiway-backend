@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   CASHFREE_PRODUCTION_BASE_URL,
   CASHFREE_SANDBOX_BASE_URL,
+  DEFAULT_CASHFREE_DIGILOCKER_REDIRECT_URL,
   CashfreeConfigService,
   resolveCashfreeVerificationBaseUrl,
   resolveCashfreeVerificationEnvironment,
@@ -80,14 +81,42 @@ describe('Cashfree verification environment URL selection', () => {
           CASHFREE_CLIENT_ID: 'cid',
           CASHFREE_CLIENT_SECRET: 'csecret',
           CASHFREE_DIGILOCKER_REDIRECT_URL:
-            'https://bhaiway-backend.onrender.com/api/kyc/aadhaar/digilocker/callback',
+            'https://api.bhaiway.com/api/kyc/aadhaar/digilocker/callback',
         }),
       );
       const config = service.getConfig();
       expect(config.environment).toBe('production');
       expect(config.baseUrl).toBe(CASHFREE_PRODUCTION_BASE_URL);
+      expect(config.redirectUrl).toBe(
+        'https://api.bhaiway.com/api/kyc/aadhaar/digilocker/callback',
+      );
       expect(config.publicKey).toBeNull();
     });
+
+    it('defaults DigiLocker redirect_url to api.bhaiway.com when env is unset', () => {
+      const previous = process.env.CASHFREE_DIGILOCKER_REDIRECT_URL;
+      delete process.env.CASHFREE_DIGILOCKER_REDIRECT_URL;
+      try {
+        const service = new CashfreeConfigService(
+          makeConfigService({
+            CASHFREE_VERIFICATION_ENV: 'production',
+            CASHFREE_CLIENT_ID: 'cid',
+            CASHFREE_CLIENT_SECRET: 'csecret',
+          }),
+        );
+        expect(service.getConfig().redirectUrl).toBe(
+          DEFAULT_CASHFREE_DIGILOCKER_REDIRECT_URL,
+        );
+        expect(service.getConfig().redirectUrl).not.toContain('onrender.com');
+      } finally {
+        if (previous === undefined) {
+          delete process.env.CASHFREE_DIGILOCKER_REDIRECT_URL;
+        } else {
+          process.env.CASHFREE_DIGILOCKER_REDIRECT_URL = previous;
+        }
+      }
+    });
+
 
     it('sandbox config resolves DigiLocker sandbox base URL', () => {
       const service = new CashfreeConfigService(
@@ -133,8 +162,7 @@ describe('Cashfree verification environment URL selection', () => {
         clientId: 'test-client-id',
         clientSecret: secret,
         publicKey,
-        redirectUrl:
-          'https://bhaiway-backend.onrender.com/api/kyc/aadhaar/digilocker/callback',
+        redirectUrl: DEFAULT_CASHFREE_DIGILOCKER_REDIRECT_URL,
         timeoutMs: 5000,
         ...overrides,
       };

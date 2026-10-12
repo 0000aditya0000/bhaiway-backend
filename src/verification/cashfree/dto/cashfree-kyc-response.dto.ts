@@ -15,6 +15,12 @@ export class CashfreeStartVerificationResponseDto {
   @ApiProperty({ description: 'Cashfree DigiLocker URL' })
   url!: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Browser redirect URL registered with Cashfree for this session (must be api.bhaiway.com callback)',
+  })
+  redirectUrl?: string | null;
+
   @ApiPropertyOptional({ description: 'URL expiration ISO timestamp' })
   expiresAt?: string | null;
 }

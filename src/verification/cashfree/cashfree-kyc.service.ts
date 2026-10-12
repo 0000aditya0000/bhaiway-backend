@@ -106,6 +106,7 @@ export class CashfreeKycService {
         referenceId: active.referenceId,
         status: active.status,
         url: active.verificationUrl,
+        redirectUrl: active.redirectUrl,
         expiresAt: active.urlExpiresAt.toISOString(),
       };
     }
@@ -140,6 +141,7 @@ export class CashfreeKycService {
       referenceId: saved.referenceId,
       status: saved.status,
       url: saved.verificationUrl!,
+      redirectUrl: saved.redirectUrl,
       expiresAt: saved.urlExpiresAt?.toISOString() ?? null,
     };
   }
