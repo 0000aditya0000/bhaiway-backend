@@ -24,23 +24,12 @@ describe('VerifyMsg91Dto', () => {
     });
   });
 
-  it('rejects missing accessToken', async () => {
-    await expect(transform({})).rejects.toMatchObject({
-      response: {
-        message: expect.arrayContaining([
-          expect.stringMatching(/accessToken/i),
-        ]),
-      },
-    });
-  });
-
-  it('rejects empty accessToken', async () => {
-    await expect(transform({ accessToken: '' })).rejects.toMatchObject({
-      response: {
-        message: expect.arrayContaining([
-          expect.stringMatching(/accessToken/i),
-        ]),
-      },
+  it('accepts phone + otp for Play review path', async () => {
+    await expect(
+      transform({ phone: '9761454075', otp: '1234' }),
+    ).resolves.toEqual({
+      phone: '9761454075',
+      otp: '1234',
     });
   });
 
