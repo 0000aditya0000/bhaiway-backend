@@ -5,6 +5,7 @@ import { AssuredModule } from '../assured/assured.module';
 import { FareModule } from '../fare/fare.module';
 import { AuthModule } from '../auth/auth.module';
 import { ChatModule } from '../chat/chat.module';
+import { CouponsModule } from '../coupons/coupons.module';
 import { UserCoupon } from '../coupons/entities/user-coupon.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Ride } from '../rides/entities/ride.entity';
@@ -41,6 +42,7 @@ import { Booking } from './entities/booking.entity';
     SettingsModule,
     AssuredModule,
     FareModule,
+    CouponsModule,
     ChatModule,
     NotificationsModule,
   ],

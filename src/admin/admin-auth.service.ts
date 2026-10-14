@@ -16,6 +16,7 @@ import {
   ADMIN_BOOTSTRAP_PHONE,
   ADMIN_BOOTSTRAP_USER_ID,
   ADMIN_BOOTSTRAP_USERNAME_DEFAULT,
+  ADMIN_PERMISSION_COUPONS_MANAGE,
   ADMIN_PERMISSION_DASHBOARD_VIEW,
   ADMIN_PERMISSION_WITHDRAWALS_MANAGE,
 } from './admin.constants';
@@ -164,6 +165,7 @@ export class AdminAuthService implements OnModuleInit {
           ...(admin?.permissions ?? []),
           ADMIN_PERMISSION_DASHBOARD_VIEW,
           ADMIN_PERMISSION_WITHDRAWALS_MANAGE,
+          ADMIN_PERMISSION_COUPONS_MANAGE,
         ]),
       );
 
@@ -186,7 +188,7 @@ export class AdminAuthService implements OnModuleInit {
     });
 
     this.logger.log(
-      `Bootstrap admin ready username=${username} permissions=${ADMIN_PERMISSION_DASHBOARD_VIEW},${ADMIN_PERMISSION_WITHDRAWALS_MANAGE}`,
+      `Bootstrap admin ready username=${username} permissions=${ADMIN_PERMISSION_DASHBOARD_VIEW},${ADMIN_PERMISSION_WITHDRAWALS_MANAGE},${ADMIN_PERMISSION_COUPONS_MANAGE}`,
     );
   }
 }

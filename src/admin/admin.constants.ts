@@ -15,6 +15,7 @@ export const PLATFORM_REVENUE_TRANSACTION_TYPES: readonly WalletTransactionType[
 
 export const ADMIN_PERMISSION_DASHBOARD_VIEW = 'ADMIN_DASHBOARD_VIEW';
 export const ADMIN_PERMISSION_WITHDRAWALS_MANAGE = 'ADMIN_WITHDRAWALS_MANAGE';
+export const ADMIN_PERMISSION_COUPONS_MANAGE = 'ADMIN_COUPONS_MANAGE';
 
 /** Reserved backing user for the bootstrap dashboard admin (not the platform wallet user). */
 export const ADMIN_BOOTSTRAP_USER_ID =

@@ -4,11 +4,15 @@ import {
   IsEnum,
   IsInt,
   IsOptional,
+  IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 
+import { CouponChargeScope } from '../../coupons/enums/coupon.enums';
 import {
   BookingFarePayment,
   BookingPaymentMethod,
@@ -47,4 +51,25 @@ export class CreateBookingDto {
   @IsOptional()
   @IsEnum(BookingFarePayment)
   farePayment?: BookingFarePayment;
+
+  @ApiPropertyOptional({
+    description:
+      'Catalog coupon code. Applied server-side to the charge selected by couponChargeScope (or inferred). Never trust client discount amounts.',
+    example: 'SAVE50',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(4)
+  @MaxLength(64)
+  couponCode?: string;
+
+  @ApiPropertyOptional({
+    enum: CouponChargeScope,
+    enumName: 'CouponChargeScope',
+    description:
+      'Which charge the coupon applies to. For Assured deposit bookings defaults to ASSURED_SECURITY_DEPOSIT; for PAY_NOW/COMMUTE fare defaults to RIDE_FARE. BOTH is not accepted at apply-time — pick one charge.',
+  })
+  @IsOptional()
+  @IsEnum(CouponChargeScope)
+  couponChargeScope?: CouponChargeScope;
 }

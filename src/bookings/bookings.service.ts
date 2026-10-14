@@ -34,11 +34,18 @@ import {
   ASSURED_BOOKING_RIDER_DEPOSIT_REF,
   calculateRiderAssuredDeposit,
 } from '../assured/assured-deposit.math';
+import { CouponRedemptionService } from '../coupons/coupon-redemption.service';
 import {
   UserCoupon,
   UserCouponStatus,
   UserCouponType,
 } from '../coupons/entities/user-coupon.entity';
+import {
+  CouponBenefitType,
+  CouponChargeScope,
+  CouponRideTypeScope,
+  mapRideTypeToCouponScope,
+} from '../coupons/enums/coupon.enums';
 import { Ride } from '../rides/entities/ride.entity';
 import {
   RegularSeatsPolicy,
@@ -159,6 +166,7 @@ export class BookingsService {
     private readonly commuteCancellationService: CommuteCancellationService,
     private readonly chatService: ChatService,
     private readonly notificationsService: NotificationsService,
+    private readonly couponRedemptionService: CouponRedemptionService,
   ) {}
 
   async cancelByPassenger(
@@ -181,6 +189,12 @@ export class BookingsService {
           passengerId,
           bookingId,
         );
+      await this.dataSource.transaction(async (manager) => {
+        await this.couponRedemptionService.releaseByBookingIdInTransaction(
+          manager,
+          bookingId,
+        );
+      });
       await this.chatService.safeCloseForBooking(bookingId);
       // Counterparty notified inside CommuteCancellationService.
       return result;
@@ -193,6 +207,12 @@ export class BookingsService {
       passengerId,
       bookingId,
     );
+    await this.dataSource.transaction(async (manager) => {
+      await this.couponRedemptionService.releaseByBookingIdInTransaction(
+        manager,
+        bookingId,
+      );
+    });
     await this.chatService.safeCloseForBooking(bookingId);
     if (full) {
       const mode =
@@ -804,8 +824,40 @@ export class BookingsService {
           ride.pricePerSeat,
           dto.seats,
         );
-        const amount = BigInt(fare.totalAmount);
+        let amount = BigInt(fare.totalAmount);
         const bookingId = randomUUID();
+        let catalogCouponRedemptionId: string | null = null;
+        let couponDiscountAmount: string | null = null;
+
+        const catalogCode = dto.couponCode?.trim();
+        if (catalogCode) {
+          const chargeScope =
+            dto.couponChargeScope ?? CouponChargeScope.RIDE_FARE;
+          if (chargeScope !== CouponChargeScope.RIDE_FARE) {
+            throw new BadRequestException(
+              'Office Commute bookings only accept RIDE_FARE coupons',
+            );
+          }
+          const applied =
+            await this.couponRedemptionService.reserveInTransaction(manager, {
+              userId: passengerId,
+              rideType: CouponRideTypeScope.OFFICE_COMMUTE,
+              chargeScope: CouponChargeScope.RIDE_FARE,
+              amount,
+              bookingId,
+              rideId: ride.id,
+              code: catalogCode,
+              idempotencyKey: `${key}:coupon:RIDE_FARE`,
+            });
+          if (
+            applied.redemption.benefitTypeSnapshot !==
+            CouponBenefitType.POINTS_CREDIT
+          ) {
+            amount = applied.finalAmount;
+            couponDiscountAmount = applied.discountAmount.toString();
+          }
+          catalogCouponRedemptionId = applied.redemption.id;
+        }
 
         let walletTransactionId: string | null = null;
         if (amount > 0n) {
@@ -823,6 +875,14 @@ export class BookingsService {
           walletTransactionId = debit.transaction.id;
         }
 
+        if (catalogCouponRedemptionId) {
+          await this.couponRedemptionService.finalizeReservedInTransaction(
+            manager,
+            catalogCouponRedemptionId,
+            wallet.id,
+          );
+        }
+
         const booking = manager.getRepository(Booking).create({
           id: bookingId,
           rideId: ride.id,
@@ -833,7 +893,7 @@ export class BookingsService {
           paymentStatus: BookingPaymentStatus.PAID,
           farePaymentMethod: null,
           pricePerSeatSnapshot: fare.riderPricePerSeatSnapshot,
-          totalAmount: fare.totalAmount,
+          totalAmount: amount.toString(),
           driverPricePerSeatSnapshot: fare.driverPricePerSeatSnapshot,
           riderPricePerSeatSnapshot: fare.riderPricePerSeatSnapshot,
           driverShareAmount: fare.driverShareAmount,
@@ -846,6 +906,9 @@ export class BookingsService {
           fareWalletTransactionId: null,
           bookingMode: BookingMode.COMMUTE,
           depositCouponId: null,
+          couponRedemptionId: catalogCouponRedemptionId,
+          originalAssuredDepositAmount: null,
+          couponDiscountAmount,
         });
 
         const saved = await manager.getRepository(Booking).save(booking);
@@ -1040,8 +1103,40 @@ export class BookingsService {
           pricePerSeatSnapshot,
           dto.seats,
         );
-        const amount = BigInt(totalAmount);
+        let amount = BigInt(totalAmount);
         const bookingId = randomUUID();
+        let catalogCouponRedemptionId: string | null = null;
+        let couponDiscountAmount: string | null = null;
+
+        const catalogCode = dto.couponCode?.trim();
+        if (catalogCode) {
+          const chargeScope =
+            dto.couponChargeScope ?? CouponChargeScope.RIDE_FARE;
+          if (chargeScope !== CouponChargeScope.RIDE_FARE) {
+            throw new BadRequestException(
+              'Regular PAY_NOW bookings only accept RIDE_FARE coupons',
+            );
+          }
+          const applied =
+            await this.couponRedemptionService.reserveInTransaction(manager, {
+              userId: passengerId,
+              rideType: mapRideTypeToCouponScope(ride.rideType),
+              chargeScope: CouponChargeScope.RIDE_FARE,
+              amount,
+              bookingId,
+              rideId: ride.id,
+              code: catalogCode,
+              idempotencyKey: `${key}:coupon:RIDE_FARE`,
+            });
+          if (
+            applied.redemption.benefitTypeSnapshot !==
+            CouponBenefitType.POINTS_CREDIT
+          ) {
+            amount = applied.finalAmount;
+            couponDiscountAmount = applied.discountAmount.toString();
+          }
+          catalogCouponRedemptionId = applied.redemption.id;
+        }
 
         let walletTransactionId: string | null = null;
         if (amount > 0n) {
@@ -1057,6 +1152,14 @@ export class BookingsService {
             },
           );
           walletTransactionId = debit.transaction.id;
+        }
+
+        if (catalogCouponRedemptionId) {
+          await this.couponRedemptionService.finalizeReservedInTransaction(
+            manager,
+            catalogCouponRedemptionId,
+            wallet.id,
+          );
         }
 
         ride.availableSeats -= dto.seats;
@@ -1080,7 +1183,7 @@ export class BookingsService {
           paymentStatus: BookingPaymentStatus.PAID,
           farePaymentMethod: null,
           pricePerSeatSnapshot,
-          totalAmount,
+          totalAmount: amount.toString(),
           idempotencyKey: key,
           walletTransactionId,
           assuredDepositPercentage: null,
@@ -1089,6 +1192,9 @@ export class BookingsService {
           fareWalletTransactionId: null,
           bookingMode: BookingMode.REGULAR,
           depositCouponId: null,
+          couponRedemptionId: catalogCouponRedemptionId,
+          originalAssuredDepositAmount: null,
+          couponDiscountAmount,
           ...pickupFields,
         });
 
@@ -1227,12 +1333,19 @@ export class BookingsService {
           manager,
           passengerId,
         );
-        let depositAmount = calculateRiderAssuredDeposit(
+        const originalDepositAmount = calculateRiderAssuredDeposit(
           dto.seats,
           BigInt(pricePerSeatSnapshot),
           effectivePercentage,
         );
+        let depositAmount = originalDepositAmount;
         let depositCouponId: string | null = null;
+        let catalogCouponRedemptionId: string | null = null;
+        let couponDiscountAmount: string | null = null;
+        let originalAssuredDepositAmount: string | null = null;
+        let payableFareAmount = fareAmount;
+        let reservedRedemptionId: string | null = null;
+
         if (coupon) {
           depositAmount = 0n;
           depositCouponId = coupon.id;
@@ -1240,6 +1353,73 @@ export class BookingsService {
           coupon.usedAt = new Date();
           coupon.usedBookingId = bookingId;
           await manager.getRepository(UserCoupon).save(coupon);
+        }
+
+        const catalogCode = dto.couponCode?.trim();
+        if (catalogCode) {
+          const chargeScope =
+            dto.couponChargeScope ??
+            CouponChargeScope.ASSURED_SECURITY_DEPOSIT;
+
+          if (chargeScope === CouponChargeScope.BOTH) {
+            throw new BadRequestException(
+              'couponChargeScope must be RIDE_FARE or ASSURED_SECURITY_DEPOSIT when applying a coupon',
+            );
+          }
+
+          if (
+            chargeScope === CouponChargeScope.ASSURED_SECURITY_DEPOSIT &&
+            depositCouponId
+          ) {
+            throw new BadRequestException(
+              'Assured deposit is already covered by a free-deposit voucher; catalog deposit coupon cannot apply',
+            );
+          }
+
+          if (
+            chargeScope === CouponChargeScope.RIDE_FARE &&
+            farePayment !== BookingFarePayment.PAY_NOW
+          ) {
+            throw new BadRequestException(
+              'Fare coupons require farePayment=PAY_NOW for Assured bookings',
+            );
+          }
+
+          const eligibleAmount =
+            chargeScope === CouponChargeScope.ASSURED_SECURITY_DEPOSIT
+              ? depositAmount
+              : fareAmount;
+
+          const applied =
+            await this.couponRedemptionService.reserveInTransaction(manager, {
+              userId: passengerId,
+              rideType: CouponRideTypeScope.ASSURED,
+              chargeScope,
+              amount: eligibleAmount,
+              bookingId,
+              rideId: ride.id,
+              code: catalogCode,
+              idempotencyKey: `${key}:coupon:${chargeScope}`,
+            });
+
+          reservedRedemptionId = applied.redemption.id;
+
+          if (
+            chargeScope === CouponChargeScope.ASSURED_SECURITY_DEPOSIT &&
+            applied.redemption.benefitTypeSnapshot !==
+              CouponBenefitType.POINTS_CREDIT
+          ) {
+            originalAssuredDepositAmount = originalDepositAmount.toString();
+            depositAmount = applied.finalAmount;
+            couponDiscountAmount = applied.discountAmount.toString();
+          } else if (
+            chargeScope === CouponChargeScope.RIDE_FARE &&
+            applied.redemption.benefitTypeSnapshot !==
+              CouponBenefitType.POINTS_CREDIT
+          ) {
+            payableFareAmount = applied.finalAmount;
+            couponDiscountAmount = applied.discountAmount.toString();
+          }
         }
 
         let walletHoldId: string | null = null;
@@ -1263,13 +1443,13 @@ export class BookingsService {
         let fareWalletTransactionId: string | null = null;
         let paymentStatus = BookingPaymentStatus.UNPAID;
         if (farePayment === BookingFarePayment.PAY_NOW) {
-          if (fareAmount > 0n) {
+          if (payableFareAmount > 0n) {
             const debit = await this.walletService.debitPointsInTransaction(
               manager,
               {
                 walletId: wallet.id,
                 userId: passengerId,
-                amount: fareAmount,
+                amount: payableFareAmount,
                 referenceType: 'BOOKING',
                 referenceId: bookingId,
                 // Distinct from deposit hold key (unique wallet ledger constraint).
@@ -1279,6 +1459,15 @@ export class BookingsService {
             fareWalletTransactionId = debit.transaction.id;
           }
           paymentStatus = BookingPaymentStatus.PAID;
+        }
+
+        if (reservedRedemptionId) {
+          await this.couponRedemptionService.finalizeReservedInTransaction(
+            manager,
+            reservedRedemptionId,
+            wallet.id,
+          );
+          catalogCouponRedemptionId = reservedRedemptionId;
         }
 
         ride.availableSeats -= dto.seats;
@@ -1296,7 +1485,11 @@ export class BookingsService {
           paymentStatus,
           farePaymentMethod: farePayment,
           pricePerSeatSnapshot,
-          totalAmount,
+          totalAmount:
+            farePayment === BookingFarePayment.PAY_NOW &&
+            payableFareAmount !== fareAmount
+              ? payableFareAmount.toString()
+              : totalAmount,
           idempotencyKey: key,
           walletTransactionId,
           assuredDepositPercentage: effectivePercentage,
@@ -1306,6 +1499,9 @@ export class BookingsService {
           fareWalletTransactionId,
           bookingMode: BookingMode.ASSURED,
           depositCouponId,
+          couponRedemptionId: catalogCouponRedemptionId,
+          originalAssuredDepositAmount,
+          couponDiscountAmount,
         });
 
         const saved = await manager.getRepository(Booking).save(booking);

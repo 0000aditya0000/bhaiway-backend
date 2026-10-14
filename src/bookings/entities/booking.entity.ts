@@ -265,6 +265,30 @@ export class Booking {
   })
   depositCouponId!: string | null;
 
+  /** Catalog coupon redemption (fare or Assured security-fee discount / points). */
+  @Column({
+    name: 'coupon_redemption_id',
+    type: 'uuid',
+    nullable: true,
+  })
+  couponRedemptionId!: string | null;
+
+  /** Pre-discount Assured security fee (points). Null when no deposit coupon applied. */
+  @Column({
+    name: 'original_assured_deposit_amount',
+    type: 'bigint',
+    nullable: true,
+  })
+  originalAssuredDepositAmount!: string | null;
+
+  /** Discount applied to fare or Assured security fee from catalog coupon. */
+  @Column({
+    name: 'coupon_discount_amount',
+    type: 'bigint',
+    nullable: true,
+  })
+  couponDiscountAmount!: string | null;
+
   /**
    * HMAC-SHA256 of pickup OTP (Regular rides). Never expose to clients.
    */

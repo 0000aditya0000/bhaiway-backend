@@ -53,6 +53,7 @@ import { CommuteSettlementService, type CommuteRideSettlementSummary } from '../
 import { FareSettlementService } from '../fare/fare-settlement.service';
 import { RatingsService } from '../ratings/ratings.service';
 import { ChatService } from '../chat/chat.service';
+import { CouponIssuanceService } from '../coupons/coupon-issuance.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SettingsService } from '../settings/settings.service';
 import { TrackingService } from '../tracking/tracking.service';
@@ -162,6 +163,7 @@ export class RidesService {
     private readonly ratingsService: RatingsService,
     private readonly chatService: ChatService,
     private readonly notificationsService: NotificationsService,
+    private readonly couponIssuanceService: CouponIssuanceService,
   ) {}
 
   async cancelByDriver(
@@ -2004,6 +2006,16 @@ export class RidesService {
         ride.completedAt = new Date();
         await this.ratingsService.createRatingTasksInTransaction(manager, ride);
         await manager.getRepository(Ride).save(ride);
+
+        // Coupon auto-issuance hook (inactive rules ⇒ no-op; idempotent).
+        const passengerUserIds = [
+          ...new Set(activeBookings.map((b) => b.passengerId)),
+        ];
+        await this.couponIssuanceService.onTripCompletedInTransaction(manager, {
+          tripId: ride.id,
+          passengerUserIds,
+          rideType: ride.rideType,
+        });
 
         if (ride.rideType === RideType.ASSURED) {
           return {
