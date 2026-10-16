@@ -7,6 +7,7 @@ import { AdminModule } from './admin/admin.module';
 import { BookingsModule } from './bookings/bookings.module';
 import { ChatModule } from './chat/chat.module';
 import { LoggingModule } from './common/logging/logging.module';
+import { CommuteRewardsModule } from './commute-rewards/commute-rewards.module';
 import { CouponsModule } from './coupons/coupons.module';
 import { DatabaseModule } from './database/database.module';
 import { CorporateIdentityModule } from './corporate-identity/corporate-identity.module';
@@ -40,6 +41,7 @@ import { WalletModule } from './wallet/wallet.module';
     CorporateIdentityModule,
     ReferralsModule,
     CouponsModule,
+    CommuteRewardsModule,
     WalletModule,
     SettingsModule,
     VerificationModule,

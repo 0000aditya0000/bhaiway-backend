@@ -53,6 +53,7 @@ import { CommuteSettlementService, type CommuteRideSettlementSummary } from '../
 import { FareSettlementService } from '../fare/fare-settlement.service';
 import { RatingsService } from '../ratings/ratings.service';
 import { ChatService } from '../chat/chat.service';
+import { CommuteRewardProgressService } from '../commute-rewards/commute-reward-progress.service';
 import { CouponIssuanceService } from '../coupons/coupon-issuance.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SettingsService } from '../settings/settings.service';
@@ -164,6 +165,7 @@ export class RidesService {
     private readonly chatService: ChatService,
     private readonly notificationsService: NotificationsService,
     private readonly couponIssuanceService: CouponIssuanceService,
+    private readonly commuteRewardProgressService: CommuteRewardProgressService,
   ) {}
 
   async cancelByDriver(
@@ -1852,6 +1854,13 @@ export class RidesService {
         }
 
         if (ride.status === RideStatus.COMPLETED) {
+          // Idempotent retry path: ensure qualifying trips were recorded.
+          if (ride.rideType === RideType.COMMUTE) {
+            await this.commuteRewardProgressService.recordQualifyingRideInTransaction(
+              manager,
+              ride,
+            );
+          }
           return this.buildCompleteResponse(manager, ride, true);
         }
 
@@ -2016,6 +2025,13 @@ export class RidesService {
           passengerUserIds,
           rideType: ride.rideType,
         });
+
+        if (ride.rideType === RideType.COMMUTE) {
+          await this.commuteRewardProgressService.recordQualifyingRideInTransaction(
+            manager,
+            ride,
+          );
+        }
 
         if (ride.rideType === RideType.ASSURED) {
           return {

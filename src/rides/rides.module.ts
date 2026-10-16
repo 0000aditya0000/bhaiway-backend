@@ -8,6 +8,7 @@ import { AuthModule } from '../auth/auth.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingsModule } from '../bookings/bookings.module';
 import { ChatModule } from '../chat/chat.module';
+import { CommuteRewardsModule } from '../commute-rewards/commute-rewards.module';
 import { CouponsModule } from '../coupons/coupons.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SettingsModule } from '../settings/settings.module';
@@ -48,6 +49,7 @@ import { RideDirectionsService } from './route/ride-directions.service';
     TrackingModule,
     ChatModule,
     CouponsModule,
+    CommuteRewardsModule,
     NotificationsModule,
   ],
   controllers: [RidesController],
