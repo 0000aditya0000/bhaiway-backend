@@ -24,7 +24,7 @@ jobs:
   deploy:
     name: Build and Deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -43,7 +43,12 @@ jobs:
         run: npm run build
 
       - name: Verify build output
-        run: test -s dist/main.js
+        run: |
+          set -euo pipefail
+          test -s dist/main.js
+          test -s dist/database/data-source.js
+          test -d dist/database/migrations
+          echo "Build output verified."
 
       - name: Configure SSH
         env:
@@ -51,12 +56,13 @@ jobs:
           VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
+
           install -m 700 -d ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/bhaiway_key
           chmod 600 ~/.ssh/bhaiway_key
 
           if [[ -z "$VPS_KNOWN_HOSTS" ]]; then
-            echo "VPS_KNOWN_HOSTS secret is missing."
+            echo "ERROR: VPS_KNOWN_HOSTS secret is missing."
             exit 1
           fi
 
@@ -70,6 +76,7 @@ jobs:
           VPS_PORT: ${{ secrets.VPS_PORT }}
         run: |
           set -euo pipefail
+
           ssh -i ~/.ssh/bhaiway_key \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
@@ -84,10 +91,40 @@ jobs:
           VPS_PORT: ${{ secrets.VPS_PORT }}
         run: |
           set -euo pipefail
+
           rsync -az --delete \
             -e "ssh -i ~/.ssh/bhaiway_key -o BatchMode=yes -o StrictHostKeyChecking=yes -p $VPS_PORT" \
             dist/ \
             "$VPS_USER@$VPS_HOST:/opt/bhaiway-deploy/incoming/dist/"
+
+          echo "Build transferred successfully."
+
+      - name: Transfer production dependency manifests
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+        run: |
+          set -euo pipefail
+
+          test -s package.json
+          test -s package-lock.json
+
+          rsync -az \
+            -e "ssh -i ~/.ssh/bhaiway_key -o BatchMode=yes -o StrictHostKeyChecking=yes -p $VPS_PORT" \
+            package.json package-lock.json \
+            "$VPS_USER@$VPS_HOST:/opt/bhaiway-deploy/incoming/"
+
+          echo "Verifying uploaded manifests..."
+
+          ssh -i ~/.ssh/bhaiway_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -p "$VPS_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            'test -s /opt/bhaiway-deploy/incoming/package.json &&
+             test -s /opt/bhaiway-deploy/incoming/package-lock.json &&
+             echo "Both manifests verified."'
 
       - name: Deploy on VPS
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy_production)
@@ -97,6 +134,7 @@ jobs:
           VPS_PORT: ${{ secrets.VPS_PORT }}
         run: |
           set -euo pipefail
+
           ssh -i ~/.ssh/bhaiway_key \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
