@@ -16,6 +16,8 @@ import { AdminAuthController } from './admin-auth.controller';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminDashboardController } from './admin-dashboard.controller';
 import { AdminDashboardService } from './admin-dashboard.service';
+import { AdminTransactionsController } from './admin-transactions.controller';
+import { AdminTransactionsService } from './admin-transactions.service';
 import { AdminActivityEvent } from './entities/admin-activity-event.entity';
 import { AdminAlert } from './entities/admin-alert.entity';
 import { AdminUser } from './entities/admin-user.entity';
@@ -42,11 +44,13 @@ import { AdminPermissionGuard } from './guards/admin-permission.guard';
     AdminAuthController,
     AdminDashboardController,
     AdminWithdrawalsController,
+    AdminTransactionsController,
   ],
   providers: [
     AdminAuthService,
     AdminDashboardService,
     AdminAlertService,
+    AdminTransactionsService,
     AdminPermissionGuard,
   ],
   exports: [

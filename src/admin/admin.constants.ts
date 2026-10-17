@@ -18,6 +18,11 @@ export const ADMIN_PERMISSION_WITHDRAWALS_MANAGE = 'ADMIN_WITHDRAWALS_MANAGE';
 export const ADMIN_PERMISSION_COUPONS_MANAGE = 'ADMIN_COUPONS_MANAGE';
 export const ADMIN_PERMISSION_COMMUTE_REWARDS_MANAGE =
   'ADMIN_COMMUTE_REWARDS_MANAGE';
+/** List/inspect wallet ledger transactions across users. */
+export const ADMIN_PERMISSION_TRANSACTIONS_VIEW = 'ADMIN_TRANSACTIONS_VIEW';
+/** Post compensating ledger reversals for eligible transactions. */
+export const ADMIN_PERMISSION_TRANSACTIONS_REVERSE =
+  'ADMIN_TRANSACTIONS_REVERSE';
 
 /** Reserved backing user for the bootstrap dashboard admin (not the platform wallet user). */
 export const ADMIN_BOOTSTRAP_USER_ID =

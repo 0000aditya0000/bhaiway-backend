@@ -178,7 +178,7 @@ export class WalletService {
       balanceAfter: this.toAmountString(balanceAfter),
       referenceType: input.referenceType ?? null,
       referenceId: input.referenceId ?? null,
-      parentTransactionId: null,
+      parentTransactionId: input.parentTransactionId ?? null,
       idempotencyKey: input.idempotencyKey,
       status: WalletTransactionStatus.POSTED,
     });
@@ -285,7 +285,7 @@ export class WalletService {
       balanceAfter: this.toAmountString(balanceAfter),
       referenceType: input.referenceType ?? null,
       referenceId: input.referenceId ?? null,
-      parentTransactionId: null,
+      parentTransactionId: input.parentTransactionId ?? null,
       idempotencyKey: input.idempotencyKey,
       status: WalletTransactionStatus.POSTED,
     });

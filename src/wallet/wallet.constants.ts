@@ -11,3 +11,8 @@ export const PAYMENT_ORDER_REFERENCE_TYPE = 'PAYMENT_ORDER';
 export const LOT_EXPIRY_IDEMPOTENCY_PREFIX = 'lot-expiry:';
 
 export const LOT_EXPIRY_REFERENCE_TYPE = 'LOT_EXPIRY';
+
+/** Compensating admin reversal of a prior ledger row (immutable original). */
+export const ADMIN_TX_REVERSAL_REFERENCE_TYPE = 'ADMIN_TX_REVERSAL';
+
+export const ADMIN_TX_REVERSAL_IDEMPOTENCY_PREFIX = 'admin-tx-reverse:';

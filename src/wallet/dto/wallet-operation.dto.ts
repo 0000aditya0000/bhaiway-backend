@@ -14,6 +14,11 @@ export interface CreditPointsInput {
   sourceType: WalletPointSource;
   referenceType?: string;
   referenceId?: string;
+  /**
+   * Optional link to a prior ledger row (e.g. admin compensating reversal).
+   * Hold release/consume set this internally; normal credits leave it null.
+   */
+  parentTransactionId?: string | null;
   idempotencyKey: string;
   /** Override default credit ledger type (e.g. compensation). */
   transactionType?: WalletTransactionType;
@@ -35,6 +40,10 @@ export interface DebitPointsInput {
   amount: bigint;
   referenceType?: string;
   referenceId?: string;
+  /**
+   * Optional link to a prior ledger row (e.g. admin compensating reversal).
+   */
+  parentTransactionId?: string | null;
   idempotencyKey: string;
   /** Override default debit ledger type (default BOOKING_PAYMENT). */
   transactionType?: WalletTransactionType;
