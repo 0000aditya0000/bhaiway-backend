@@ -9,6 +9,8 @@ import {
 } from 'typeorm';
 
 import { NotificationsService } from '../notifications/notifications.service';
+import { UserProfile } from '../users/entities/user-profile.entity';
+import { loadUserDisplayNamesByUserIds } from '../users/user-display-name.util';
 import {
   AdminWithdrawalPageDto,
   AdminWithdrawalResponseDto,
@@ -20,7 +22,11 @@ import {
   WithdrawalResponseDto,
   WithdrawalStatusHistoryItemDto,
 } from './dto/withdrawal.dto';
-import { WalletHold, WalletHoldStatus, WalletHoldType } from './entities/wallet-hold.entity';
+import {
+  WalletHold,
+  WalletHoldStatus,
+  WalletHoldType,
+} from './entities/wallet-hold.entity';
 import { Wallet, WalletStatus } from './entities/wallet.entity';
 import { WithdrawalStatusHistory } from './entities/withdrawal-status-history.entity';
 import {
@@ -88,6 +94,8 @@ export class WithdrawalService {
     private readonly withdrawalRepository: Repository<Withdrawal>,
     @InjectRepository(WithdrawalStatusHistory)
     private readonly historyRepository: Repository<WithdrawalStatusHistory>,
+    @InjectRepository(UserProfile)
+    private readonly profileRepository: Repository<UserProfile>,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -124,17 +132,29 @@ export class WithdrawalService {
         );
         return this.toUserResponse(created);
       } catch (error) {
-        if (this.isConstraintViolation(error, WithdrawalService.IDEMPOTENCY_CONSTRAINT)) {
+        if (
+          this.isConstraintViolation(
+            error,
+            WithdrawalService.IDEMPOTENCY_CONSTRAINT,
+          )
+        ) {
           const winner = await this.withdrawalRepository.findOne({
             where: { userId, idempotencyKey: key },
           });
           if (winner) {
-            this.assertIdempotentMatch(winner, amountString, dto.paymentMethodId);
+            this.assertIdempotentMatch(
+              winner,
+              amountString,
+              dto.paymentMethodId,
+            );
             return this.toUserResponse(winner);
           }
         }
         if (
-          this.isConstraintViolation(error, WithdrawalService.REFERENCE_CONSTRAINT) &&
+          this.isConstraintViolation(
+            error,
+            WithdrawalService.REFERENCE_CONSTRAINT,
+          ) &&
           attempt < REFERENCE_RETRIES - 1
         ) {
           continue;
@@ -170,7 +190,9 @@ export class WithdrawalService {
   }
 
   async getForUser(userId: string, id: string): Promise<WithdrawalResponseDto> {
-    const withdrawal = await this.withdrawalRepository.findOne({ where: { id } });
+    const withdrawal = await this.withdrawalRepository.findOne({
+      where: { id },
+    });
     if (!withdrawal) {
       throw new WithdrawalNotFoundError();
     }
@@ -197,8 +219,15 @@ export class WithdrawalService {
       take: limit,
     });
 
+    const nameMap = await loadUserDisplayNamesByUserIds(
+      this.profileRepository,
+      rows.map((row) => row.userId),
+    );
+
     return {
-      items: rows.map((row) => this.toAdminResponse(row)),
+      items: rows.map((row) =>
+        this.toAdminResponse(row, nameMap.get(row.userId) ?? null),
+      ),
       page,
       limit,
       total,
@@ -207,7 +236,9 @@ export class WithdrawalService {
   }
 
   async getForAdmin(id: string): Promise<AdminWithdrawalResponseDto> {
-    const withdrawal = await this.withdrawalRepository.findOne({ where: { id } });
+    const withdrawal = await this.withdrawalRepository.findOne({
+      where: { id },
+    });
     if (!withdrawal) {
       throw new WithdrawalNotFoundError();
     }
@@ -233,7 +264,10 @@ export class WithdrawalService {
       const from = withdrawal.status;
       const to = dto.status;
 
-      if (from === WithdrawalStatus.COMPLETED && to === WithdrawalStatus.COMPLETED) {
+      if (
+        from === WithdrawalStatus.COMPLETED &&
+        to === WithdrawalStatus.COMPLETED
+      ) {
         throw new WithdrawalAlreadyCompletedError();
       }
       if (!WITHDRAWAL_ALLOWED_TRANSITIONS[from].includes(to)) {
@@ -512,7 +546,10 @@ export class WithdrawalService {
     return `WD-${suffix}`;
   }
 
-  private isConstraintViolation(error: unknown, constraintName: string): boolean {
+  private isConstraintViolation(
+    error: unknown,
+    constraintName: string,
+  ): boolean {
     let current: unknown = error;
     while (current && typeof current === 'object') {
       const record = current as {
@@ -528,8 +565,7 @@ export class WithdrawalService {
       }
       if (current instanceof QueryFailedError) {
         const driver = current.driverError as
-          | { code?: string; constraint?: string }
-          | undefined;
+          { code?: string; constraint?: string } | undefined;
         if (driver?.code === '23505' && driver.constraint === constraintName) {
           return true;
         }
@@ -571,17 +607,23 @@ export class WithdrawalService {
     };
   }
 
-  private toAdminResponse(w: Withdrawal): AdminWithdrawalResponseDto {
+  private toAdminResponse(
+    w: Withdrawal,
+    userName: string | null,
+  ): AdminWithdrawalResponseDto {
     return {
       ...this.toUserResponse(w),
       userId: w.userId,
+      userName,
       walletId: w.walletId,
       walletHoldId: w.walletHoldId,
       walletTransactionId: w.walletTransactionId,
     };
   }
 
-  private async toAdminDetail(w: Withdrawal): Promise<AdminWithdrawalResponseDto> {
+  private async toAdminDetail(
+    w: Withdrawal,
+  ): Promise<AdminWithdrawalResponseDto> {
     const history = await this.historyRepository.find({
       where: { withdrawalId: w.id },
       order: { createdAt: 'ASC', id: 'ASC' },
@@ -598,8 +640,13 @@ export class WithdrawalService {
       }),
     );
 
+    const nameMap = await loadUserDisplayNamesByUserIds(
+      this.profileRepository,
+      [w.userId],
+    );
+
     return {
-      ...this.toAdminResponse(w),
+      ...this.toAdminResponse(w, nameMap.get(w.userId) ?? null),
       payoutAccountNumber:
         w.paymentMethodType === PaymentMethodType.BANK_ACCOUNT
           ? this.paymentMethodService.decryptSnapshotAccountNumber(

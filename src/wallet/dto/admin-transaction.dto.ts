@@ -107,6 +107,13 @@ export class AdminTransactionListItemDto {
   @ApiProperty({ format: 'uuid' })
   userId!: string;
 
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Current UserProfile display name (displayName, else first+last). Null if unavailable.',
+  })
+  userName!: string | null;
+
   @ApiProperty({ format: 'uuid' })
   walletId!: string;
 

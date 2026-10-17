@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 
+import { UserProfile } from '../users/entities/user-profile.entity';
+import { loadUserDisplayNamesByUserIds } from '../users/user-display-name.util';
 import { evaluateAdminReversalEligibility } from '../wallet/admin-transaction-reversal.eligibility';
 import {
   AdminReverseTransactionDto,
@@ -43,6 +45,8 @@ export class AdminTransactionsService {
     private readonly walletService: WalletService,
     @InjectRepository(WalletTransaction)
     private readonly txRepository: Repository<WalletTransaction>,
+    @InjectRepository(UserProfile)
+    private readonly profileRepository: Repository<UserProfile>,
   ) {}
 
   async list(
@@ -99,10 +103,18 @@ export class AdminTransactionsService {
     const reversalMap = await this.loadAdminReversalsByParentIds(
       rows.map((r) => r.id),
     );
+    const nameMap = await loadUserDisplayNamesByUserIds(
+      this.profileRepository,
+      rows.map((r) => r.userId),
+    );
 
     return {
       items: rows.map((tx) =>
-        this.toListItem(tx, reversalMap.get(tx.id) ?? null),
+        this.toListItem(
+          tx,
+          reversalMap.get(tx.id) ?? null,
+          nameMap.get(tx.userId) ?? null,
+        ),
       ),
       page,
       limit,
@@ -119,7 +131,11 @@ export class AdminTransactionsService {
       throw new AdminTransactionNotFoundError();
     }
     const reversal = await this.findAdminReversal(tx.id);
-    return this.toDetail(tx, reversal);
+    const nameMap = await loadUserDisplayNamesByUserIds(
+      this.profileRepository,
+      [tx.userId, ...(reversal ? [reversal.userId] : [])],
+    );
+    return this.toDetail(tx, reversal, nameMap);
   }
 
   async reverse(
@@ -153,9 +169,13 @@ export class AdminTransactionsService {
         );
         if (!eligibility.eligible) {
           if (eligibility.reason === 'ALREADY_REVERSED' && existing) {
+            const names = await loadUserDisplayNamesByUserIds(
+              this.profileRepository,
+              [original.userId, existing.userId],
+            );
             return {
-              original: this.toDetail(original, existing),
-              reversal: this.toDetail(existing, null),
+              original: this.toDetail(original, existing, names),
+              reversal: this.toDetail(existing, null, names),
               alreadyReversed: true,
             };
           }
@@ -223,9 +243,13 @@ export class AdminTransactionsService {
           }),
         );
 
+        const names = await loadUserDisplayNamesByUserIds(
+          this.profileRepository,
+          [original.userId, compensating.userId],
+        );
         return {
-          original: this.toDetail(original, compensating),
-          reversal: this.toDetail(compensating, null),
+          original: this.toDetail(original, compensating, names),
+          reversal: this.toDetail(compensating, null, names),
           alreadyReversed: false,
         };
       });
@@ -244,9 +268,13 @@ export class AdminTransactionsService {
           where: { id: transactionId },
         });
         if (original && existing) {
+          const names = await loadUserDisplayNamesByUserIds(
+            this.profileRepository,
+            [original.userId, existing.userId],
+          );
           return {
-            original: this.toDetail(original, existing),
-            reversal: this.toDetail(existing, null),
+            original: this.toDetail(original, existing, names),
+            reversal: this.toDetail(existing, null, names),
             alreadyReversed: true,
           };
         }
@@ -304,10 +332,12 @@ export class AdminTransactionsService {
   private toListItem(
     tx: WalletTransaction,
     reversal: WalletTransaction | null,
+    userName: string | null,
   ): AdminTransactionListItemDto {
     return {
       transactionId: tx.id,
       userId: tx.userId,
+      userName,
       walletId: tx.walletId,
       type: tx.transactionType,
       direction: tx.direction,
@@ -326,10 +356,12 @@ export class AdminTransactionsService {
   private toDetail(
     tx: WalletTransaction,
     reversal: WalletTransaction | null,
+    nameMap: Map<string, string | null>,
   ): AdminTransactionDetailDto {
     const eligibility = evaluateAdminReversalEligibility(tx, reversal);
+    const userName = nameMap.get(tx.userId) ?? null;
     return {
-      ...this.toListItem(tx, reversal),
+      ...this.toListItem(tx, reversal, userName),
       pointSource: tx.pointSource,
       balanceBefore: pointsToCoins(tx.balanceBefore),
       balanceAfter: pointsToCoins(tx.balanceAfter),
@@ -338,7 +370,9 @@ export class AdminTransactionsService {
       description: null,
       canReverse: eligibility.eligible,
       reverseBlockReason: eligibility.eligible ? null : eligibility.message,
-      reversalTransaction: reversal ? this.toListItem(reversal, null) : null,
+      reversalTransaction: reversal
+        ? this.toListItem(reversal, null, nameMap.get(reversal.userId) ?? null)
+        : null,
     };
   }
 

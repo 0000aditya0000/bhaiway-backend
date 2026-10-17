@@ -5,6 +5,7 @@ import { AuthModule } from '../auth/auth.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Ride } from '../rides/entities/ride.entity';
+import { UserProfile } from '../users/entities/user-profile.entity';
 import { PaymentOrder } from './entities/payment-order.entity';
 import { PaymentWebhookEvent } from './entities/payment-webhook-event.entity';
 import { WalletBalance } from './entities/wallet-balance.entity';
@@ -47,6 +48,7 @@ import { WalletService } from './wallet.service';
       PaymentWebhookEvent,
       Booking,
       Ride,
+      UserProfile,
       UserPaymentMethod,
       Withdrawal,
       WithdrawalStatusHistory,
@@ -79,4 +81,3 @@ import { WalletService } from './wallet.service';
   ],
 })
 export class WalletModule {}
-

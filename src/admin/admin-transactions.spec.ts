@@ -12,6 +12,7 @@ import { AuthService } from '../auth/auth.service';
 import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { UsersModule } from '../users/users.module';
+import { UserProfile } from '../users/entities/user-profile.entity';
 import { WalletHoldType } from '../wallet/entities/wallet-hold.entity';
 import { WalletPointSource } from '../wallet/entities/wallet-point-lot.entity';
 import {
@@ -198,6 +199,7 @@ describe('Admin Transactions API (integration)', () => {
     expect(page.body.items.length).toBeGreaterThanOrEqual(2);
     expect(page.body.items[0]).toMatchObject({
       userId: driver.userId,
+      userName: 'Test Wallet',
       currency: 'INR',
       direction: 'CREDIT',
     });
@@ -210,6 +212,8 @@ describe('Admin Transactions API (integration)', () => {
 
     expect(detail.body.transactionId).toBe(txId);
     expect(detail.body.walletId).toBe(driver.walletId);
+    expect(detail.body.userId).toBe(driver.userId);
+    expect(detail.body.userName).toBe('Test Wallet');
     expect(detail.body.completedAt).toBeNull();
     expect(detail.body.description).toBeNull();
     expect(detail.body.canReverse).toBe(true);
@@ -294,6 +298,35 @@ describe('Admin Transactions API (integration)', () => {
         },
       });
     expect(reverseCount).toBe(1);
+  });
+
+  it('returns userName null when profile is missing', async () => {
+    const admin = await trackUser();
+    const driver = await trackUser();
+    await ensureAdmin(admin.userId, [ADMIN_PERMISSION_TRANSACTIONS_VIEW]);
+    const token = await login(admin.userId);
+
+    await walletService.creditPoints({
+      walletId: driver.walletId,
+      userId: driver.userId,
+      amount: 25n,
+      sourceType: WalletPointSource.PURCHASED,
+      idempotencyKey: uniqueIdempotencyKey('admin-tx-no-profile'),
+    });
+
+    await dataSource.getRepository(UserProfile).delete({ userId: driver.userId });
+
+    const page = await request(app.getHttpServer())
+      .get('/admin/transactions')
+      .query({ search: driver.userId, limit: 10 })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const item = page.body.items.find(
+      (row: { userId: string }) => row.userId === driver.userId,
+    );
+    expect(item).toBeDefined();
+    expect(item.userName).toBeNull();
   });
 
   it('rejects hold-type reversal and insufficient balance clawback', async () => {

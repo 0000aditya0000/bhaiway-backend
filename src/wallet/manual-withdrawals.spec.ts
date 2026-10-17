@@ -544,6 +544,10 @@ describe('Manual withdrawals (integration)', () => {
       expect(processingIds).not.toContain(a.body.id);
       for (const item of processing.body.items) {
         expect(item.status).toBe('PROCESSING');
+        if (item.id === b.body.id) {
+          expect(item.userId).toBe(user.ctx.userId);
+          expect(item.userName).toBe('Test Wallet');
+        }
       }
 
       const initiated = await request(app.getHttpServer())
@@ -566,6 +570,7 @@ describe('Manual withdrawals (integration)', () => {
       expect(detail.body).toMatchObject({
         id: b.body.id,
         userId: user.ctx.userId,
+        userName: 'Test Wallet',
         walletId: user.ctx.walletId,
         status: 'PROCESSING',
       });
