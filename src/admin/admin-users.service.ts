@@ -29,7 +29,8 @@ import { PLATFORM_USER_ID } from '../wallet/platform-wallet.constants';
 import { WalletQueryService } from '../wallet/wallet-query.service';
 import { AdminAlertService } from './admin-alert.service';
 import { ADMIN_BOOTSTRAP_USER_ID } from './admin.constants';
-import { maskEmail, maskPhone, maskRegistration } from './admin-privacy.util';
+import { maskEmail, maskPhone } from './admin-privacy.util';
+import { mapAdminVerificationBundle } from './admin-verification.mapper';
 import {
   AdminAlertCategory,
   AdminAlertSeverity,
@@ -229,8 +230,6 @@ export class AdminUsersService {
       verifications.map((v) => [v.verificationType, v] as const),
     );
     const identity = verificationByType.get(VerificationType.IDENTITY);
-    const licence = verificationByType.get(VerificationType.DRIVING_LICENSE);
-    const vehicleV = verificationByType.get(VerificationType.VEHICLE);
 
     const isDriver = await this.isDriverUser(userId);
     const isRider = await this.isRiderUser(userId);
@@ -240,11 +239,15 @@ export class AdminUsersService {
     return {
       id: user.id,
       displayName: resolveUserDisplayName(profile),
-      phoneMasked: maskPhone(user.phone),
-      emailMasked: maskEmail(user.email),
+      firstName: profile?.firstName ?? null,
+      lastName: profile?.lastName ?? null,
+      phone: user.phone,
+      email: user.email,
       emailVerified: user.emailVerified,
       phoneVerified: user.phoneVerified,
       gender: profile?.gender ?? null,
+      dateOfBirth: profile?.dateOfBirth ?? null,
+      profilePhoto: profile?.profilePhoto ?? null,
       status: user.status,
       userType,
       bookingRestricted: user.bookingRestricted,
@@ -254,30 +257,12 @@ export class AdminUsersService {
       suspensionReason: user.suspensionReason,
       suspendedAt: user.suspendedAt ? user.suspendedAt.toISOString() : null,
       createdAt: user.createdAt.toISOString(),
+      updatedAt: user.updatedAt.toISOString(),
       lastActiveAt: user.lastLoginAt ? user.lastLoginAt.toISOString() : null,
       rating:
         ratings.overall.totalRatings > 0 ? ratings.overall.averageRating : null,
       ratings,
-      verification: {
-        governmentId: {
-          status: identity?.status ?? null,
-          updatedAt: identity?.updatedAt?.toISOString() ?? null,
-        },
-        drivingLicence: {
-          status: licence?.status ?? null,
-          updatedAt: licence?.updatedAt?.toISOString() ?? null,
-        },
-        vehicleRc: {
-          status: vehicleV?.status ?? null,
-          updatedAt: vehicleV?.updatedAt?.toISOString() ?? null,
-        },
-        corporate: {
-          status: corporate?.status ?? CorporateIdentityStatus.NOT_VERIFIED,
-          verifiedAt: corporate?.verifiedAt
-            ? corporate.verifiedAt.toISOString()
-            : null,
-        },
-      },
+      verification: mapAdminVerificationBundle(verifications, corporate),
       rides: {
         semantics:
           'passengerCompletedBookings = COMPLETED bookings as passenger; driverCompletedRides = COMPLETED rides as driver; totalRides = sum of both (a user may appear in both)',
@@ -294,14 +279,20 @@ export class AdminUsersService {
       driverEarnings,
       vehicles: vehicles.map((v) => ({
         id: v.id,
-        registrationMasked: maskRegistration(v.registrationNumber),
+        registrationNumber: v.registrationNumber,
         make: v.make,
         model: v.model,
         variant: v.variant,
         vehicleType: v.vehicleType,
         color: v.color,
         seatingCapacity: v.seatingCapacity,
+        registrationYear: v.registrationYear,
+        documentUrl: v.documentUrl,
+        documentType: v.documentType,
+        documentReference: v.documentReference,
         isActive: v.isActive,
+        createdAt: v.createdAt.toISOString(),
+        updatedAt: v.updatedAt.toISOString(),
       })),
       activity: this.buildActivityTimeline(user, identity, corporate),
       safety: {
