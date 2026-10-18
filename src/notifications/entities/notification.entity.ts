@@ -25,6 +25,11 @@ import type { NotificationDataPayload } from '../notifications.types';
 @Index('IDX_notifications_status', ['status'])
 @Index('IDX_notifications_type', ['type'])
 @Index('IDX_notifications_created_at', ['createdAt'])
+@Index('IDX_notifications_recipient_created_at', [
+  'recipientUserId',
+  'createdAt',
+  'id',
+])
 export class Notification {
   @PrimaryColumn('uuid')
   id!: string;

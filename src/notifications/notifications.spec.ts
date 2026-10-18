@@ -776,4 +776,149 @@ describe('Notifications (integration)', () => {
       }
     });
   });
+
+  describe('in-app notification center', () => {
+    async function seedInbox(userId: string, count: number): Promise<string[]> {
+      const ids: string[] = [];
+      for (let i = 0; i < count; i += 1) {
+        const row = await notificationsService.enqueue({
+          recipientUserId: userId,
+          type: NotificationType.WALLET_CREDITED,
+          title: `Credit ${i}`,
+          body: `Body ${i}`,
+          data: {
+            type: NotificationType.WALLET_CREDITED,
+            transactionId: randomUUID(),
+          },
+          idempotencyKey: uniqueIdempotencyKey(`inbox-${userId}-${i}`),
+        });
+        ids.push(row!.id);
+      }
+      return ids;
+    }
+
+    it('lists, filters unread, counts, marks one and all as read with ownership', async () => {
+      const owner = await createUser('InboxOwner');
+      const stranger = await createUser('InboxStranger');
+      const ids = await seedInbox(owner.user.id, 3);
+
+      const list = await request(app.getHttpServer())
+        .get('/notifications')
+        .query({ page: 1, limit: 2 })
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(200);
+      expect(list.body.total).toBeGreaterThanOrEqual(3);
+      expect(list.body.items).toHaveLength(2);
+      expect(list.body.items[0]).toMatchObject({
+        isRead: false,
+        readAt: null,
+        type: NotificationType.WALLET_CREDITED,
+      });
+      expect(list.body.items[0].createdAt).toBeTruthy();
+
+      const unread = await request(app.getHttpServer())
+        .get('/notifications/unread-count')
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(200);
+      expect(unread.body.count).toBeGreaterThanOrEqual(3);
+
+      const marked = await request(app.getHttpServer())
+        .patch(`/notifications/${ids[0]}/read`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(200);
+      expect(marked.body.isRead).toBe(true);
+      expect(marked.body.readAt).toBeTruthy();
+
+      // Idempotent re-mark
+      const markedAgain = await request(app.getHttpServer())
+        .patch(`/notifications/${ids[0]}/read`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(200);
+      expect(markedAgain.body.id).toBe(ids[0]);
+      expect(markedAgain.body.isRead).toBe(true);
+
+      // Cross-user cannot mark / cannot see
+      await request(app.getHttpServer())
+        .patch(`/notifications/${ids[1]}/read`)
+        .set('Authorization', `Bearer ${stranger.accessToken}`)
+        .expect(404);
+
+      const strangerList = await request(app.getHttpServer())
+        .get('/notifications')
+        .set('Authorization', `Bearer ${stranger.accessToken}`)
+        .expect(200);
+      expect(
+        strangerList.body.items.some(
+          (item: { id: string }) => item.id === ids[1],
+        ),
+      ).toBe(false);
+
+      const unreadOnly = await request(app.getHttpServer())
+        .get('/notifications')
+        .query({ unreadOnly: true, limit: 50 })
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(200);
+      expect(
+        unreadOnly.body.items.every((item: { isRead: boolean }) => !item.isRead),
+      ).toBe(true);
+
+      const all = await request(app.getHttpServer())
+        .patch('/notifications/read-all')
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(200);
+      expect(all.body.updatedCount).toBeGreaterThanOrEqual(2);
+
+      const zero = await request(app.getHttpServer())
+        .get('/notifications/unread-count')
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(200);
+      expect(zero.body.count).toBe(0);
+
+      const allAgain = await request(app.getHttpServer())
+        .patch('/notifications/read-all')
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(200);
+      expect(allAgain.body.updatedCount).toBe(0);
+
+      await request(app.getHttpServer())
+        .get('/notifications')
+        .query({ page: 0 })
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(400);
+
+      await request(app.getHttpServer())
+        .patch(`/notifications/${randomUUID()}/read`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(404);
+    });
+
+    it('keeps persisted inbox row when push delivery fails', async () => {
+      const user = await createUser('InboxFail');
+      mockProvider.throwOnSend = true;
+      const row = await notificationsService.enqueue({
+        recipientUserId: user.user.id,
+        type: NotificationType.BOOKING_CONFIRMED,
+        title: 'Confirmed',
+        body: 'Your ride is confirmed',
+        data: {
+          type: NotificationType.BOOKING_CONFIRMED,
+          bookingId: randomUUID(),
+          rideId: randomUUID(),
+        },
+        idempotencyKey: uniqueIdempotencyKey('inbox-push-fail'),
+      });
+      expect(row).toBeTruthy();
+      await notificationsService.flushDispatch(row!.id).catch(() => undefined);
+
+      const list = await request(app.getHttpServer())
+        .get('/notifications')
+        .query({ limit: 50 })
+        .set('Authorization', `Bearer ${user.accessToken}`)
+        .expect(200);
+      expect(
+        list.body.items.some((item: { id: string }) => item.id === row!.id),
+      ).toBe(true);
+      mockProvider.throwOnSend = false;
+    });
+  });
 });

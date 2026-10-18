@@ -13,6 +13,13 @@ import { EntityManager, QueryFailedError, Repository } from 'typeorm';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { isPlatformUserId } from '../wallet/platform-wallet.constants';
 import {
+  MarkAllNotificationsReadDto,
+  NotificationItemDto,
+  NotificationListQueryDto,
+  NotificationPageDto,
+  NotificationUnreadCountDto,
+} from './dto/notification-inbox.dto';
+import {
   NotificationDeviceResponseDto,
   RegisterNotificationDeviceDto,
 } from './dto/register-device.dto';
@@ -556,6 +563,89 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // In-app notification center (inbox)
+  // ---------------------------------------------------------------------------
+
+  async listForUser(
+    userId: string,
+    query: NotificationListQueryDto,
+  ): Promise<NotificationPageDto> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+
+    const qb = this.notificationRepository
+      .createQueryBuilder('n')
+      .where('n.recipient_user_id = :userId', { userId })
+      .orderBy('n.created_at', 'DESC')
+      .addOrderBy('n.id', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    if (query.unreadOnly === true) {
+      qb.andWhere('n.read_at IS NULL');
+    }
+
+    const [rows, total] = await qb.getManyAndCount();
+    return {
+      items: rows.map((row) => this.toInboxItem(row)),
+      page,
+      limit,
+      total,
+      totalPages: total === 0 ? 0 : Math.ceil(total / limit),
+    };
+  }
+
+  async unreadCountForUser(
+    userId: string,
+  ): Promise<NotificationUnreadCountDto> {
+    const count = await this.notificationRepository
+      .createQueryBuilder('n')
+      .where('n.recipient_user_id = :userId', { userId })
+      .andWhere('n.read_at IS NULL')
+      .getCount();
+    return { count };
+  }
+
+  async markAsReadForUser(
+    userId: string,
+    notificationId: string,
+  ): Promise<NotificationItemDto> {
+    const row = await this.notificationRepository.findOne({
+      where: { id: notificationId, recipientUserId: userId },
+    });
+    if (!row) {
+      throw new NotFoundException({
+        statusCode: 404,
+        code: 'NOTIFICATION_NOT_FOUND',
+        message: 'Notification not found',
+        error: 'Not Found',
+      });
+    }
+
+    if (row.readAt == null) {
+      row.readAt = new Date();
+      await this.notificationRepository.save(row);
+    }
+
+    return this.toInboxItem(row);
+  }
+
+  async markAllAsReadForUser(
+    userId: string,
+  ): Promise<MarkAllNotificationsReadDto> {
+    const now = new Date();
+    const result = await this.notificationRepository
+      .createQueryBuilder()
+      .update(Notification)
+      .set({ readAt: now })
+      .where('recipient_user_id = :userId', { userId })
+      .andWhere('read_at IS NULL')
+      .execute();
+
+    return { updatedCount: result.affected ?? 0 };
+  }
+
   async flushDispatch(notificationId: string): Promise<void> {
     await this.dispatcher.dispatch(notificationId);
   }
@@ -566,16 +656,26 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     return this.notificationRepository.findOne({ where: { idempotencyKey } });
   }
 
+  private toInboxItem(row: Notification): NotificationItemDto {
+    return {
+      id: row.id,
+      title: row.title,
+      body: row.body,
+      type: row.type,
+      data: row.data ?? { type: row.type },
+      isRead: row.readAt != null,
+      createdAt: row.createdAt.toISOString(),
+      readAt: row.readAt ? row.readAt.toISOString() : null,
+    };
+  }
+
   private async resolveDisplayName(userId: string): Promise<string> {
     const profile = await this.profileRepository.findOne({
       where: { userId },
     });
     const display =
       profile?.displayName?.trim() ||
-      [profile?.firstName, profile?.lastName]
-        .filter(Boolean)
-        .join(' ')
-        .trim();
+      [profile?.firstName, profile?.lastName].filter(Boolean).join(' ').trim();
     return display || 'A passenger';
   }
 
