@@ -19,6 +19,7 @@ import { ReferralsModule } from './referrals/referrals.module';
 import { RidesModule } from './rides/rides.module';
 import { SafetyModule } from './safety/safety.module';
 import { SettingsModule } from './settings/settings.module';
+import { SupportModule } from './support/support.module';
 import { TrackingModule } from './tracking/tracking.module';
 import { UsersModule } from './users/users.module';
 import { VehiclesModule } from './vehicles/vehicles.module';
@@ -53,6 +54,7 @@ import { WalletModule } from './wallet/wallet.module';
     TrackingModule,
     ChatModule,
     NotificationsModule,
+    SupportModule,
     SafetyModule,
   ],
 })

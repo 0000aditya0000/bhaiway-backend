@@ -23,9 +23,10 @@ export const ADMIN_PERMISSION_TRANSACTIONS_VIEW = 'ADMIN_TRANSACTIONS_VIEW';
 /** Post compensating ledger reversals for eligible transactions. */
 export const ADMIN_PERMISSION_TRANSACTIONS_REVERSE =
   'ADMIN_TRANSACTIONS_REVERSE';
+/** List/manage help & support tickets, status, and admin comments. */
+export const ADMIN_PERMISSION_SUPPORT_MANAGE = 'ADMIN_SUPPORT_MANAGE';
 
 /** Reserved backing user for the bootstrap dashboard admin (not the platform wallet user). */
-export const ADMIN_BOOTSTRAP_USER_ID =
-  '00000000-0000-4000-8000-000000000099';
+export const ADMIN_BOOTSTRAP_USER_ID = '00000000-0000-4000-8000-000000000099';
 export const ADMIN_BOOTSTRAP_PHONE = '+10000000099';
 export const ADMIN_BOOTSTRAP_USERNAME_DEFAULT = 'lucifer';

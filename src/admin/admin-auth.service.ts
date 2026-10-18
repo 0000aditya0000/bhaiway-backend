@@ -19,14 +19,12 @@ import {
   ADMIN_PERMISSION_COMMUTE_REWARDS_MANAGE,
   ADMIN_PERMISSION_COUPONS_MANAGE,
   ADMIN_PERMISSION_DASHBOARD_VIEW,
+  ADMIN_PERMISSION_SUPPORT_MANAGE,
   ADMIN_PERMISSION_TRANSACTIONS_REVERSE,
   ADMIN_PERMISSION_TRANSACTIONS_VIEW,
   ADMIN_PERMISSION_WITHDRAWALS_MANAGE,
 } from './admin.constants';
-import {
-  hashAdminPassword,
-  verifyAdminPassword,
-} from './admin-password.util';
+import { hashAdminPassword, verifyAdminPassword } from './admin-password.util';
 import { AdminUser } from './entities/admin-user.entity';
 
 @Injectable()
@@ -47,9 +45,7 @@ export class AdminAuthService implements OnModuleInit {
     try {
       await this.ensureBootstrapAdmin();
     } catch (error) {
-      this.logger.error(
-        `Admin bootstrap failed: ${(error as Error).message}`,
-      );
+      this.logger.error(`Admin bootstrap failed: ${(error as Error).message}`);
     }
   }
 
@@ -172,6 +168,7 @@ export class AdminAuthService implements OnModuleInit {
           ADMIN_PERMISSION_COMMUTE_REWARDS_MANAGE,
           ADMIN_PERMISSION_TRANSACTIONS_VIEW,
           ADMIN_PERMISSION_TRANSACTIONS_REVERSE,
+          ADMIN_PERMISSION_SUPPORT_MANAGE,
         ]),
       );
 
@@ -194,7 +191,7 @@ export class AdminAuthService implements OnModuleInit {
     });
 
     this.logger.log(
-      `Bootstrap admin ready username=${username} permissions=${ADMIN_PERMISSION_DASHBOARD_VIEW},${ADMIN_PERMISSION_WITHDRAWALS_MANAGE},${ADMIN_PERMISSION_COUPONS_MANAGE},${ADMIN_PERMISSION_COMMUTE_REWARDS_MANAGE},${ADMIN_PERMISSION_TRANSACTIONS_VIEW},${ADMIN_PERMISSION_TRANSACTIONS_REVERSE}`,
+      `Bootstrap admin ready username=${username} permissions=${ADMIN_PERMISSION_DASHBOARD_VIEW},${ADMIN_PERMISSION_WITHDRAWALS_MANAGE},${ADMIN_PERMISSION_COUPONS_MANAGE},${ADMIN_PERMISSION_COMMUTE_REWARDS_MANAGE},${ADMIN_PERMISSION_TRANSACTIONS_VIEW},${ADMIN_PERMISSION_TRANSACTIONS_REVERSE},${ADMIN_PERMISSION_SUPPORT_MANAGE}`,
     );
   }
 }

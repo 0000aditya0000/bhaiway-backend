@@ -3,9 +3,13 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AuthModule } from '../auth/auth.module';
+import { EmailModule } from '../email/email.module';
+import { User } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { NotificationDevice } from './entities/notification-device.entity';
+import { NotificationEmailDelivery } from './entities/notification-email-delivery.entity';
 import { Notification } from './entities/notification.entity';
+import { NotificationEmailService } from './notification-email.service';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsDispatcher } from './notifications.dispatcher';
 import { NotificationsService } from './notifications.service';
@@ -16,14 +20,22 @@ import { MockNotificationProvider } from './providers/mock-notification.provider
 @Module({
   imports: [
     ConfigModule,
+    EmailModule,
     // forwardRef: Auth → Referrals → Wallet/Notifications → Auth
     forwardRef(() => AuthModule),
-    TypeOrmModule.forFeature([Notification, NotificationDevice, UserProfile]),
+    TypeOrmModule.forFeature([
+      Notification,
+      NotificationDevice,
+      NotificationEmailDelivery,
+      UserProfile,
+      User,
+    ]),
   ],
   controllers: [NotificationsController],
   providers: [
     NotificationsService,
     NotificationsDispatcher,
+    NotificationEmailService,
     FirebaseNotificationProvider,
     MockNotificationProvider,
     {
@@ -55,6 +67,7 @@ import { MockNotificationProvider } from './providers/mock-notification.provider
   exports: [
     NotificationsService,
     NotificationsDispatcher,
+    NotificationEmailService,
     MockNotificationProvider,
     NOTIFICATION_PROVIDER,
   ],

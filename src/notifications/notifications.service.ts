@@ -30,6 +30,7 @@ import {
   NotificationStatus,
   NotificationType,
 } from './enums/notification.enums';
+import { NotificationEmailService } from './notification-email.service';
 import { NotificationsDispatcher } from './notifications.dispatcher';
 import {
   assuredPublishedKey,
@@ -58,6 +59,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly dispatcher: NotificationsDispatcher,
+    private readonly notificationEmailService: NotificationEmailService,
     @InjectRepository(Notification)
     private readonly notificationRepository: Repository<Notification>,
     @InjectRepository(NotificationDevice)
@@ -172,6 +174,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       if (existing.status === NotificationStatus.PENDING && !manager) {
         this.dispatcher.scheduleDispatch(existing.id);
       }
+      this.scheduleEmail(existing.id, !!manager);
       return existing;
     }
 
@@ -198,12 +201,14 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       const saved = await repo.save(row);
       if (!manager) {
         this.dispatcher.scheduleDispatch(saved.id);
+        this.scheduleEmail(saved.id, false);
       } else {
         // Outbox row shares the business TX; dispatch after commit via poller /
         // explicit flush. Schedule a delayed attempt for latency.
         setTimeout(() => {
           this.dispatcher.scheduleDispatch(saved.id);
         }, 250);
+        this.scheduleEmail(saved.id, true);
       }
       return saved;
     } catch (error) {
@@ -211,9 +216,35 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
         const recovered = await repo.findOne({
           where: { idempotencyKey: input.idempotencyKey },
         });
+        if (recovered) {
+          this.scheduleEmail(recovered.id, !!manager);
+        }
         return recovered;
       }
       throw error;
+    }
+  }
+
+  /**
+   * Queue verified-email delivery independently of FCM.
+   * Failures here never affect in-app persistence or push.
+   */
+  private scheduleEmail(notificationId: string, delayed: boolean): void {
+    const run = () => {
+      void this.notificationEmailService
+        .ensureDeliveryQueued(notificationId)
+        .catch((error) => {
+          this.logger.warn(
+            `Email queue schedule failed notification=${notificationId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+    };
+    if (delayed) {
+      setTimeout(run, 300);
+    } else {
+      run();
     }
   }
 
