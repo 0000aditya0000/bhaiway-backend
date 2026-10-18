@@ -3,7 +3,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { CorporateIdentityVerification } from '../corporate-identity/entities/corporate-identity-verification.entity';
-import { CorporateIdentityStatus } from '../corporate-identity/enums/corporate-identity-status.enum';
 import { RatingsService } from '../ratings/ratings.service';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus } from '../rides/enums/ride.enums';
@@ -19,7 +18,8 @@ import {
 } from '../verification/enums/verification.enums';
 import { PLATFORM_USER_ID } from '../wallet/platform-wallet.constants';
 import { ADMIN_BOOTSTRAP_USER_ID } from './admin.constants';
-import { maskEmail, maskPhone, maskRegistration } from './admin-privacy.util';
+import { maskPhone, maskRegistration } from './admin-privacy.util';
+import { mapAdminVerificationBundle } from './admin-verification.mapper';
 import {
   AdminDriverListItemDto,
   AdminDriverListQueryDto,
@@ -192,22 +192,25 @@ export class AdminDriversService {
       this.driverEarningsService.getLifetimeEarningsByRideType(driverId),
     ]);
 
-    const byType = new Map(
-      verifications.map((v) => [v.verificationType, v] as const),
-    );
-
     return {
       driverId: user.id,
       userId: user.id,
       displayName: resolveUserDisplayName(profile),
-      phoneMasked: maskPhone(user.phone),
-      emailMasked: maskEmail(user.email),
+      firstName: profile?.firstName ?? null,
+      lastName: profile?.lastName ?? null,
+      phone: user.phone,
+      email: user.email,
+      emailVerified: user.emailVerified,
+      phoneVerified: user.phoneVerified,
       gender: profile?.gender ?? null,
+      dateOfBirth: profile?.dateOfBirth ?? null,
+      profilePhoto: profile?.profilePhoto ?? null,
       accountStatus: user.status,
       operationalStatus: this.operationalStatus(user, vehicles),
       ridePublishRestricted: user.ridePublishRestricted,
       ridePublishRestrictedReason: user.ridePublishRestrictedReason,
       createdAt: user.createdAt.toISOString(),
+      updatedAt: user.updatedAt.toISOString(),
       lastActiveAt: user.lastLoginAt ? user.lastLoginAt.toISOString() : null,
       rating:
         ratings.asDriver.totalRatings > 0
@@ -215,46 +218,28 @@ export class AdminDriversService {
           : null,
       ratings,
       verification: {
-        governmentId: {
-          status: byType.get(VerificationType.IDENTITY)?.status ?? null,
-          updatedAt:
-            byType.get(VerificationType.IDENTITY)?.updatedAt?.toISOString() ??
-            null,
-        },
-        drivingLicence: {
-          status: byType.get(VerificationType.DRIVING_LICENSE)?.status ?? null,
-          updatedAt:
-            byType
-              .get(VerificationType.DRIVING_LICENSE)
-              ?.updatedAt?.toISOString() ?? null,
-        },
-        vehicleRc: {
-          status: byType.get(VerificationType.VEHICLE)?.status ?? null,
-          updatedAt:
-            byType.get(VerificationType.VEHICLE)?.updatedAt?.toISOString() ??
-            null,
-        },
+        ...mapAdminVerificationBundle(verifications, corporate),
         insurance: {
           status: null,
           note: 'Vehicle insurance status is not stored in the current schema.',
         },
-        corporate: {
-          status: corporate?.status ?? CorporateIdentityStatus.NOT_VERIFIED,
-          verifiedAt: corporate?.verifiedAt
-            ? corporate.verifiedAt.toISOString()
-            : null,
-        },
       },
       vehicles: vehicles.map((v) => ({
         id: v.id,
-        registrationMasked: maskRegistration(v.registrationNumber),
+        registrationNumber: v.registrationNumber,
         make: v.make,
         model: v.model,
         variant: v.variant,
         vehicleType: v.vehicleType,
         color: v.color,
         seatingCapacity: v.seatingCapacity,
+        registrationYear: v.registrationYear,
+        documentUrl: v.documentUrl,
+        documentType: v.documentType,
+        documentReference: v.documentReference,
         isActive: v.isActive,
+        createdAt: v.createdAt.toISOString(),
+        updatedAt: v.updatedAt.toISOString(),
         fuelType: null as string | null,
         fuelTypeNote: 'Fuel type is not stored on the vehicle entity.',
       })),
