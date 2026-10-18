@@ -49,7 +49,10 @@ import {
 } from '../bookings/enums/booking.enums';
 import { BookingsService } from '../bookings/bookings.service';
 import { CommuteCancellationService } from '../bookings/commute-cancellation.service';
-import { CommuteSettlementService, type CommuteRideSettlementSummary } from '../fare/commute-settlement.service';
+import {
+  CommuteSettlementService,
+  type CommuteRideSettlementSummary,
+} from '../fare/commute-settlement.service';
 import { FareSettlementService } from '../fare/fare-settlement.service';
 import { RatingsService } from '../ratings/ratings.service';
 import { ChatService } from '../chat/chat.service';
@@ -576,10 +579,9 @@ export class RidesService {
         }
 
         // Serialize Assured publishes per driver; partial unique index is the hard guarantee.
-        await manager.query(
-          `SELECT pg_advisory_xact_lock(hashtext($1))`,
-          [`assured-one-active:${driverId}`],
-        );
+        await manager.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+          `assured-one-active:${driverId}`,
+        ]);
         await this.assertNoActiveAssuredRideInTransaction(manager, driverId);
 
         const wallet = await this.lockWalletForUpdate(manager, driverId);
@@ -903,9 +905,7 @@ export class RidesService {
 
     return {
       ride: this.toHistoryTrip(ride, bookedSeats, timing),
-      vehicle: vehicle
-        ? this.toHistoryVehicle(vehicle, vehicleVerified)
-        : null,
+      vehicle: vehicle ? this.toHistoryVehicle(vehicle, vehicleVerified) : null,
       passengers,
       earnings,
     };
@@ -1115,7 +1115,10 @@ export class RidesService {
         throw new NotFoundException('Ride not found');
       }
 
-      if (ride.rideType === RideType.REGULAR || ride.rideType === RideType.COMMUTE) {
+      if (
+        ride.rideType === RideType.REGULAR ||
+        ride.rideType === RideType.COMMUTE
+      ) {
         await this.applyRegularRideUpdate(manager, driverId, ride, dto);
       } else {
         await this.applyAssuredRideUpdate(manager, driverId, ride, dto);
@@ -1589,9 +1592,7 @@ export class RidesService {
       sourceLongitude:
         dto.sourceLongitude === null ? undefined : dto.sourceLongitude,
       destinationLatitude:
-        dto.destinationLatitude === null
-          ? undefined
-          : dto.destinationLatitude,
+        dto.destinationLatitude === null ? undefined : dto.destinationLatitude,
       destinationLongitude:
         dto.destinationLongitude === null
           ? undefined
@@ -1767,7 +1768,9 @@ export class RidesService {
     };
 
     if (!isValidLatLng(source) || !isValidLatLng(destination)) {
-      throw new BadRequestException('Invalid source or destination coordinates');
+      throw new BadRequestException(
+        'Invalid source or destination coordinates',
+      );
     }
 
     const geometry = await this.rideDirectionsService.buildRouteGeometry(
@@ -2345,9 +2348,7 @@ export class RidesService {
             ? ride.assuredDepositPercentage
             : null,
         assuredDepositAmount:
-          ride.rideType === RideType.ASSURED
-            ? ride.assuredDepositAmount
-            : null,
+          ride.rideType === RideType.ASSURED ? ride.assuredDepositAmount : null,
         driver: {
           id: ride.driverId,
           displayName: profile?.displayName ?? profile?.firstName ?? null,
@@ -2374,9 +2375,7 @@ export class RidesService {
   /**
    * Last 5 COMPLETED/CANCELLED rides per driver for passenger discovery cards.
    */
-  private async loadDriverRecentTerminalRides(
-    driverIds: string[],
-  ): Promise<
+  private async loadDriverRecentTerminalRides(driverIds: string[]): Promise<
     Map<
       string,
       Array<{
@@ -2486,7 +2485,26 @@ export class RidesService {
       throw new NotFoundException('User not found');
     }
     if (user.status !== UserStatus.ACTIVE) {
-      throw new ForbiddenException('User status does not allow publishing rides');
+      throw new ForbiddenException({
+        statusCode: 403,
+        code:
+          user.status === UserStatus.SUSPENDED
+            ? 'USER_SUSPENDED'
+            : 'USER_NOT_ACTIVE',
+        message: 'User status does not allow publishing rides',
+        error: 'Forbidden',
+      });
+    }
+
+    if (user.ridePublishRestricted) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'USER_RIDE_PUBLISH_RESTRICTED',
+        message:
+          user.ridePublishRestrictedReason?.trim() ||
+          'Ride publishing is restricted on this account',
+        error: 'Forbidden',
+      });
     }
 
     const eligibility = await this.verificationService.canPublishRide(
@@ -2504,7 +2522,8 @@ export class RidesService {
       const labels = eligibility.missing
         .map((type) => {
           if (type === VerificationType.IDENTITY) return 'identity';
-          if (type === VerificationType.DRIVING_LICENSE) return 'driving license';
+          if (type === VerificationType.DRIVING_LICENSE)
+            return 'driving license';
           return 'vehicle';
         })
         .join(', ');
@@ -2579,11 +2598,10 @@ export class RidesService {
     const vehicleOwnerIds = [
       ...new Set(vehicles.map((vehicle) => vehicle.userId)),
     ];
-    const vehicleVerifiedByUserId =
-      await this.resolveVerificationFlags(
-        vehicleOwnerIds,
-        VerificationType.VEHICLE,
-      );
+    const vehicleVerifiedByUserId = await this.resolveVerificationFlags(
+      vehicleOwnerIds,
+      VerificationType.VEHICLE,
+    );
 
     const bonusByRideId = await this.loadRideDriverBonusEarningsBatch(
       rides.map((ride) => ({

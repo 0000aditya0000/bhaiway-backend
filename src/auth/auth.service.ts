@@ -237,6 +237,24 @@ export class AuthService {
     // Existing users: referralCode is intentionally ignored.
 
     this.assertNotPlatformIdentity(user.phone, user.id);
+
+    if (user.status === UserStatus.SUSPENDED) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'USER_SUSPENDED',
+        message: 'Account is suspended',
+        error: 'Forbidden',
+      });
+    }
+    if (user.status === UserStatus.DEACTIVATED) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'USER_DEACTIVATED',
+        message: 'Account is deactivated',
+        error: 'Forbidden',
+      });
+    }
+
     user.phoneVerified = true;
     user.lastLoginAt = new Date();
     if (identity.email && !user.email) {
@@ -266,13 +284,35 @@ export class AuthService {
       throw new ForbiddenException('Platform identity cannot authenticate');
     }
 
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    if (
+      user.status === UserStatus.SUSPENDED ||
+      user.status === UserStatus.DEACTIVATED
+    ) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code:
+          user.status === UserStatus.SUSPENDED
+            ? 'USER_SUSPENDED'
+            : 'USER_DEACTIVATED',
+        message:
+          user.status === UserStatus.SUSPENDED
+            ? 'Account is suspended'
+            : 'Account is deactivated',
+        error: 'Forbidden',
+      });
+    }
+
     const expiresIn = this.configService.get<string>(
       'JWT_ACCESS_EXPIRES_IN',
       '15m',
     );
 
     return this.jwtService.signAsync(
-      { sub: userId },
+      { sub: userId, tv: user.tokenVersion },
       {
         secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
         expiresIn: expiresIn as unknown as number,
@@ -355,9 +395,7 @@ export class AuthService {
   }
 
   private phonesMatch(submitted: string, configured: string): boolean {
-    return (
-      this.normalizePhone(submitted) === this.normalizePhone(configured)
-    );
+    return this.normalizePhone(submitted) === this.normalizePhone(configured);
   }
 
   private assertReviewRateLimit(phone: string): void {
@@ -421,13 +459,12 @@ export class AuthService {
     }
 
     const driver = error.driverError as
-      | { code?: string; constraint?: string }
-      | undefined;
+      { code?: string; constraint?: string } | undefined;
     return (
       driver?.code === '23505' &&
       Boolean(
         driver.constraint?.includes('phone') ||
-          driver.constraint?.includes('users'),
+        driver.constraint?.includes('users'),
       )
     );
   }

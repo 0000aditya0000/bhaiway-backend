@@ -27,9 +27,7 @@ import {
   isCommutePublishedStatus,
   isRegularPublishedStatus,
 } from '../assured/assured-ride-status';
-import {
-  AssuredBookingLifecycleResponseDto,
-} from '../assured/dto/assured-lifecycle-response.dto';
+import { AssuredBookingLifecycleResponseDto } from '../assured/dto/assured-lifecycle-response.dto';
 import {
   ASSURED_BOOKING_RIDER_DEPOSIT_REF,
   calculateRiderAssuredDeposit,
@@ -62,7 +60,7 @@ import {
 } from '../fare/fare-settlement.service';
 import { SettingsService } from '../settings/settings.service';
 import { Gender, UserProfile } from '../users/entities/user-profile.entity';
-import { User } from '../users/entities/user.entity';
+import { User, UserStatus } from '../users/entities/user.entity';
 import { VerificationService } from '../verification/verification.service';
 import { assertWomenOnlyBookingAllowed } from './women-only-ride.guard';
 import {
@@ -386,9 +384,7 @@ export class BookingsService {
 
       await this.ensurePickupOtpMaterial(manager, booking, ride);
 
-      if (
-        booking.pickupOtpFailedAttempts >= PICKUP_OTP_MAX_ATTEMPTS
-      ) {
+      if (booking.pickupOtpFailedAttempts >= PICKUP_OTP_MAX_ATTEMPTS) {
         throw new ConflictException(
           'Pickup OTP locked after too many failed attempts',
         );
@@ -402,7 +398,9 @@ export class BookingsService {
       }
 
       if (!booking.pickupOtpHash) {
-        throw new ConflictException('Pickup OTP is not available for this booking');
+        throw new ConflictException(
+          'Pickup OTP is not available for this booking',
+        );
       }
 
       const pepper = this.pickupOtpPepper();
@@ -763,9 +761,7 @@ export class BookingsService {
     }
   }
 
-  private resolveAssuredFarePayment(
-    dto: CreateBookingDto,
-  ): BookingFarePayment {
+  private resolveAssuredFarePayment(dto: CreateBookingDto): BookingFarePayment {
     return dto.farePayment ?? BookingFarePayment.PAY_LATER;
   }
 
@@ -929,14 +925,14 @@ export class BookingsService {
             dto,
           );
           const ride = await this.rideRepository.findOne({
-        where: { id: recovered.rideId },
-      });
-      if (ride) {
-        await this.afterBookingPersisted(recovered, ride);
-      } else {
-        await this.chatService.safeEnsureOpenForBooking(recovered.id);
-      }
-      return this.toResponseWithDriver(recovered, ride ?? undefined);
+            where: { id: recovered.rideId },
+          });
+          if (ride) {
+            await this.afterBookingPersisted(recovered, ride);
+          } else {
+            await this.chatService.safeEnsureOpenForBooking(recovered.id);
+          }
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
           'Idempotency conflict could not be resolved; existing booking not found',
@@ -954,14 +950,14 @@ export class BookingsService {
             dto,
           );
           const ride = await this.rideRepository.findOne({
-        where: { id: recovered.rideId },
-      });
-      if (ride) {
-        await this.afterBookingPersisted(recovered, ride);
-      } else {
-        await this.chatService.safeEnsureOpenForBooking(recovered.id);
-      }
-      return this.toResponseWithDriver(recovered, ride ?? undefined);
+            where: { id: recovered.rideId },
+          });
+          if (ride) {
+            await this.afterBookingPersisted(recovered, ride);
+          } else {
+            await this.chatService.safeEnsureOpenForBooking(recovered.id);
+          }
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }
 
@@ -996,8 +992,10 @@ export class BookingsService {
 
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
-        const promotedRide =
-          await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
+        const promotedRide = await this.maybeAdvanceAssuredQueueAfterBooking(
+          manager,
+          ride,
+        );
 
         const bookingId = randomUUID();
         const pickupFields = this.buildRegularPickupFields(
@@ -1164,8 +1162,10 @@ export class BookingsService {
 
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
-        const promotedRide =
-          await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
+        const promotedRide = await this.maybeAdvanceAssuredQueueAfterBooking(
+          manager,
+          ride,
+        );
 
         const pickupFields = await this.buildRegularPickupFields(
           ride,
@@ -1212,14 +1212,14 @@ export class BookingsService {
         if (recovered) {
           this.assertIdempotentRequestMatches(recovered, passengerId, dto);
           const ride = await this.rideRepository.findOne({
-        where: { id: recovered.rideId },
-      });
-      if (ride) {
-        await this.afterBookingPersisted(recovered, ride);
-      } else {
-        await this.chatService.safeEnsureOpenForBooking(recovered.id);
-      }
-      return this.toResponseWithDriver(recovered, ride ?? undefined);
+            where: { id: recovered.rideId },
+          });
+          if (ride) {
+            await this.afterBookingPersisted(recovered, ride);
+          } else {
+            await this.chatService.safeEnsureOpenForBooking(recovered.id);
+          }
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
           'Idempotency conflict could not be resolved; existing booking not found',
@@ -1233,14 +1233,14 @@ export class BookingsService {
         if (recovered) {
           this.assertIdempotentRequestMatches(recovered, passengerId, dto);
           const ride = await this.rideRepository.findOne({
-        where: { id: recovered.rideId },
-      });
-      if (ride) {
-        await this.afterBookingPersisted(recovered, ride);
-      } else {
-        await this.chatService.safeEnsureOpenForBooking(recovered.id);
-      }
-      return this.toResponseWithDriver(recovered, ride ?? undefined);
+            where: { id: recovered.rideId },
+          });
+          if (ride) {
+            await this.afterBookingPersisted(recovered, ride);
+          } else {
+            await this.chatService.safeEnsureOpenForBooking(recovered.id);
+          }
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }
 
@@ -1329,10 +1329,7 @@ export class BookingsService {
         const fareAmount = BigInt(totalAmount);
         const bookingId = randomUUID();
 
-        const coupon = await this.lockUnusedDepositCoupon(
-          manager,
-          passengerId,
-        );
+        const coupon = await this.lockUnusedDepositCoupon(manager, passengerId);
         const originalDepositAmount = calculateRiderAssuredDeposit(
           dto.seats,
           BigInt(pricePerSeatSnapshot),
@@ -1358,8 +1355,7 @@ export class BookingsService {
         const catalogCode = dto.couponCode?.trim();
         if (catalogCode) {
           const chargeScope =
-            dto.couponChargeScope ??
-            CouponChargeScope.ASSURED_SECURITY_DEPOSIT;
+            dto.couponChargeScope ?? CouponChargeScope.ASSURED_SECURITY_DEPOSIT;
 
           if (chargeScope === CouponChargeScope.BOTH) {
             throw new BadRequestException(
@@ -1472,8 +1468,10 @@ export class BookingsService {
 
         ride.availableSeats -= dto.seats;
         await manager.getRepository(Ride).save(ride);
-        const promotedRide =
-          await this.maybeAdvanceAssuredQueueAfterBooking(manager, ride);
+        const promotedRide = await this.maybeAdvanceAssuredQueueAfterBooking(
+          manager,
+          ride,
+        );
 
         const booking = manager.getRepository(Booking).create({
           id: bookingId,
@@ -1528,14 +1526,14 @@ export class BookingsService {
         if (recovered) {
           this.assertIdempotentRequestMatches(recovered, passengerId, dto);
           const ride = await this.rideRepository.findOne({
-        where: { id: recovered.rideId },
-      });
-      if (ride) {
-        await this.afterBookingPersisted(recovered, ride);
-      } else {
-        await this.chatService.safeEnsureOpenForBooking(recovered.id);
-      }
-      return this.toResponseWithDriver(recovered, ride ?? undefined);
+            where: { id: recovered.rideId },
+          });
+          if (ride) {
+            await this.afterBookingPersisted(recovered, ride);
+          } else {
+            await this.chatService.safeEnsureOpenForBooking(recovered.id);
+          }
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
         throw new WalletOperationConflictError(
           'Idempotency conflict could not be resolved; existing booking not found',
@@ -1549,14 +1547,14 @@ export class BookingsService {
         if (recovered) {
           this.assertIdempotentRequestMatches(recovered, passengerId, dto);
           const ride = await this.rideRepository.findOne({
-        where: { id: recovered.rideId },
-      });
-      if (ride) {
-        await this.afterBookingPersisted(recovered, ride);
-      } else {
-        await this.chatService.safeEnsureOpenForBooking(recovered.id);
-      }
-      return this.toResponseWithDriver(recovered, ride ?? undefined);
+            where: { id: recovered.rideId },
+          });
+          if (ride) {
+            await this.afterBookingPersisted(recovered, ride);
+          } else {
+            await this.chatService.safeEnsureOpenForBooking(recovered.id);
+          }
+          return this.toResponseWithDriver(recovered, ride ?? undefined);
         }
       }
 
@@ -1601,9 +1599,7 @@ export class BookingsService {
       throw new BadRequestException('Ride is not an Assured ride');
     }
 
-    if (
-      ride.regularSeatsPolicy !== RegularSeatsPolicy.ALLOW_REGULAR_RIDERS
-    ) {
+    if (ride.regularSeatsPolicy !== RegularSeatsPolicy.ALLOW_REGULAR_RIDERS) {
       throw new ConflictException(
         'Regular riders cannot book this Assured ride until the driver chooses ALLOW_REGULAR_RIDERS',
       );
@@ -1758,7 +1754,10 @@ export class BookingsService {
             this.resolveDrivers([ride.driverId]),
             this.resolveVehicles([ride.vehicleId]),
           ])
-        : [new Map<string, BookingDriverDto>(), new Map<string, BookingVehicleSnapshotDto>()];
+        : [
+            new Map<string, BookingDriverDto>(),
+            new Map<string, BookingVehicleSnapshotDto>(),
+          ];
 
     const coPassengers = await this.resolveCoPassengers(
       booking.rideId,
@@ -1869,7 +1868,7 @@ export class BookingsService {
     assertWomenOnlyBookingAllowed({
       rideType: ride.rideType,
       womenOnly: ride.womenOnly,
-      passengerGender: (profile?.gender as Gender | null) ?? null,
+      passengerGender: profile?.gender ?? null,
     });
   }
 
@@ -1879,6 +1878,29 @@ export class BookingsService {
     });
     if (!user) {
       throw new NotFoundException('User not found');
+    }
+
+    if (user.status !== UserStatus.ACTIVE) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code:
+          user.status === UserStatus.SUSPENDED
+            ? 'USER_SUSPENDED'
+            : 'USER_NOT_ACTIVE',
+        message: 'Account status does not allow booking rides',
+        error: 'Forbidden',
+      });
+    }
+
+    if (user.bookingRestricted) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'USER_BOOKING_RESTRICTED',
+        message:
+          user.bookingRestrictedReason?.trim() ||
+          'Booking is restricted on this account',
+        error: 'Forbidden',
+      });
     }
 
     const eligibility = await this.verificationService.canBookRide(passengerId);
@@ -1937,11 +1959,15 @@ export class BookingsService {
   private assertRideBookable(ride: Ride, passengerId: string): void {
     if (ride.rideType === RideType.COMMUTE) {
       if (!isCommutePublishedStatus(ride.status)) {
-        throw new BadRequestException('Only published Commute rides can be booked');
+        throw new BadRequestException(
+          'Only published Commute rides can be booked',
+        );
       }
     } else if (ride.rideType === RideType.ASSURED) {
       if (!isAssuredBookableStatus(ride.status)) {
-        throw new BadRequestException('Only active Assured rides can be booked');
+        throw new BadRequestException(
+          'Only active Assured rides can be booked',
+        );
       }
     } else if (!isRegularPublishedStatus(ride.status)) {
       throw new BadRequestException('Only published rides can be booked');
@@ -1957,7 +1983,9 @@ export class BookingsService {
       throw new BadRequestException('Ride is not a Commute ride');
     }
     if (!isCommutePublishedStatus(ride.status)) {
-      throw new BadRequestException('Only published Commute rides can be booked');
+      throw new BadRequestException(
+        'Only published Commute rides can be booked',
+      );
     }
     if (ride.driverId === passengerId) {
       throw new ForbiddenException('Drivers cannot book their own ride');
@@ -2363,8 +2391,7 @@ export class BookingsService {
               model: vehicle.model,
               color: vehicle.color,
               registrationNumber: vehicle.registrationNumber,
-              isVerified:
-                vehicleVerifiedByUserId.get(vehicle.userId) === true,
+              isVerified: vehicleVerifiedByUserId.get(vehicle.userId) === true,
             } satisfies BookingHistoryVehicleDto)
           : null,
         fare: this.toHistoryFare(booking),
@@ -2389,9 +2416,7 @@ export class BookingsService {
       sourceLongitude: null,
       destinationLatitude: null,
       destinationLongitude: null,
-      departureDate: ride
-        ? String(ride.departureDate).slice(0, 10)
-        : '',
+      departureDate: ride ? String(ride.departureDate).slice(0, 10) : '',
       departureTime: ride
         ? ride.departureTime.length >= 8
           ? ride.departureTime.slice(0, 8)
@@ -2709,9 +2734,8 @@ export class BookingsService {
     ) {
       const constraint =
         (error as { constraint?: string }).constraint ??
-        (
-          error as { driverError?: { constraint?: string } }
-        ).driverError?.constraint;
+        (error as { driverError?: { constraint?: string } }).driverError
+          ?.constraint;
       if (
         constraint === 'UQ_bookings_active_passenger_ride' ||
         constraint?.includes('active_passenger_ride')

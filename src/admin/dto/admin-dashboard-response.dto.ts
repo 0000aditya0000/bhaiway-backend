@@ -1,7 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { RideStatus, RideType } from '../../rides/enums/ride.enums';
-import { AdminAlertSeverity, AdminAlertStatus } from '../entities/admin-alert.entity';
+import {
+  AdminAlertSeverity,
+  AdminAlertStatus,
+} from '../entities/admin-alert.entity';
 
 export class AdminDashboardPeriodDto {
   @ApiProperty({ example: 'Asia/Kolkata' })

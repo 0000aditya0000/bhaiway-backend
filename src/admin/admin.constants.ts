@@ -25,6 +25,12 @@ export const ADMIN_PERMISSION_TRANSACTIONS_REVERSE =
   'ADMIN_TRANSACTIONS_REVERSE';
 /** List/manage help & support tickets, status, and admin comments. */
 export const ADMIN_PERMISSION_SUPPORT_MANAGE = 'ADMIN_SUPPORT_MANAGE';
+/** View users directory and user detail. */
+export const ADMIN_PERMISSION_USERS_VIEW = 'ADMIN_USERS_VIEW';
+/** Suspend/unsuspend users and manage booking/publish restrictions. */
+export const ADMIN_PERMISSION_USERS_MANAGE = 'ADMIN_USERS_MANAGE';
+/** View drivers directory and driver detail. */
+export const ADMIN_PERMISSION_DRIVERS_VIEW = 'ADMIN_DRIVERS_VIEW';
 
 /** Reserved backing user for the bootstrap dashboard admin (not the platform wallet user). */
 export const ADMIN_BOOTSTRAP_USER_ID = '00000000-0000-4000-8000-000000000099';
