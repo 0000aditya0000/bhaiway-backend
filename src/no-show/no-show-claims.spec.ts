@@ -164,20 +164,32 @@ describe('No-Show claims (integration)', () => {
           where: { rideId: ride.id },
           select: { id: true },
         });
-        await deleteChatForBookingIds(
-          dataSource,
-          rideBookings.map((b) => b.id),
+        const rideBookingIds = rideBookings.map((b) => b.id);
+        if (rideBookingIds.length > 0) {
+          await dataSource.query(
+            `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+            [rideBookingIds],
+          );
+        }
+        await dataSource.query(
+          `DELETE FROM rating_tasks WHERE ride_id = $1`,
+          [ride.id],
         );
+        await deleteChatForBookingIds(dataSource, rideBookingIds);
         await dataSource.getRepository(Booking).delete({ rideId: ride.id });
       }
       const passengerBookings = await dataSource.getRepository(Booking).find({
         where: { passengerId: ctx.userId },
         select: { id: true },
       });
-      await deleteChatForBookingIds(
-        dataSource,
-        passengerBookings.map((b) => b.id),
-      );
+      const passengerBookingIds = passengerBookings.map((b) => b.id);
+      if (passengerBookingIds.length > 0) {
+        await dataSource.query(
+          `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+          [passengerBookingIds],
+        );
+      }
+      await deleteChatForBookingIds(dataSource, passengerBookingIds);
       await dataSource.getRepository(Booking).delete({
         passengerId: ctx.userId,
       });
@@ -351,6 +363,274 @@ describe('No-Show claims (integration)', () => {
       .expect(200);
     expect(opened.body.status).toBe(NoShowClaimStatus.PENDING);
     expect(opened.body.kind).toBe(NoShowClaimKind.DRIVER_NO_SHOW);
+  });
+
+  async function startRide(driverToken: string, rideId: string) {
+    return request(app.getHttpServer())
+      .post(`/rides/${rideId}/start`)
+      .set('Authorization', `Bearer ${driverToken}`)
+      .expect(200);
+  }
+
+  async function pickupOtpFor(bookingId: string) {
+    const bookingRow = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: bookingId });
+    expect(bookingRow.pickupOtpCiphertext).toBeTruthy();
+    return decryptPickupOtp(
+      bookingRow.pickupOtpCiphertext!,
+      pickupOtpPepper(),
+    );
+  }
+
+  it('allows Driver No-Show on an IN_PROGRESS ride after departure + 5 minutes if not picked up', async () => {
+    const { login: driver, ride } = await publishDriver(RideType.REGULAR);
+    const passenger = await verifiedPassenger();
+    await bookRegular(passenger.login.accessToken, ride.id);
+    await startRide(driver.accessToken, ride.id);
+    await setDepartureOffset(ride.id, NO_SHOW_ELIGIBLE_AFTER_MS + 15_000);
+
+    const opened = await request(app.getHttpServer())
+      .post(`/rides/${ride.id}/no-show/driver`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(opened.body.status).toBe(NoShowClaimStatus.PENDING);
+    expect(opened.body.kind).toBe(NoShowClaimKind.DRIVER_NO_SHOW);
+
+    await request(app.getHttpServer())
+      .post(`/no-show-claims/${opened.body.id}/approve`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .expect(200);
+
+    const rideRow = await dataSource
+      .getRepository(Ride)
+      .findOneByOrFail({ id: ride.id });
+    expect(rideRow.status).toBe(RideStatus.CANCELLED);
+    expect(rideRow.cancellationReason).toBe(
+      RideCancellationReason.DRIVER_NO_SHOW,
+    );
+  });
+
+  it('rejects Driver No-Show on an IN_PROGRESS ride before the 5-minute threshold', async () => {
+    const { login: driver, ride } = await publishDriver(RideType.REGULAR);
+    const passenger = await verifiedPassenger();
+    await bookRegular(passenger.login.accessToken, ride.id);
+    await startRide(driver.accessToken, ride.id);
+    await setDepartureOffset(ride.id, NO_SHOW_ELIGIBLE_AFTER_MS - 15_000);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.id}/no-show/driver`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(409);
+  });
+
+  it('rejects Driver No-Show after pickup and never penalizes a picked-up passenger', async () => {
+    const { login: driver, ride } = await publishDriver(RideType.REGULAR);
+    const passenger = await verifiedPassenger();
+    const booking = await bookRegular(passenger.login.accessToken, ride.id);
+    await startRide(driver.accessToken, ride.id);
+    await setDepartureOffset(ride.id, NO_SHOW_ELIGIBLE_AFTER_MS + 15_000);
+
+    const otp = await pickupOtpFor(booking.body.id);
+    await request(app.getHttpServer())
+      .post(`/bookings/${booking.body.id}/verify-pickup`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ otp })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.id}/no-show/driver`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(409);
+
+    const { login: driver2, ride: ride2 } = await publishDriver(RideType.REGULAR);
+    const booking2 = await bookRegular(passenger.login.accessToken, ride2.id);
+    await setDepartureOffset(ride2.id, NO_SHOW_ELIGIBLE_AFTER_MS + 15_000);
+    const opened = await request(app.getHttpServer())
+      .post(`/rides/${ride2.id}/no-show/driver`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+
+    await startRide(driver2.accessToken, ride2.id);
+    const otp2 = await pickupOtpFor(booking2.body.id);
+    await request(app.getHttpServer())
+      .post(`/bookings/${booking2.body.id}/verify-pickup`)
+      .set('Authorization', `Bearer ${driver2.accessToken}`)
+      .send({ otp: otp2 })
+      .expect(200);
+
+    const resolved = await request(app.getHttpServer())
+      .post(`/no-show-claims/${opened.body.id}/approve`)
+      .set('Authorization', `Bearer ${driver2.accessToken}`)
+      .expect(200);
+    expect(resolved.body.status).toBe(NoShowClaimStatus.REJECTED);
+    expect(resolved.body.settledAt).toBeNull();
+
+    const afterBooking = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking2.body.id });
+    expect(afterBooking.status).toBe(BookingStatus.CONFIRMED);
+    expect(afterBooking.pickupStatus).toBe(BookingPickupStatus.PICKED_UP);
+    expect(afterBooking.cancellationReason).toBeNull();
+
+    const afterRide = await dataSource
+      .getRepository(Ride)
+      .findOneByOrFail({ id: ride2.id });
+    expect(afterRide.status).toBe(RideStatus.IN_PROGRESS);
+    expect(afterRide.cancellationReason).toBeNull();
+  });
+
+  it('rejects a new Driver No-Show claim on completed or cancelled rides', async () => {
+    const { login: completedDriver, ride: completedRide } = await publishDriver(
+      RideType.REGULAR,
+    );
+    const completedPassenger = await verifiedPassenger();
+    const completedBooking = await bookRegular(
+      completedPassenger.login.accessToken,
+      completedRide.id,
+    );
+    await startRide(completedDriver.accessToken, completedRide.id);
+    const completedOtp = await pickupOtpFor(completedBooking.body.id);
+    await request(app.getHttpServer())
+      .post(`/bookings/${completedBooking.body.id}/verify-pickup`)
+      .set('Authorization', `Bearer ${completedDriver.accessToken}`)
+      .send({ otp: completedOtp })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/rides/${completedRide.id}/complete`)
+      .set('Authorization', `Bearer ${completedDriver.accessToken}`)
+      .expect(200);
+    await setDepartureOffset(
+      completedRide.id,
+      NO_SHOW_ELIGIBLE_AFTER_MS + 15_000,
+    );
+    await request(app.getHttpServer())
+      .post(`/rides/${completedRide.id}/no-show/driver`)
+      .set('Authorization', `Bearer ${completedPassenger.login.accessToken}`)
+      .expect(409);
+
+    const { login: cancelledDriver, ride: cancelledRide } = await publishDriver(
+      RideType.REGULAR,
+    );
+    const cancelledPassenger = await verifiedPassenger();
+    await bookRegular(cancelledPassenger.login.accessToken, cancelledRide.id);
+    await request(app.getHttpServer())
+      .post(`/rides/${cancelledRide.id}/cancel`)
+      .set('Authorization', `Bearer ${cancelledDriver.accessToken}`)
+      .expect(200);
+    await setDepartureOffset(
+      cancelledRide.id,
+      NO_SHOW_ELIGIBLE_AFTER_MS + 15_000,
+    );
+    await request(app.getHttpServer())
+      .post(`/rides/${cancelledRide.id}/no-show/driver`)
+      .set('Authorization', `Bearer ${cancelledPassenger.login.accessToken}`)
+      .expect(409);
+  });
+
+  it('pickup racing with Driver No-Show create or approval cannot invalid-settle', async () => {
+    const { login: driver, ride } = await publishDriver(RideType.REGULAR);
+    const passenger = await verifiedPassenger();
+    const booking = await bookRegular(passenger.login.accessToken, ride.id);
+    await startRide(driver.accessToken, ride.id);
+    await setDepartureOffset(ride.id, NO_SHOW_ELIGIBLE_AFTER_MS + 15_000);
+    const otp = await pickupOtpFor(booking.body.id);
+
+    const [pickupCreateRes, createRes] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/bookings/${booking.body.id}/verify-pickup`)
+        .set('Authorization', `Bearer ${driver.accessToken}`)
+        .send({ otp }),
+      request(app.getHttpServer())
+        .post(`/rides/${ride.id}/no-show/driver`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`),
+    ]);
+
+    expect([200, 409]).toContain(pickupCreateRes.status);
+    expect([200, 409]).toContain(createRes.status);
+
+    const afterCreateBooking = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking.body.id });
+    if (createRes.status === 200) {
+      const created = await dataSource
+        .getRepository(NoShowClaim)
+        .findOneByOrFail({ id: createRes.body.id });
+      expect(created.status).toBe(NoShowClaimStatus.PENDING);
+      if (afterCreateBooking.pickupStatus === BookingPickupStatus.PICKED_UP) {
+        const rejected = await request(app.getHttpServer())
+          .post(`/no-show-claims/${created.id}/approve`)
+          .set('Authorization', `Bearer ${driver.accessToken}`)
+          .expect(200);
+        expect(rejected.body.status).toBe(NoShowClaimStatus.REJECTED);
+        const rideAfterReject = await dataSource
+          .getRepository(Ride)
+          .findOneByOrFail({ id: ride.id });
+        expect(rideAfterReject.status).toBe(RideStatus.IN_PROGRESS);
+        expect(rideAfterReject.cancellationReason).toBeNull();
+      }
+    } else {
+      expect(pickupCreateRes.status).toBe(200);
+      expect(afterCreateBooking.pickupStatus).toBe(
+        BookingPickupStatus.PICKED_UP,
+      );
+    }
+
+    const { login: driver2, ride: ride2 } = await publishDriver(RideType.REGULAR);
+    const passenger2 = await verifiedPassenger();
+    const booking2 = await bookRegular(passenger2.login.accessToken, ride2.id);
+    await setDepartureOffset(ride2.id, NO_SHOW_ELIGIBLE_AFTER_MS + 15_000);
+    const opened = await request(app.getHttpServer())
+      .post(`/rides/${ride2.id}/no-show/driver`)
+      .set('Authorization', `Bearer ${passenger2.login.accessToken}`)
+      .expect(200);
+    await startRide(driver2.accessToken, ride2.id);
+    const otp2 = await pickupOtpFor(booking2.body.id);
+
+    const [pickupApproveRes, approveRes] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/bookings/${booking2.body.id}/verify-pickup`)
+        .set('Authorization', `Bearer ${driver2.accessToken}`)
+        .send({ otp: otp2 }),
+      request(app.getHttpServer())
+        .post(`/no-show-claims/${opened.body.id}/approve`)
+        .set('Authorization', `Bearer ${driver2.accessToken}`),
+    ]);
+
+    expect([200, 409]).toContain(pickupApproveRes.status);
+    expect(approveRes.status).toBe(200);
+
+    const claim = await dataSource
+      .getRepository(NoShowClaim)
+      .findOneByOrFail({ id: opened.body.id });
+    const afterApproveBooking = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking2.body.id });
+    const afterApproveRide = await dataSource
+      .getRepository(Ride)
+      .findOneByOrFail({ id: ride2.id });
+
+    expect(
+      claim.status === NoShowClaimStatus.APPROVED &&
+        afterApproveBooking.pickupStatus === BookingPickupStatus.PICKED_UP,
+    ).toBe(false);
+    if (afterApproveBooking.pickupStatus === BookingPickupStatus.PICKED_UP) {
+      expect(claim.status).toBe(NoShowClaimStatus.REJECTED);
+      expect(afterApproveBooking.status).toBe(BookingStatus.CONFIRMED);
+      expect(afterApproveBooking.cancellationReason).toBeNull();
+      expect(afterApproveRide.status).toBe(RideStatus.IN_PROGRESS);
+      expect(afterApproveRide.cancellationReason).toBeNull();
+    }
+    if (claim.status === NoShowClaimStatus.APPROVED) {
+      expect(afterApproveRide.status).toBe(RideStatus.CANCELLED);
+      expect(afterApproveRide.cancellationReason).toBe(
+        RideCancellationReason.DRIVER_NO_SHOW,
+      );
+      expect(afterApproveBooking.status).toBe(BookingStatus.CANCELLED);
+      expect(afterApproveBooking.pickupStatus).not.toBe(
+        BookingPickupStatus.PICKED_UP,
+      );
+    }
   });
 
   it('rejects unauthorized reporters and duplicate pending driver claims', async () => {

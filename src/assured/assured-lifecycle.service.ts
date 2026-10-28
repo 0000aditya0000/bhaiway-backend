@@ -541,7 +541,11 @@ export class AssuredLifecycleService {
         };
       }
 
-      if (!isAssuredBookableStatus(ride.status)) {
+      const reporterCanSeeRide =
+        isAssuredBookableStatus(ride.status) ||
+        (params.eventType === AssuredLifecycleEventType.DRIVER_NO_SHOW &&
+          ride.status === RideStatus.IN_PROGRESS);
+      if (!reporterCanSeeRide) {
         throw new NotFoundException('Ride not found');
       }
 
@@ -576,7 +580,10 @@ export class AssuredLifecycleService {
       );
     }
 
-    if (!isAssuredPreTripOfferStatus(ride.status)) {
+    const allowInProgressNoShow =
+      params.eventType === AssuredLifecycleEventType.DRIVER_NO_SHOW &&
+      ride.status === RideStatus.IN_PROGRESS;
+    if (!isAssuredPreTripOfferStatus(ride.status) && !allowInProgressNoShow) {
       throw new ConflictException(
         `Ride cannot be cancelled from status ${ride.status}`,
       );

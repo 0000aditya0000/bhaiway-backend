@@ -103,7 +103,10 @@ export class RegularRideCancellationService {
       );
     }
 
-    if (ride.status !== RideStatus.PUBLISHED) {
+    const allowInProgressNoShow =
+      ride.status === RideStatus.IN_PROGRESS &&
+      params.rideCancellationReason === RideCancellationReason.DRIVER_NO_SHOW;
+    if (ride.status !== RideStatus.PUBLISHED && !allowInProgressNoShow) {
       throw new ConflictException(
         `Ride cannot be cancelled from status ${ride.status}`,
       );

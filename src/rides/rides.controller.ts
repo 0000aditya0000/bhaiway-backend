@@ -263,7 +263,7 @@ export class RidesController {
   @ApiOperation({
     summary: 'Report that the driver did not arrive (passenger)',
     description:
-      'Creates a pending No-Show claim 5 minutes after scheduled Asia/Kolkata departure. The driver has 15 minutes to approve or reject. No GPS or photo evidence. Duplicate pending reports return the existing claim. Compatibility: POST /rides/:id/driver-no-show is the same action and no longer settles immediately.',
+      'Creates a pending No-Show claim 5 minutes after scheduled Asia/Kolkata departure if this passenger has not been picked up. IN_PROGRESS does not block the claim. The driver has 15 minutes to approve or reject. No GPS or photo evidence. Duplicate pending reports return the existing claim. Compatibility: POST /rides/:id/driver-no-show is the same action and no longer settles immediately.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: NoShowClaimResponseDto })
@@ -272,7 +272,7 @@ export class RidesController {
   })
   @ApiConflictResponse({
     description:
-      'Too early, ride started/cancelled/completed, or ineligible booking',
+      'Too early, already picked up, cancelled/completed, or ineligible booking',
   })
   reportDriverNoShowClaim(
     @CurrentUser() currentUser: AuthenticatedUser,
@@ -295,7 +295,7 @@ export class RidesController {
   })
   @ApiConflictResponse({
     description:
-      'Too early, ride started/cancelled/completed, or ineligible booking',
+      'Too early, already picked up, cancelled/completed, or ineligible booking',
   })
   reportDriverNoShow(
     @CurrentUser() currentUser: AuthenticatedUser,

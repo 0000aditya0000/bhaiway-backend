@@ -349,11 +349,23 @@ export class NoShowClaimsService {
             throw new NotFoundException('Ride not found');
           }
           ride = locked;
-          reporterBooking = await this.findReporterBookingForDriverClaim(
+          if (
+            ride.status === RideStatus.CANCELLED ||
+            ride.status === RideStatus.COMPLETED
+          ) {
+            throw new ConflictException(
+              `No-Show cannot be reported when the ride is ${ride.status}`,
+            );
+          }
+          const reporterPeek = await this.findReporterBookingForDriverClaim(
             manager,
             ride,
             params.actorUserId,
           );
+          reporterBooking = await this.lockBooking(manager, reporterPeek.id);
+          if (!reporterBooking) {
+            throw new NotFoundException('Ride not found');
+          }
         }
 
         const { claimantUserId, respondentUserId, bookingId } =
@@ -437,16 +449,16 @@ export class NoShowClaimsService {
     }
 
     if (kind === NoShowClaimKind.DRIVER_NO_SHOW) {
-      if (ride.status === RideStatus.IN_PROGRESS) {
-        throw new ConflictException(
-          'Driver No-Show cannot be reported after the ride has started',
-        );
-      }
       if (ride.driverId === actorUserId) {
         throw new NotFoundException('Ride not found');
       }
 
       const eligibleBooking = this.assertReporterBooking(ride, booking, actorUserId);
+      if (eligibleBooking.pickupStatus === BookingPickupStatus.PICKED_UP) {
+        throw new ConflictException(
+          'Driver No-Show cannot be reported after pickup',
+        );
+      }
       return {
         claimantUserId: actorUserId,
         respondentUserId: ride.driverId,
@@ -670,10 +682,7 @@ export class NoShowClaimsService {
         }
 
         let lockedBooking: Booking | null = null;
-        if (
-          claim.kind === NoShowClaimKind.PASSENGER_NO_SHOW &&
-          claim.bookingId
-        ) {
+        if (claim.bookingId) {
           lockedBooking = await this.lockBooking(manager, claim.bookingId);
         }
 
@@ -689,7 +698,7 @@ export class NoShowClaimsService {
             lockedBooking?.pickupStatus === BookingPickupStatus.PICKED_UP
           ) {
             this.logger.log(
-              `Passenger No-Show claim=${claim.id} REJECTED: booking=${claim.bookingId} already picked up`,
+              `${claim.kind} claim=${claim.id} REJECTED: booking=${claim.bookingId} already picked up`,
             );
           }
           claim.status = guard.terminalStatus;
@@ -777,14 +786,14 @@ export class NoShowClaimsService {
     lockedBooking: Booking | null,
   ): Promise<{ terminalStatus: NoShowClaimStatus | null }> {
     if (claim.kind === NoShowClaimKind.DRIVER_NO_SHOW) {
-      if (ride.status === RideStatus.IN_PROGRESS) {
-        return { terminalStatus: NoShowClaimStatus.REJECTED };
-      }
       if (ride.status === RideStatus.COMPLETED) {
         return { terminalStatus: NoShowClaimStatus.REJECTED };
       }
       if (ride.status === RideStatus.CANCELLED) {
         return { terminalStatus: NoShowClaimStatus.SUPERSEDED };
+      }
+      if (lockedBooking?.pickupStatus === BookingPickupStatus.PICKED_UP) {
+        return { terminalStatus: NoShowClaimStatus.REJECTED };
       }
       return { terminalStatus: null };
     }
