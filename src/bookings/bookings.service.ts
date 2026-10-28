@@ -2512,10 +2512,6 @@ export class BookingsService {
     vehicle?: BookingVehicleSnapshotDto,
     coPassengers?: BookingCoPassengerDto[],
   ): BookingResponseDto {
-    const includeOtp =
-      booking.pickupStatus === BookingPickupStatus.WAITING_FOR_PICKUP &&
-      Boolean(booking.pickupOtpCiphertext);
-
     return {
       id: booking.id,
       rideId: booking.rideId,
@@ -2543,9 +2539,7 @@ export class BookingsService {
       securityDepositStatus: this.resolveSecurityDepositStatus(booking),
       bookingMode: booking.bookingMode,
       pickupStatus: booking.pickupStatus,
-      pickupOtp: includeOtp
-        ? decryptPickupOtp(booking.pickupOtpCiphertext!, this.pickupOtpPepper())
-        : null,
+      pickupOtp: this.visiblePickupOtpForPassenger(booking),
       pickupVerifiedAt: booking.pickupVerifiedAt?.toISOString() ?? null,
       pickupOrder: booking.pickupOrder,
       ride: ride
@@ -2618,6 +2612,20 @@ export class BookingsService {
       createdAt: booking.createdAt.toISOString(),
       updatedAt: booking.updatedAt.toISOString(),
     };
+  }
+
+  /**
+   * Booking-owner OTP visibility (same rules as GET /bookings/my).
+   * Does not generate or rotate OTPs. Never call this for driver responses.
+   */
+  visiblePickupOtpForPassenger(booking: Booking): string | null {
+    if (booking.pickupStatus !== BookingPickupStatus.WAITING_FOR_PICKUP) {
+      return null;
+    }
+    if (!booking.pickupOtpCiphertext) {
+      return null;
+    }
+    return decryptPickupOtp(booking.pickupOtpCiphertext, this.pickupOtpPepper());
   }
 
   private pickupOtpPepper(): string {

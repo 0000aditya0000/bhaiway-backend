@@ -98,6 +98,11 @@ import {
 import { Wallet, WalletStatus } from '../wallet/entities/wallet.entity';
 import { WalletService } from '../wallet/wallet.service';
 import { InvoicesService } from '../invoices/invoices.service';
+import {
+  ActiveRideItemDto,
+  ActiveRideRole,
+  ActiveRidesResponseDto,
+} from './dto/active-ride-response.dto';
 import { CompleteRideResponseDto } from './dto/complete-ride-response.dto';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { RideHistoryQueryDto } from './dto/ride-history-query.dto';
@@ -1076,6 +1081,105 @@ export class RidesService {
 
     const rides = await qb.getMany();
     return rides.map((ride) => this.toResponse(ride));
+  }
+
+  /**
+   * Home-screen live-ride overview: IN_PROGRESS rides the user drives or
+   * has a CONFIRMED booking on. Does not generate OTPs or change lifecycle.
+   */
+  async findActive(userId: string): Promise<ActiveRidesResponseDto> {
+    const [drivenRides, passengerBookings] = await Promise.all([
+      this.rideRepository.find({
+        where: { driverId: userId, status: RideStatus.IN_PROGRESS },
+        order: {
+          departureDate: 'ASC',
+          departureTime: 'ASC',
+          id: 'ASC',
+        },
+      }),
+      this.bookingRepository
+        .createQueryBuilder('booking')
+        .innerJoinAndSelect('booking.ride', 'ride')
+        .where('booking.passenger_id = :userId', { userId })
+        .andWhere('booking.status = :confirmed', {
+          confirmed: BookingStatus.CONFIRMED,
+        })
+        .andWhere('ride.status = :inProgress', {
+          inProgress: RideStatus.IN_PROGRESS,
+        })
+        .orderBy('ride.departure_date', 'ASC')
+        .addOrderBy('ride.departure_time', 'ASC')
+        .addOrderBy('booking.id', 'ASC')
+        .getMany(),
+    ]);
+
+    const driverRideIds = drivenRides.map((ride) => ride.id);
+    const confirmedOnDriven =
+      driverRideIds.length === 0
+        ? []
+        : await this.bookingRepository.find({
+            where: {
+              rideId: In(driverRideIds),
+              status: BookingStatus.CONFIRMED,
+            },
+            select: {
+              id: true,
+              rideId: true,
+              passengerId: true,
+              seats: true,
+              totalAmount: true,
+              driverShareAmount: true,
+              driverPricePerSeatSnapshot: true,
+            },
+          });
+
+    const bookingsByRideId = new Map<string, Booking[]>();
+    for (const booking of confirmedOnDriven) {
+      const list = bookingsByRideId.get(booking.rideId) ?? [];
+      list.push(booking);
+      bookingsByRideId.set(booking.rideId, list);
+    }
+
+    const rideById = new Map<string, Ride>();
+    for (const ride of drivenRides) {
+      rideById.set(ride.id, ride);
+    }
+    for (const booking of passengerBookings) {
+      rideById.set(booking.ride.id, booking.ride);
+    }
+
+    const items: ActiveRideItemDto[] = [];
+    for (const ride of drivenRides) {
+      items.push(
+        this.toDriverActiveItem(ride, bookingsByRideId.get(ride.id) ?? []),
+      );
+    }
+    for (const booking of passengerBookings) {
+      items.push(this.toPassengerActiveItem(booking, booking.ride));
+    }
+
+    items.sort((left, right) => {
+      const rideLeft = rideById.get(left.rideId);
+      const rideRight = rideById.get(right.rideId);
+      const dateCmp = this.toCivilDate(
+        rideLeft?.departureDate ?? '',
+      ).localeCompare(this.toCivilDate(rideRight?.departureDate ?? ''));
+      if (dateCmp !== 0) {
+        return dateCmp;
+      }
+      const timeCmp = (rideLeft?.departureTime ?? '').localeCompare(
+        rideRight?.departureTime ?? '',
+      );
+      if (timeCmp !== 0) {
+        return timeCmp;
+      }
+      if (left.role !== right.role) {
+        return left.role === ActiveRideRole.DRIVER ? -1 : 1;
+      }
+      return left.rideId.localeCompare(right.rideId);
+    });
+
+    return { items };
   }
 
   /**
@@ -3181,6 +3285,76 @@ export class RidesService {
       seatingCapacity: vehicle.seatingCapacity,
       isVerified,
     };
+  }
+
+  private toDriverActiveItem(
+    ride: Ride,
+    confirmedBookings: Booking[],
+  ): ActiveRideItemDto {
+    const passengerIds = new Set(
+      confirmedBookings.map((booking) => booking.passengerId),
+    );
+    let totalFare = 0n;
+    for (const booking of confirmedBookings) {
+      totalFare += this.driverFacingBookingFare(booking);
+    }
+    return {
+      rideId: ride.id,
+      role: ActiveRideRole.DRIVER,
+      rideType: ride.rideType,
+      status: RideStatus.IN_PROGRESS,
+      source: ride.source,
+      destination: ride.destination,
+      totalPassengers: passengerIds.size,
+      totalFare: totalFare.toString(),
+      seriesId: ride.seriesId ?? null,
+      occurrenceDate: ride.occurrenceDate
+        ? this.toCivilDate(ride.occurrenceDate)
+        : null,
+      direction: ride.direction ?? null,
+    };
+  }
+
+  private toPassengerActiveItem(
+    booking: Booking,
+    ride: Ride,
+  ): ActiveRideItemDto {
+    return {
+      rideId: ride.id,
+      bookingId: booking.id,
+      role: ActiveRideRole.PASSENGER,
+      rideType: ride.rideType,
+      status: RideStatus.IN_PROGRESS,
+      source: ride.source,
+      destination: ride.destination,
+      fare: booking.totalAmount,
+      otp: this.bookingsService.visiblePickupOtpForPassenger(booking),
+      seriesId: ride.seriesId ?? null,
+      occurrenceDate: ride.occurrenceDate
+        ? this.toCivilDate(ride.occurrenceDate)
+        : null,
+      direction: ride.direction ?? null,
+    };
+  }
+
+  /**
+   * Driver-facing fare for an active CONFIRMED booking.
+   * Commute: settled driverShareAmount, else published driver price × seats.
+   * Regular/Assured: persisted booking totalAmount.
+   */
+  private driverFacingBookingFare(
+    booking: Pick<
+      Booking,
+      'seats' | 'totalAmount' | 'driverShareAmount' | 'driverPricePerSeatSnapshot'
+    >,
+  ): bigint {
+    if (booking.driverShareAmount != null) {
+      return BigInt(booking.driverShareAmount);
+    }
+    if (booking.driverPricePerSeatSnapshot != null) {
+      return BigInt(booking.driverPricePerSeatSnapshot) * BigInt(booking.seats);
+    }
+    return BigInt(booking.totalAmount);
   }
 
   private calculateHistoryEarnings(

@@ -72,6 +72,7 @@ describe('Swagger (smoke)', () => {
     expect(response.body.paths['/vehicles']).toBeDefined();
     expect(response.body.paths['/rides']).toBeDefined();
     expect(response.body.paths['/rides/my']).toBeDefined();
+    expect(response.body.paths['/rides/my-active']).toBeDefined();
     expect(response.body.paths['/rides/search']).toBeDefined();
     expect(response.body.paths['/rides/public/{id}']).toBeDefined();
     expect(response.body.paths['/bookings']).toBeDefined();
