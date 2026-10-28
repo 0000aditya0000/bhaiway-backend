@@ -41,6 +41,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 import { decryptPickupOtp } from '../bookings/pickup-otp.util';
 import { startRideAndVerifyAllPickups } from './test/ride-trip-test.helpers';
 
@@ -229,7 +230,7 @@ describe('Commute trip lifecycle (integration)', () => {
     const response = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.COMMUTE,
         vehicleId: driver.vehicle.id,
         source: 'Gurgaon',
@@ -238,7 +239,7 @@ describe('Commute trip lifecycle (integration)', () => {
         departureTime: '08:30',
         totalSeats: 4,
         pricePerSeat: 100,
-      })
+      }))
       .expect(201);
     return response.body as { id: string };
   }

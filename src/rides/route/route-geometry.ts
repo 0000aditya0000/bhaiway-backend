@@ -9,6 +9,19 @@ export const ROUTE_MIN_PROGRESS_METERS = 50;
 /** Densify geodesic segments about every N meters for projection accuracy. */
 export const ROUTE_DENSIFY_STEP_METERS = 2_000;
 
+/**
+ * Passenger search against a driver-selected route (A → B).
+ * Assured geographic queue keeps {@link ROUTE_CORRIDOR_MAX_METERS}.
+ */
+export const SOURCE_CATCHMENT_METERS = 50_000;
+export const SELECTED_ROUTE_CORRIDOR_METERS = 20_000;
+/** Pickup→dropoff along-route minimum for selected-route passenger search. */
+export const SELECTED_ROUTE_MIN_PROGRESS_METERS = 100;
+/** GPS / geometry slack at A and B. */
+export const ROUTE_ENDPOINT_TOLERANCE_METERS = 250;
+const MAX_PROJECTION_CANDIDATES = 12;
+const PROJECTION_DEDUPE_METERS = 75;
+
 export interface LatLng {
   latitude: number;
   longitude: number;
@@ -245,7 +258,7 @@ function projectOntoSegment(
   point: LatLng,
   a: LatLng,
   b: LatLng,
-): { point: LatLng; t: number } {
+): { point: LatLng; t: number; tUnclamped: number } {
   const ax = a.longitude;
   const ay = a.latitude;
   const bx = b.longitude;
@@ -256,16 +269,17 @@ function projectOntoSegment(
   const dy = by - ay;
   const lengthSq = dx * dx + dy * dy;
   if (lengthSq === 0) {
-    return { point: a, t: 0 };
+    return { point: a, t: 0, tUnclamped: 0 };
   }
-  let t = ((px - ax) * dx + (py - ay) * dy) / lengthSq;
-  t = Math.max(0, Math.min(1, t));
+  const tUnclamped = ((px - ax) * dx + (py - ay) * dy) / lengthSq;
+  const t = Math.max(0, Math.min(1, tUnclamped));
   return {
     point: {
       latitude: ay + t * dy,
       longitude: ax + t * dx,
     },
     t,
+    tUnclamped,
   };
 }
 
@@ -323,4 +337,293 @@ export function pointInExpandedRouteBBox(
     point.longitude >= expanded.minLng &&
     point.longitude <= expanded.maxLng
   );
+}
+
+function firstForwardAnchor(route: LatLng[]): { a: LatLng; b: LatLng } | null {
+  if (route.length < 2) {
+    return null;
+  }
+  const a = route[0];
+  for (let i = 1; i < route.length; i += 1) {
+    if (haversineMeters(a, route[i]) >= 10) {
+      return { a, b: route[i] };
+    }
+  }
+  return { a, b: route[1] };
+}
+
+/**
+ * True when `point` lies behind source A along the first forward segment,
+ * farther than {@link ROUTE_ENDPOINT_TOLERANCE_METERS}.
+ */
+export function isPointBehindRouteSource(
+  point: LatLng,
+  route: LatLng[],
+): boolean {
+  const anchor = firstForwardAnchor(route);
+  if (!anchor) {
+    return true;
+  }
+  const { a, b } = anchor;
+  const dx = b.longitude - a.longitude;
+  const dy = b.latitude - a.latitude;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) {
+    return false;
+  }
+  const t =
+    ((point.longitude - a.longitude) * dx + (point.latitude - a.latitude) * dy) /
+    lengthSq;
+  if (t >= 0) {
+    return false;
+  }
+  return haversineMeters(point, a) > ROUTE_ENDPOINT_TOLERANCE_METERS;
+}
+
+export function collectProjectionCandidates(
+  point: LatLng,
+  route: LatLng[],
+  maxDistanceMeters: number,
+  maxCandidates = MAX_PROJECTION_CANDIDATES,
+): RouteProjection[] {
+  if (route.length < 2 || !isValidLatLng(point)) {
+    return [];
+  }
+
+  const raw: RouteProjection[] = [];
+  let traversed = 0;
+  for (let i = 0; i < route.length - 1; i += 1) {
+    const a = route[i];
+    const b = route[i + 1];
+    const segmentLength = haversineMeters(a, b);
+    const projected = projectOntoSegment(point, a, b);
+    if (projected.tUnclamped < -0.01 || projected.tUnclamped > 1.01) {
+      traversed += segmentLength;
+      continue;
+    }
+    const distance = haversineMeters(point, projected.point);
+    if (distance <= maxDistanceMeters) {
+      raw.push({
+        point: projected.point,
+        routePositionMeters: traversed + projected.t * segmentLength,
+        distanceFromRouteMeters: distance,
+      });
+    }
+    traversed += segmentLength;
+  }
+
+  raw.sort(
+    (left, right) =>
+      left.distanceFromRouteMeters - right.distanceFromRouteMeters ||
+      left.routePositionMeters - right.routePositionMeters,
+  );
+
+  const deduped: RouteProjection[] = [];
+  for (const candidate of raw) {
+    const duplicate = deduped.some(
+      (existing) =>
+        Math.abs(
+          existing.routePositionMeters - candidate.routePositionMeters,
+        ) < PROJECTION_DEDUPE_METERS,
+    );
+    if (!duplicate) {
+      deduped.push(candidate);
+    }
+    if (deduped.length >= maxCandidates) {
+      break;
+    }
+  }
+  return deduped;
+}
+
+function routeLengthMetersOf(route: LatLng[]): number {
+  let length = 0;
+  for (let i = 1; i < route.length; i += 1) {
+    length += haversineMeters(route[i - 1], route[i]);
+  }
+  return length;
+}
+
+function isPickupInSourceCatchment(params: {
+  pickup: LatLng;
+  source: LatLng;
+  candidate: RouteProjection;
+  route: LatLng[];
+}): boolean {
+  if (haversineMeters(params.pickup, params.source) > SOURCE_CATCHMENT_METERS) {
+    return false;
+  }
+  if (params.candidate.routePositionMeters > SOURCE_CATCHMENT_METERS) {
+    return false;
+  }
+  if (
+    params.candidate.routePositionMeters < -ROUTE_ENDPOINT_TOLERANCE_METERS
+  ) {
+    return false;
+  }
+  if (isPointBehindRouteSource(params.pickup, params.route)) {
+    return false;
+  }
+  return true;
+}
+
+function isPickupOnSelectedCorridor(params: {
+  pickup: LatLng;
+  candidate: RouteProjection;
+  routeLengthMeters: number;
+  route: LatLng[];
+}): boolean {
+  if (params.candidate.distanceFromRouteMeters > SELECTED_ROUTE_CORRIDOR_METERS) {
+    return false;
+  }
+  if (params.candidate.routePositionMeters < -ROUTE_ENDPOINT_TOLERANCE_METERS) {
+    return false;
+  }
+  if (
+    params.candidate.routePositionMeters >
+    params.routeLengthMeters + ROUTE_ENDPOINT_TOLERANCE_METERS
+  ) {
+    return false;
+  }
+  if (isPointBehindRouteSource(params.pickup, params.route)) {
+    return false;
+  }
+  return true;
+}
+
+function isDropoffOnSelectedCorridor(params: {
+  candidate: RouteProjection;
+  routeLengthMeters: number;
+}): boolean {
+  if (params.candidate.distanceFromRouteMeters > SELECTED_ROUTE_CORRIDOR_METERS) {
+    return false;
+  }
+  if (params.candidate.routePositionMeters < -ROUTE_ENDPOINT_TOLERANCE_METERS) {
+    return false;
+  }
+  if (
+    params.candidate.routePositionMeters >
+    params.routeLengthMeters + ROUTE_ENDPOINT_TOLERANCE_METERS
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Direction-aware passenger match against a driver-selected A → B polyline.
+ * Uses multiple projection candidates so loops/self-crossings are not bound
+ * to the single nearest segment.
+ */
+export function matchesSelectedDriverRoute(params: {
+  routePoints: LatLng[];
+  pickup: LatLng;
+  dropoff: LatLng;
+  source?: LatLng | null;
+  destination?: LatLng | null;
+  minProgressMeters?: number;
+}): boolean {
+  const route = params.routePoints;
+  if (
+    route.length < 2 ||
+    !isValidLatLng(params.pickup) ||
+    !isValidLatLng(params.dropoff)
+  ) {
+    return false;
+  }
+
+  const source = params.source && isValidLatLng(params.source)
+    ? params.source
+    : route[0];
+  const routeLength = routeLengthMetersOf(route);
+  const minProgress =
+    params.minProgressMeters ?? SELECTED_ROUTE_MIN_PROGRESS_METERS;
+
+  const pickupCandidates = collectProjectionCandidates(
+    params.pickup,
+    route,
+    SOURCE_CATCHMENT_METERS,
+  );
+  const dropoffCandidates = collectProjectionCandidates(
+    params.dropoff,
+    route,
+    SELECTED_ROUTE_CORRIDOR_METERS,
+  );
+  if (pickupCandidates.length === 0 || dropoffCandidates.length === 0) {
+    return false;
+  }
+
+  const nearestPickup = pickupCandidates[0];
+  const nearestPickupDistance = nearestPickup.distanceFromRouteMeters;
+  const closePickupDistanceBudget = Math.max(
+    nearestPickupDistance * 1.5,
+    nearestPickupDistance + 500,
+  );
+  const pickupPool =
+    nearestPickup.routePositionMeters > SOURCE_CATCHMENT_METERS
+      ? pickupCandidates.filter(
+          (candidate) =>
+            candidate.distanceFromRouteMeters <= closePickupDistanceBudget,
+        )
+      : pickupCandidates;
+  const eligiblePickups = pickupPool.filter((candidate) => {
+    const sourceEligible =
+      candidate.distanceFromRouteMeters <= closePickupDistanceBudget &&
+      isPickupInSourceCatchment({
+        pickup: params.pickup,
+        source,
+        candidate,
+        route,
+      });
+    const corridorEligible = isPickupOnSelectedCorridor({
+      pickup: params.pickup,
+      candidate,
+      routeLengthMeters: routeLength,
+      route,
+    });
+    return sourceEligible || corridorEligible;
+  });
+  const eligibleDropoffs = dropoffCandidates.filter((candidate) =>
+    isDropoffOnSelectedCorridor({
+      candidate,
+      routeLengthMeters: routeLength,
+    }),
+  );
+  if (eligiblePickups.length === 0 || eligibleDropoffs.length === 0) {
+    return false;
+  }
+
+  type Pair = {
+    pickup: RouteProjection;
+    dropoff: RouteProjection;
+    score: number;
+  };
+  const pairs: Pair[] = [];
+  for (const pickup of eligiblePickups) {
+    for (const dropoff of eligibleDropoffs) {
+      if (
+        dropoff.routePositionMeters <
+        pickup.routePositionMeters + minProgress
+      ) {
+        continue;
+      }
+      pairs.push({
+        pickup,
+        dropoff,
+        score:
+          pickup.distanceFromRouteMeters + dropoff.distanceFromRouteMeters,
+      });
+    }
+  }
+  if (pairs.length === 0) {
+    return false;
+  }
+
+  pairs.sort(
+    (left, right) =>
+      left.score - right.score ||
+      left.pickup.routePositionMeters - right.pickup.routePositionMeters ||
+      left.dropoff.routePositionMeters - right.dropoff.routePositionMeters,
+  );
+  return true;
 }

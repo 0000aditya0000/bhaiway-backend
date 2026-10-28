@@ -54,6 +54,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 import { startRideAndVerifyAllPickups } from './test/ride-trip-test.helpers';
 
 function pickupOtpPepper(): string {
@@ -224,7 +225,7 @@ describe('Commute completion settlement (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.COMMUTE,
         vehicleId: vehicle.id,
         source: 'Gurgaon Cyber City',
@@ -234,7 +235,7 @@ describe('Commute completion settlement (integration)', () => {
         totalSeats,
         pricePerSeat,
         notes: 'Office commute',
-      })
+      }))
       .expect(201);
 
     return { login, wallet, ride: rideResponse.body };

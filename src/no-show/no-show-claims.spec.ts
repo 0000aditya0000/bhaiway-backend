@@ -74,6 +74,7 @@ import {
   reportDriverNoShowAndApprove,
   reportPassengerNoShowAndApprove,
 } from './test/no-show-http.helpers';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 
 function pickupOtpPepper(): string {
   const secret = process.env.JWT_ACCESS_SECRET?.trim();
@@ -292,7 +293,7 @@ describe('No-Show claims (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType,
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
@@ -301,7 +302,7 @@ describe('No-Show claims (integration)', () => {
         departureTime: '09:00',
         totalSeats,
         pricePerSeat: 100,
-      })
+      }))
       .expect(201);
 
     return { login, wallet, ride: rideResponse.body };

@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -124,13 +125,18 @@ import { supportsTripLifecycle } from './ride-trip-lifecycle';
 import { computeCommuteRiderPricePerSeat } from './commute-fare.math';
 import { computeCommuteRouteMatchPercentage } from './commute-route-match.math';
 import { RideDirectionsService } from './route/ride-directions.service';
+import { RouteSelectionService } from './route/route-selection.service';
 import {
   decodePolyline,
   isValidLatLng,
   LatLng,
-  matchesRouteCorridor,
-  ROUTE_CORRIDOR_MAX_METERS,
+  matchesSelectedDriverRoute,
+  SOURCE_CATCHMENT_METERS,
 } from './route/route-geometry';
+import {
+  RequestRouteOptionsDto,
+  RouteOptionsResponseDto,
+} from './dto/route-options.dto';
 
 interface CommuteSearchRouteMatchContext {
   pickup: LatLng;
@@ -139,6 +145,8 @@ interface CommuteSearchRouteMatchContext {
 
 @Injectable()
 export class RidesService {
+  private readonly logger = new Logger(RidesService.name);
+
   constructor(
     private readonly dataSource: DataSource,
     @InjectRepository(Ride)
@@ -169,6 +177,7 @@ export class RidesService {
     private readonly bookingsService: BookingsService,
     private readonly trackingService: TrackingService,
     private readonly rideDirectionsService: RideDirectionsService,
+    private readonly routeSelectionService: RouteSelectionService,
     private readonly ratingsService: RatingsService,
     private readonly chatService: ChatService,
     private readonly notificationsService: NotificationsService,
@@ -343,18 +352,61 @@ export class RidesService {
     return this.createRegularRide(driverId, dto);
   }
 
-  private async createRegularRide(
-    driverId: string,
-    dto: CreateRideDto,
-  ): Promise<RideResponseDto> {
-    const routeFields = await this.buildRouteFieldsFromDto({
-      source: dto.source,
-      destination: dto.destination,
+  async listRouteOptions(
+    dto: RequestRouteOptionsDto,
+  ): Promise<RouteOptionsResponseDto> {
+    const source: LatLng = {
+      latitude: dto.sourceLatitude,
+      longitude: dto.sourceLongitude,
+    };
+    const destination: LatLng = {
+      latitude: dto.destinationLatitude,
+      longitude: dto.destinationLongitude,
+    };
+    if (!isValidLatLng(source) || !isValidLatLng(destination)) {
+      throw new BadRequestException('Invalid source or destination coordinates');
+    }
+    const raw = await this.rideDirectionsService.listDrivingRouteOptions(
+      source,
+      destination,
+    );
+    const signed = this.routeSelectionService.signOptions(raw);
+    return {
+      options: signed.map((option) => ({
+        selectionToken: option.selectionToken,
+        optionId: option.optionId,
+        polyline: option.polylineEncoded,
+        distanceMeters: option.lengthMeters,
+        durationSeconds: option.durationSeconds,
+        sourceLatitude: option.source.latitude,
+        sourceLongitude: option.source.longitude,
+        destinationLatitude: option.destination.latitude,
+        destinationLongitude: option.destination.longitude,
+      })),
+    };
+  }
+
+  private resolveDtoSelectedRoute(dto: {
+    routeSelectionToken?: string;
+    sourceLatitude?: number;
+    sourceLongitude?: number;
+    destinationLatitude?: number;
+    destinationLongitude?: number;
+  }) {
+    return this.routeSelectionService.resolveSelectedRoute({
+      token: dto.routeSelectionToken,
       sourceLatitude: dto.sourceLatitude,
       sourceLongitude: dto.sourceLongitude,
       destinationLatitude: dto.destinationLatitude,
       destinationLongitude: dto.destinationLongitude,
     });
+  }
+
+  private async createRegularRide(
+    driverId: string,
+    dto: CreateRideDto,
+  ): Promise<RideResponseDto> {
+    const routeFields = this.resolveDtoSelectedRoute(dto);
 
     const ride = this.rideRepository.create({
       driverId,
@@ -389,14 +441,7 @@ export class RidesService {
     driverId: string,
     dto: CreateRideDto,
   ): Promise<RideResponseDto> {
-    const routeFields = await this.buildRouteFieldsFromDto({
-      source: dto.source,
-      destination: dto.destination,
-      sourceLatitude: dto.sourceLatitude,
-      sourceLongitude: dto.sourceLongitude,
-      destinationLatitude: dto.destinationLatitude,
-      destinationLongitude: dto.destinationLongitude,
-    });
+    const routeFields = this.resolveDtoSelectedRoute(dto);
 
     const ride = this.rideRepository.create({
       driverId,
@@ -459,18 +504,7 @@ export class RidesService {
 
     this.assertAssuredPublishCoordinates(dto);
 
-    // Resolve geometry before opening the wallet transaction so Directions
-    // latency does not hold financial locks, and geometry failures never
-    // create a deposit hold.
-    const routeFields = await this.buildRouteFieldsFromDto({
-      source: dto.source,
-      destination: dto.destination,
-      sourceLatitude: dto.sourceLatitude,
-      sourceLongitude: dto.sourceLongitude,
-      destinationLatitude: dto.destinationLatitude,
-      destinationLongitude: dto.destinationLongitude,
-      allowPlaceNameFallback: false,
-    });
+    const routeFields = this.resolveDtoSelectedRoute(dto);
     this.assertAssuredRouteGeometryForQueue(routeFields);
 
     const percentage =
@@ -913,6 +947,16 @@ export class RidesService {
     }
   }
 
+  /**
+   * Passenger discovery.
+   *
+   * Coordinate search uses the persisted driver-selected polyline only
+   * (bbox prefilter + batched geometry). It never calls Directions and never
+   * synthesizes a straight-line route. Rides with missing/invalid polylines
+   * are logged and excluded. Place-name search (no coordinates) still uses
+   * LIKE on source/destination text, including legacy rides without geometry.
+   * Assured geographic queue compatibility is a separate 50 km algorithm.
+   */
   async search(
     searcherUserId: string,
     dto: SearchRidesDto,
@@ -920,10 +964,6 @@ export class RidesService {
     const page = dto.page ?? 1;
     const limit = dto.limit ?? 20;
     const useCorridor = this.hasCompleteSearchCoordinates(dto);
-
-    if (useCorridor) {
-      await this.backfillMissingRouteGeometryForSearch(dto);
-    }
 
     const qb = this.rideRepository
       .createQueryBuilder('ride')
@@ -982,58 +1022,55 @@ export class RidesService {
       longitude: dto.dropoffLongitude!,
     };
     const midLat = (pickup.latitude + dropoff.latitude) / 2;
-    const latPad = ROUTE_CORRIDOR_MAX_METERS / 111_320;
+    const latPad = SOURCE_CATCHMENT_METERS / 111_320;
     const cos = Math.max(0.2, Math.cos((midLat * Math.PI) / 180));
-    const lngPad = ROUTE_CORRIDOR_MAX_METERS / (111_320 * cos);
+    const lngPad = SOURCE_CATCHMENT_METERS / (111_320 * cos);
 
-    qb.andWhere(
-      new Brackets((where) => {
-        where
-          .where(
-            `
-            ride.route_polyline IS NOT NULL
-            AND ride.route_bbox_min_lat IS NOT NULL
-            AND :pickupLat BETWEEN (ride.route_bbox_min_lat - :latPad)
-              AND (ride.route_bbox_max_lat + :latPad)
-            AND :pickupLng BETWEEN (ride.route_bbox_min_lng - :lngPad)
-              AND (ride.route_bbox_max_lng + :lngPad)
-            AND :dropoffLat BETWEEN (ride.route_bbox_min_lat - :latPad)
-              AND (ride.route_bbox_max_lat + :latPad)
-            AND :dropoffLng BETWEEN (ride.route_bbox_min_lng - :lngPad)
-              AND (ride.route_bbox_max_lng + :lngPad)
-            `,
-            {
-              pickupLat: pickup.latitude,
-              pickupLng: pickup.longitude,
-              dropoffLat: dropoff.latitude,
-              dropoffLng: dropoff.longitude,
-              latPad,
-              lngPad,
-            },
-          )
-          .orWhere(
-            `
-            ride.route_polyline IS NULL
-            AND LOWER(ride.source) LIKE LOWER(:legacySource)
-            AND LOWER(ride.destination) LIKE LOWER(:legacyDestination)
-            `,
-            {
-              legacySource: `%${dto.source.trim()}%`,
-              legacyDestination: `%${dto.destination.trim()}%`,
-            },
-          );
-      }),
-    );
+    qb.andWhere('ride.route_polyline IS NOT NULL')
+      .andWhere('ride.route_bbox_min_lat IS NOT NULL')
+      .andWhere(
+        `
+        :pickupLat BETWEEN (ride.route_bbox_min_lat - :latPad)
+          AND (ride.route_bbox_max_lat + :latPad)
+        AND :pickupLng BETWEEN (ride.route_bbox_min_lng - :lngPad)
+          AND (ride.route_bbox_max_lng + :lngPad)
+        AND :dropoffLat BETWEEN (ride.route_bbox_min_lat - :latPad)
+          AND (ride.route_bbox_max_lat + :latPad)
+        AND :dropoffLng BETWEEN (ride.route_bbox_min_lng - :lngPad)
+          AND (ride.route_bbox_max_lng + :lngPad)
+        `,
+        {
+          pickupLat: pickup.latitude,
+          pickupLng: pickup.longitude,
+          dropoffLat: dropoff.latitude,
+          dropoffLng: dropoff.longitude,
+          latPad,
+          lngPad,
+        },
+      );
 
     qb.orderBy('ride.departure_date', 'ASC')
       .addOrderBy('ride.departure_time', 'ASC')
-      .addOrderBy('ride.created_at', 'ASC')
-      .take(500);
+      .addOrderBy('ride.created_at', 'ASC');
 
-    const candidates = await qb.getMany();
-    const matched = candidates.filter((ride) =>
-      this.rideMatchesCorridorSearch(ride, pickup, dropoff),
-    );
+    const matched: Ride[] = [];
+    const batchSize = 200;
+    let offset = 0;
+    for (;;) {
+      const batch = await qb.clone().skip(offset).take(batchSize).getMany();
+      if (batch.length === 0) {
+        break;
+      }
+      for (const ride of batch) {
+        if (this.rideMatchesSelectedRouteSearch(ride, pickup, dropoff)) {
+          matched.push(ride);
+        }
+      }
+      offset += batch.length;
+      if (batch.length < batchSize) {
+        break;
+      }
+    }
 
     const total = matched.length;
     const pageRides = matched.slice((page - 1) * limit, page * limit);
@@ -1384,41 +1421,21 @@ export class RidesService {
 
     if (routeRelatedChange) {
       this.assertDtoEndpointCoordsAllOrNone(dto);
-      const coordsProvidedInDto =
-        dto.sourceLatitude !== undefined ||
-        dto.sourceLongitude !== undefined ||
-        dto.destinationLatitude !== undefined ||
-        dto.destinationLongitude !== undefined;
-      const placeTextChanged =
-        dto.source !== undefined || dto.destination !== undefined;
-
-      let routeFields;
-      if (coordsProvidedInDto) {
-        routeFields = await this.buildRouteFieldsFromDto({
-          source: dto.source !== undefined ? dto.source : ride.source,
-          destination:
-            dto.destination !== undefined ? dto.destination : ride.destination,
-          sourceLatitude: dto.sourceLatitude,
-          sourceLongitude: dto.sourceLongitude,
-          destinationLatitude: dto.destinationLatitude,
-          destinationLongitude: dto.destinationLongitude,
-          allowPlaceNameFallback: false,
-        });
-      } else if (placeTextChanged) {
-        // Place labels changed without new coords — rebuild from names (drop stale geometry).
-        routeFields = await this.buildRouteFieldsFromDto({
-          source: ride.source,
-          destination: ride.destination,
-          allowPlaceNameFallback: true,
-        });
-      } else {
-        routeFields = await this.buildRouteFieldsFromEndpoints({
-          sourceLatitude: ride.sourceLatitude,
-          sourceLongitude: ride.sourceLongitude,
-          destinationLatitude: ride.destinationLatitude,
-          destinationLongitude: ride.destinationLongitude,
-        });
+      if (!dto.routeSelectionToken?.trim()) {
+        throw new BadRequestException(
+          'A selected driving route is required when changing source, destination, or coordinates. Request POST /rides/route-options and pass routeSelectionToken.',
+        );
       }
+      const routeFields = this.resolveDtoSelectedRoute({
+        routeSelectionToken: dto.routeSelectionToken,
+        sourceLatitude: dto.sourceLatitude ?? ride.sourceLatitude ?? undefined,
+        sourceLongitude:
+          dto.sourceLongitude ?? ride.sourceLongitude ?? undefined,
+        destinationLatitude:
+          dto.destinationLatitude ?? ride.destinationLatitude ?? undefined,
+        destinationLongitude:
+          dto.destinationLongitude ?? ride.destinationLongitude ?? undefined,
+      });
       Object.assign(ride, routeFields);
     }
   }
@@ -1507,19 +1524,50 @@ export class RidesService {
     );
   }
 
-  private rideMatchesCorridorSearch(
+  private rideMatchesSelectedRouteSearch(
     ride: Ride,
     pickup: LatLng,
     dropoff: LatLng,
   ): boolean {
     if (!ride.routePolyline) {
-      // Legacy rides without geometry already passed LIKE source/destination SQL.
-      return true;
+      this.logger.warn(
+        `Corridor search skipped ride=${ride.id}: missing selected route geometry`,
+      );
+      return false;
     }
     try {
       const routePoints = decodePolyline(ride.routePolyline);
-      return matchesRouteCorridor({ routePoints, pickup, dropoff });
-    } catch {
+      if (routePoints.length < 2) {
+        this.logger.warn(
+          `Corridor search skipped ride=${ride.id}: invalid route polyline`,
+        );
+        return false;
+      }
+      return matchesSelectedDriverRoute({
+        routePoints,
+        pickup,
+        dropoff,
+        source:
+          ride.sourceLatitude != null && ride.sourceLongitude != null
+            ? {
+                latitude: ride.sourceLatitude,
+                longitude: ride.sourceLongitude,
+              }
+            : routePoints[0],
+        destination:
+          ride.destinationLatitude != null && ride.destinationLongitude != null
+            ? {
+                latitude: ride.destinationLatitude,
+                longitude: ride.destinationLongitude,
+              }
+            : routePoints[routePoints.length - 1],
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Corridor search skipped ride=${ride.id}: ${
+          error instanceof Error ? error.message : 'invalid geometry'
+        }`,
+      );
       return false;
     }
   }
@@ -1618,44 +1666,56 @@ export class RidesService {
   }
 
   /**
-   * One-time corridor backfill for published rides that predate route storage
-   * (or were published without coords / place-name Directions). Caps API usage.
+   * Controlled legacy backfill. Uses the directions provider only — never a
+   * straight line — and does not mark the result as driver-selected.
+   * Not invoked from passenger search.
    */
-  private async backfillMissingRouteGeometryForSearch(
-    dto: SearchRidesDto,
-  ): Promise<void> {
-    const qb = this.rideRepository
-      .createQueryBuilder('ride')
-      .where('ride.departure_date = :date', { date: dto.date })
-      .andWhere('ride.route_polyline IS NULL');
-    this.applyPassengerVisibilityFilter(qb);
-    this.applyFutureDepartureFilter(qb);
-    qb.orderBy('ride.created_at', 'ASC').take(20);
-
-    if (dto.rideType !== undefined) {
-      qb.andWhere('ride.ride_type = :rideType', { rideType: dto.rideType });
+  async backfillLegacyRideGeometry(rideId: string): Promise<boolean> {
+    const ride = await this.rideRepository.findOne({ where: { id: rideId } });
+    if (!ride || ride.routePolyline) {
+      return false;
     }
-    if (dto.seats !== undefined) {
-      qb.andWhere('ride.available_seats >= :seats', { seats: dto.seats });
+    if (
+      ride.sourceLatitude == null ||
+      ride.sourceLongitude == null ||
+      ride.destinationLatitude == null ||
+      ride.destinationLongitude == null
+    ) {
+      this.logger.warn(
+        `Legacy route backfill skipped ride=${ride.id}: missing endpoint coordinates`,
+      );
+      return false;
     }
-
-    const rides = await qb.getMany();
-    for (const ride of rides) {
-      const fields = await this.buildRouteFieldsFromDto({
-        source: ride.source,
-        destination: ride.destination,
-        sourceLatitude: ride.sourceLatitude ?? undefined,
-        sourceLongitude: ride.sourceLongitude ?? undefined,
-        destinationLatitude: ride.destinationLatitude ?? undefined,
-        destinationLongitude: ride.destinationLongitude ?? undefined,
-        allowPlaceNameFallback: true,
-      });
-      if (!fields.routePolyline) {
-        continue;
-      }
-      Object.assign(ride, fields);
-      await this.rideRepository.save(ride);
+    const option = await this.rideDirectionsService.buildDrivingRouteGeometry(
+      {
+        latitude: ride.sourceLatitude,
+        longitude: ride.sourceLongitude,
+      },
+      {
+        latitude: ride.destinationLatitude,
+        longitude: ride.destinationLongitude,
+      },
+    );
+    if (!option) {
+      this.logger.warn(
+        `Legacy route backfill skipped ride=${ride.id}: directions unavailable`,
+      );
+      return false;
     }
+    ride.routePolyline = option.polylineEncoded;
+    ride.routeLengthMeters = option.lengthMeters;
+    ride.routeBboxMinLat = option.bbox.minLat;
+    ride.routeBboxMaxLat = option.bbox.maxLat;
+    ride.routeBboxMinLng = option.bbox.minLng;
+    ride.routeBboxMaxLng = option.bbox.maxLng;
+    ride.routeDurationSeconds = option.durationSeconds;
+    ride.routeSelectionId = null;
+    ride.routeSelectedAt = null;
+    await this.rideRepository.save(ride);
+    this.logger.log(
+      `Legacy route backfill stored provider geometry for ride=${ride.id} (not driver-selected)`,
+    );
+    return true;
   }
 
   private assertAssuredRouteGeometryForQueue(fields: {
@@ -2990,6 +3050,9 @@ export class RidesService {
           : null
         : null,
       isBookable,
+      routeSelected: ride.routeSelectedAt != null,
+      routeLengthMeters: ride.routeLengthMeters,
+      routeDurationSeconds: ride.routeDurationSeconds,
       createdAt: ride.createdAt.toISOString(),
       updatedAt: ride.updatedAt.toISOString(),
     };

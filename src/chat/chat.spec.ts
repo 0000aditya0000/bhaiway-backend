@@ -41,6 +41,7 @@ import {
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { TrackingModule } from '../tracking/tracking.module';
 import { ChatModule } from './chat.module';
 import {
@@ -396,7 +397,7 @@ describe('Ride chat (integration)', () => {
     const res = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${token}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId,
         source: 'Noida Sector 62',
@@ -410,7 +411,7 @@ describe('Ride chat (integration)', () => {
         noPets: true,
         luggageAllowed: true,
         ...overrides,
-      })
+      }))
       .expect(201);
     return res.body;
   }
@@ -706,7 +707,7 @@ describe('Ride chat (integration)', () => {
     const ride = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.COMMUTE,
         vehicleId: driver.vehicle.id,
         source: 'Office Park A',
@@ -723,7 +724,7 @@ describe('Ride chat (integration)', () => {
         sourceLongitude: 77.391,
         destinationLatitude: 28.6139,
         destinationLongitude: 77.209,
-      })
+      }))
       .expect(201);
 
     const booking = await request(app.getHttpServer())

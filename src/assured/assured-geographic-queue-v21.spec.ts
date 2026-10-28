@@ -19,6 +19,7 @@ import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
 import { withAssuredPublishHeaders } from '../rides/test/assured-ride-test.helpers';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { haversineMeters } from '../rides/route/route-geometry';
 import { SettingsService } from '../settings/settings.service';
 import { SettingsModule } from '../settings/settings.module';
@@ -317,7 +318,7 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
     const res = await request(app.getHttpServer())
       .post('/rides')
       .set(withAssuredPublishHeaders(driverToken))
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.ASSURED,
         vehicleId,
         departureDate: '2027-10-10',
@@ -330,7 +331,7 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
         luggageAllowed: true,
         ...NOIDA,
         ...overrides,
-      })
+      }))
       .expect(201);
     return res.body as { id: string; status: RideStatus };
   }

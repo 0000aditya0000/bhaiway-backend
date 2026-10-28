@@ -46,6 +46,7 @@ import {
   ASSURED_TEST_ROUTE,
   withAssuredPublishHeaders,
 } from './test/assured-ride-test.helpers';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 
 /**
  * Assured Ride Publish flow cases A–P (queue V2.1 reused; no algorithm changes).
@@ -254,7 +255,7 @@ describe('Assured Ride Publish (integration)', () => {
     const res = await request(app.getHttpServer())
       .post('/rides')
       .set(withAssuredPublishHeaders(token, idempotencyKey))
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.ASSURED,
         vehicleId,
         departureDate: '2026-11-15',
@@ -263,7 +264,7 @@ describe('Assured Ride Publish (integration)', () => {
         pricePerSeat: 300,
         ...BASE_ROUTE,
         ...overrides,
-      })
+      }))
       .expect(201);
     return res.body as {
       id: string;
@@ -398,10 +399,6 @@ describe('Assured Ride Publish (integration)', () => {
       .getRepository(WalletBalance)
       .findOneByOrFail({ walletId: d.wallet.id });
 
-    jest
-      .spyOn(rideDirectionsService, 'buildRouteGeometry')
-      .mockResolvedValue(null);
-
     const res = await request(app.getHttpServer())
       .post('/rides')
       .set(withAssuredPublishHeaders(d.login.accessToken))
@@ -416,7 +413,9 @@ describe('Assured Ride Publish (integration)', () => {
       })
       .expect(400);
 
-    expect(JSON.stringify(res.body)).toMatch(/route geometry/i);
+    expect(JSON.stringify(res.body)).toMatch(
+      /routeSelectionToken|selected driving route/i,
+    );
 
     const holds = await dataSource.getRepository(WalletHold).find({
       where: { walletId: d.wallet.id, status: WalletHoldStatus.ACTIVE },
@@ -439,7 +438,7 @@ describe('Assured Ride Publish (integration)', () => {
     await request(app.getHttpServer())
       .post('/rides')
       .set(withAssuredPublishHeaders(d.login.accessToken))
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.ASSURED,
         vehicleId: d.vehicle.id,
         departureDate: '2026-11-15',
@@ -447,7 +446,7 @@ describe('Assured Ride Publish (integration)', () => {
         totalSeats: 4,
         pricePerSeat: 300,
         ...BASE_ROUTE,
-      })
+      }))
       .expect(422);
   });
 
@@ -471,10 +470,6 @@ describe('Assured Ride Publish (integration)', () => {
 
   it('L: publish failure leaves no orphan financial hold', async () => {
     const d = await publishableDriver();
-    jest
-      .spyOn(rideDirectionsService, 'buildRouteGeometry')
-      .mockResolvedValue(null);
-
     await request(app.getHttpServer())
       .post('/rides')
       .set(withAssuredPublishHeaders(d.login.accessToken))
@@ -567,7 +562,7 @@ describe('Assured Ride Publish (integration)', () => {
     const res = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${d.login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: d.vehicle.id,
         source: 'Regular Source',
@@ -576,7 +571,7 @@ describe('Assured Ride Publish (integration)', () => {
         departureTime: '08:00',
         totalSeats: 3,
         pricePerSeat: 100,
-      })
+      }))
       .expect(201);
 
     expect(res.body.status).toBe(RideStatus.PUBLISHED);

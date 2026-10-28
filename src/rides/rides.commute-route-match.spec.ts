@@ -33,6 +33,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from './entities/ride.entity';
 import { RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 import {
   decodePolyline,
   haversineMeters,
@@ -249,7 +250,7 @@ describe('Commute route match percentage (GET /rides/search)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.COMMUTE,
         vehicleId: vehicle.id,
         source: 'Noida',
@@ -262,7 +263,7 @@ describe('Commute route match percentage (GET /rides/search)', () => {
         departureTime: '09:00',
         totalSeats: 4,
         pricePerSeat: 100,
-      })
+      }))
       .expect(201);
 
     const stored = await dataSource
@@ -376,7 +377,7 @@ describe('Commute route match percentage (GET /rides/search)', () => {
     const regular = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Noida',
@@ -389,7 +390,7 @@ describe('Commute route match percentage (GET /rides/search)', () => {
         departureTime: '09:00',
         totalSeats: 4,
         pricePerSeat: 250,
-      })
+      }))
       .expect(201);
 
     const res = await corridorSearch(passengerAccessToken, {

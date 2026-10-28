@@ -12,6 +12,7 @@ import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { BookingsModule } from '../bookings/bookings.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingStatus } from '../bookings/enums/booking.enums';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import { VerificationType } from '../verification/enums/verification.enums';
@@ -33,6 +34,7 @@ import {
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 
 describe('Regular ride modify (PATCH /rides/:id)', () => {
   let app: INestApplication;
@@ -95,15 +97,31 @@ describe('Regular ride modify (PATCH /rides/:id)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
-        await dataSource.getRepository(Booking).delete({
-          passengerId: ctx.userId,
-        });
         const rides = await dataSource.getRepository(Ride).find({
           where: { driverId: ctx.userId },
         });
         for (const ride of rides) {
+          const rideBookings = await dataSource.getRepository(Booking).find({
+            where: { rideId: ride.id },
+            select: { id: true },
+          });
+          await deleteChatForBookingIds(
+            dataSource,
+            rideBookings.map((booking) => booking.id),
+          );
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
         }
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        await deleteChatForBookingIds(
+          dataSource,
+          passengerBookings.map((booking) => booking.id),
+        );
+        await dataSource.getRepository(Booking).delete({
+          passengerId: ctx.userId,
+        });
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
         await dataSource.getRepository(Vehicle).delete({ userId: ctx.userId });
         await dataSource.getRepository(UserProfile).delete({
@@ -190,7 +208,7 @@ describe('Regular ride modify (PATCH /rides/:id)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
@@ -200,7 +218,7 @@ describe('Regular ride modify (PATCH /rides/:id)', () => {
         totalSeats,
         pricePerSeat: 250,
         notes: 'AC car',
-      })
+      }))
       .expect(201);
 
     return { login, vehicle, ride: rideResponse.body };
@@ -240,14 +258,14 @@ describe('Regular ride modify (PATCH /rides/:id)', () => {
     const updated = await request(app.getHttpServer())
       .patch(`/rides/${ride.id}`)
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         source: 'Ghaziabad',
         destination: 'Gurgaon',
         departureDate: '2027-08-21',
         departureTime: '10:30',
         pricePerSeat: 300,
         totalSeats: 3,
-      })
+      }))
       .expect(200);
 
     expect(updated.body).toMatchObject({

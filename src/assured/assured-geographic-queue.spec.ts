@@ -14,10 +14,12 @@ import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { BookingsModule } from '../bookings/bookings.module';
 import { Booking } from '../bookings/entities/booking.entity';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
 import { withAssuredPublishHeaders } from '../rides/test/assured-ride-test.helpers';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { SettingsService } from '../settings/settings.service';
 import { SettingsModule } from '../settings/settings.module';
 import { UserProfile } from '../users/entities/user-profile.entity';
@@ -126,9 +128,6 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
-        await dataSource.getRepository(Booking).delete({
-          passengerId: ctx.userId,
-        });
         const rides = await dataSource.getRepository(Ride).find({
           where: { driverId: ctx.userId },
         });
@@ -140,6 +139,14 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
           ),
         ];
         for (const ride of rides) {
+          const rideBookings = await dataSource.getRepository(Booking).find({
+            where: { rideId: ride.id },
+            select: { id: true },
+          });
+          await deleteChatForBookingIds(
+            dataSource,
+            rideBookings.map((booking) => booking.id),
+          );
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
           if (ride.assuredQueueKey) {
             await dataSource.query(
@@ -148,6 +155,17 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
             );
           }
         }
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        await deleteChatForBookingIds(
+          dataSource,
+          passengerBookings.map((booking) => booking.id),
+        );
+        await dataSource.getRepository(Booking).delete({
+          passengerId: ctx.userId,
+        });
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
         for (const queueId of queueIds) {
           const remaining = await dataSource.getRepository(Ride).count({
@@ -277,10 +295,10 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
     const res = await request(app.getHttpServer())
       .post('/rides')
       .set(withAssuredPublishHeaders(driverToken))
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.ASSURED,
         vehicleId,
-        departureDate: '2027-08-30',
+        departureDate: '2029-01-15',
         departureTime: '13:15',
         totalSeats: 4,
         pricePerSeat: 300,
@@ -290,7 +308,7 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
         luggageAllowed: true,
         ...NOIDA_ROUTE,
         ...overrides,
-      })
+      }))
       .expect(201);
     return res.body as { id: string; status: RideStatus };
   }
@@ -348,7 +366,7 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
       departureTime: '17:10',
     });
     const nextDay = await publishAssured(d3.login.accessToken, d3.vehicle.id, {
-      departureDate: '2027-08-31',
+      departureDate: '2029-01-16',
       departureTime: '13:15',
     });
 
@@ -455,7 +473,7 @@ describe('Assured Geographic Queue Engine V2 (integration)', () => {
         vehicleId: driver.vehicle.id,
         source: 'Mystery Source',
         destination: 'Mystery Destination',
-        departureDate: '2027-08-30',
+        departureDate: '2029-01-15',
         departureTime: '13:15',
         totalSeats: 4,
         pricePerSeat: 300,

@@ -46,6 +46,7 @@ import {
 } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
 import { RidesService } from './rides.service';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 
 describe('Regular ride driver cancellation (integration)', () => {
   let app: INestApplication;
@@ -209,7 +210,7 @@ describe('Regular ride driver cancellation (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
@@ -218,7 +219,7 @@ describe('Regular ride driver cancellation (integration)', () => {
         departureTime: '09:00',
         totalSeats,
         pricePerSeat: 250,
-      })
+      }))
       .expect(201);
 
     return { login, vehicle, ride: rideResponse.body };
@@ -446,7 +447,7 @@ describe('Regular ride driver cancellation (integration)', () => {
     const activeRide = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
@@ -455,7 +456,7 @@ describe('Regular ride driver cancellation (integration)', () => {
         departureTime: '11:00',
         totalSeats: 3,
         pricePerSeat: 250,
-      })
+      }))
       .expect(201);
 
     await request(app.getHttpServer())

@@ -41,6 +41,7 @@ import {
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 
 describe('Regular ride trip lifecycle (integration)', () => {
   let app: INestApplication;
@@ -224,7 +225,7 @@ describe('Regular ride trip lifecycle (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Trip Hub',
@@ -233,7 +234,7 @@ describe('Regular ride trip lifecycle (integration)', () => {
         departureTime: '09:00',
         totalSeats,
         pricePerSeat: 200,
-      })
+      }))
       .expect(201);
 
     return { login, vehicle, ride: rideResponse.body };

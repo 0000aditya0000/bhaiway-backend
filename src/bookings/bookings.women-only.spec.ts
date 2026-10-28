@@ -16,6 +16,7 @@ import {
   ASSURED_TEST_ROUTE,
   withAssuredPublishHeaders,
 } from '../rides/test/assured-ride-test.helpers';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { SettingsModule } from '../settings/settings.module';
 import { Gender, UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
@@ -264,7 +265,7 @@ describe('Women Only ride booking (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
@@ -274,7 +275,7 @@ describe('Women Only ride booking (integration)', () => {
         totalSeats: 3,
         pricePerSeat: 100,
         womenOnly,
-      })
+      }))
       .expect(201);
 
     expect(rideResponse.body.womenOnly).toBe(womenOnly);

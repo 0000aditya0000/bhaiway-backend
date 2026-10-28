@@ -41,6 +41,7 @@ import {
   ASSURED_TEST_ROUTE,
   withAssuredPublishHeaders,
 } from './test/assured-ride-test.helpers';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 import {
   currentCivilDeparture,
   futureCivilDate,
@@ -225,7 +226,7 @@ describe('Ride publishing rules (integration)', () => {
     vehicleId: string,
     overrides: Record<string, unknown> = {},
   ) {
-    return {
+    return withSelectedRoute({
       rideType,
       vehicleId,
       source: 'Noida Sector 62',
@@ -234,9 +235,12 @@ describe('Ride publishing rules (integration)', () => {
       departureTime: '18:30:00',
       totalSeats: 3,
       pricePerSeat: 250,
-      ...ASSURED_TEST_ROUTE,
+      sourceLatitude: ASSURED_TEST_ROUTE.sourceLatitude,
+      sourceLongitude: ASSURED_TEST_ROUTE.sourceLongitude,
+      destinationLatitude: ASSURED_TEST_ROUTE.destinationLatitude,
+      destinationLongitude: ASSURED_TEST_ROUTE.destinationLongitude,
       ...overrides,
-    };
+    });
   }
 
   describe('future departure validation', () => {

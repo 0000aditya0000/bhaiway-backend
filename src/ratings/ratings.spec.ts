@@ -44,6 +44,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { startRideAndVerifyAllPickups } from '../rides/test/ride-trip-test.helpers';
 
 function pickupOtpPepper(): string {
@@ -233,7 +234,7 @@ describe('Ratings foundation (integration)', () => {
     const response = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: driver.vehicle.id,
         source: 'Rating Source',
@@ -242,7 +243,7 @@ describe('Ratings foundation (integration)', () => {
         departureTime: '09:00',
         totalSeats,
         pricePerSeat: 100,
-      })
+      }))
       .expect(201);
     return response.body as { id: string };
   }

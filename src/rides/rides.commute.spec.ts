@@ -37,6 +37,7 @@ import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
 import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 
 describe('Daily Office Commute (integration)', () => {
   let app: INestApplication;
@@ -227,13 +228,15 @@ describe('Daily Office Commute (integration)', () => {
         'Idempotency-Key',
         uniqueIdempotencyKey(`commute-publish-${rideType}`),
       )
-      .send({
-        vehicleId,
-        ...(rideType === RideType.ASSURED ? ASSURED_TEST_ROUTE : {}),
-        ...COMMUTE_PUBLISH_BODY,
-        ...overrides,
-        rideType,
-      })
+      .send(
+        withSelectedRoute({
+          vehicleId,
+          ...(rideType === RideType.ASSURED ? ASSURED_TEST_ROUTE : {}),
+          ...COMMUTE_PUBLISH_BODY,
+          ...overrides,
+          rideType,
+        }),
+      )
       .expect(expectedStatus);
   }
 

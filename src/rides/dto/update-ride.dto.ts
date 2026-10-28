@@ -47,6 +47,14 @@ export class UpdateRideDto {
   @MaxLength(255)
   destination?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Required when changing source, destination, or endpoint coordinates. Token from POST /rides/route-options.',
+  })
+  @IsOptional()
+  @IsString()
+  routeSelectionToken?: string;
+
   @ApiPropertyOptional({ example: 28.5355 })
   @IsOptional()
   @Type(() => Number)

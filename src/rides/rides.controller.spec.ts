@@ -42,6 +42,7 @@ import {
   pastCivilDate,
   pastCivilTimeToday,
 } from './test/ride-departure-test.helpers';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 
 describe('RidesController (integration)', () => {
   let app: INestApplication;
@@ -180,7 +181,7 @@ describe('RidesController (integration)', () => {
   }
 
   function ridePayload(vehicleId: string, overrides: Record<string, unknown> = {}) {
-    return {
+    return withSelectedRoute({
       rideType: RideType.REGULAR,
       vehicleId,
       source: 'Noida Sector 62',
@@ -195,7 +196,7 @@ describe('RidesController (integration)', () => {
       luggageAllowed: true,
       notes: 'AC car',
       ...overrides,
-    };
+    });
   }
 
   it('POST /rides requires JWT', async () => {

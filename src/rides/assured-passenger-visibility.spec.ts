@@ -40,6 +40,7 @@ import { RidesModule } from './rides.module';
 import {
   ASSURED_TEST_ROUTE,
   withAssuredPublishHeaders,
+  withAssuredTestRoute,
 } from './test/assured-ride-test.helpers';
 
 describe('Assured passenger search visibility', () => {
@@ -229,7 +230,7 @@ describe('Assured passenger search visibility', () => {
     vehicleId: string,
     overrides: Record<string, unknown> = {},
   ) {
-    return {
+    return withAssuredTestRoute({
       rideType: RideType.ASSURED,
       vehicleId,
       source: 'Noida Visibility Hub',
@@ -240,7 +241,7 @@ describe('Assured passenger search visibility', () => {
       pricePerSeat: 300,
       ...ASSURED_TEST_ROUTE,
       ...overrides,
-    };
+    });
   }
 
   async function publishAssured(

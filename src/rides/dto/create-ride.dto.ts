@@ -14,7 +14,6 @@ import {
   Max,
   MaxLength,
   Min,
-  ValidateIf,
 } from 'class-validator';
 
 import { RideType } from '../enums/ride.enums';
@@ -49,65 +48,57 @@ export class CreateRideDto {
   @MaxLength(255)
   destination!: string;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      'WGS84 latitude of the published source. Required for ASSURED. For REGULAR, provide all four coordinate fields to enable route-corridor search.',
+      'Signed token from POST /rides/route-options identifying the driving route the driver selected.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  routeSelectionToken!: string;
+
+  @ApiProperty({
+    description:
+      'WGS84 latitude of the published source. Must match the selected route.',
     example: 28.5355,
   })
-  @ValidateIf(
-    (o: CreateRideDto) =>
-      o.rideType === RideType.ASSURED || o.sourceLatitude !== undefined,
-  )
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 8 })
   @Min(-90)
   @Max(90)
-  sourceLatitude?: number;
+  sourceLatitude!: number;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      'WGS84 longitude of the published source. Required for ASSURED.',
+      'WGS84 longitude of the published source. Must match the selected route.',
     example: 77.391,
   })
-  @ValidateIf(
-    (o: CreateRideDto) =>
-      o.rideType === RideType.ASSURED || o.sourceLongitude !== undefined,
-  )
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 8 })
   @Min(-180)
   @Max(180)
-  sourceLongitude?: number;
+  sourceLongitude!: number;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      'WGS84 latitude of the published destination. Required for ASSURED.',
+      'WGS84 latitude of the published destination. Must match the selected route.',
     example: 30.3165,
   })
-  @ValidateIf(
-    (o: CreateRideDto) =>
-      o.rideType === RideType.ASSURED || o.destinationLatitude !== undefined,
-  )
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 8 })
   @Min(-90)
   @Max(90)
-  destinationLatitude?: number;
+  destinationLatitude!: number;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      'WGS84 longitude of the published destination. Required for ASSURED.',
+      'WGS84 longitude of the published destination. Must match the selected route.',
     example: 78.0322,
   })
-  @ValidateIf(
-    (o: CreateRideDto) =>
-      o.rideType === RideType.ASSURED || o.destinationLongitude !== undefined,
-  )
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 8 })
   @Min(-180)
   @Max(180)
-  destinationLongitude?: number;
+  destinationLongitude!: number;
 
   @ApiProperty({
     description: 'Civil departure date (YYYY-MM-DD), no timezone conversion',

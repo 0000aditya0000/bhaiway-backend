@@ -37,6 +37,7 @@ import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
 import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 import {
   pastCivilDate,
   pastCivilTimeToday,
@@ -214,7 +215,7 @@ describe('Rides search (integration)', () => {
     const response = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId,
         source: 'Noida Sector 62',
@@ -230,7 +231,7 @@ describe('Rides search (integration)', () => {
         notes: 'AC car',
         ...(overrides.rideType === RideType.ASSURED ? ASSURED_TEST_ROUTE : {}),
         ...overrides,
-      })
+      }))
       .expect(201);
 
     return response.body;

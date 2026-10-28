@@ -170,6 +170,29 @@ export class Ride {
   })
   routeBboxMaxLng!: number | null;
 
+  /** Id of the driver-selected Directions option. Null for legacy rides. */
+  @Column({
+    name: 'route_selection_id',
+    type: 'uuid',
+    nullable: true,
+  })
+  routeSelectionId!: string | null;
+
+  /** When the driver selected this geometry. Null means legacy / not driver-selected. */
+  @Column({
+    name: 'route_selected_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  routeSelectedAt!: Date | null;
+
+  @Column({
+    name: 'route_duration_seconds',
+    type: 'int',
+    nullable: true,
+  })
+  routeDurationSeconds!: number | null;
+
   /** Civil calendar date (YYYY-MM-DD), no timezone. */
   @Column({
     name: 'departure_date',

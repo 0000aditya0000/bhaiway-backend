@@ -39,6 +39,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { BookingsModule } from './bookings.module';
 import { Booking } from './entities/booking.entity';
 import {
@@ -242,7 +243,7 @@ describe('Commute booking request lifecycle (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.COMMUTE,
         vehicleId: vehicle.id,
         source: 'Gurgaon Cyber City',
@@ -252,7 +253,7 @@ describe('Commute booking request lifecycle (integration)', () => {
         totalSeats,
         pricePerSeat,
         notes: 'Office commute',
-      })
+      }))
       .expect(201);
 
     return { login, wallet, ride: rideResponse.body };

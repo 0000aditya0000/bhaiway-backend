@@ -46,7 +46,10 @@ import { SettingsService } from '../settings/settings.service';
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
-import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
+import {
+  ASSURED_TEST_ROUTE,
+  withAssuredTestRoute,
+} from './test/assured-ride-test.helpers';
 
 describe('Assured Ride Phase 1 (integration)', () => {
   let app: INestApplication;
@@ -231,7 +234,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
     vehicleId: string,
     overrides: Record<string, unknown> = {},
   ) {
-    return {
+    return withAssuredTestRoute({
       rideType: RideType.ASSURED,
       vehicleId,
       source: 'Noida Assured Hub',
@@ -247,7 +250,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
       notes: 'Assured ride',
       ...ASSURED_TEST_ROUTE,
       ...overrides,
-    };
+    });
   }
 
   async function verifiedPassenger(credit = 0n) {

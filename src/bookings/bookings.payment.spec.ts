@@ -12,6 +12,7 @@ import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import {
   VerificationStatus,
@@ -198,7 +199,7 @@ describe('Bookings payment integration', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
@@ -208,7 +209,7 @@ describe('Bookings payment integration', () => {
         totalSeats,
         pricePerSeat,
         notes: 'AC car',
-      })
+      }))
       .expect(201);
 
     return { login, wallet, ride: rideResponse.body };

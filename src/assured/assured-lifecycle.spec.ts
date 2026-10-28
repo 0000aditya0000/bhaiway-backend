@@ -75,6 +75,7 @@ import {
 import { RidesModule } from '../rides/rides.module';
 import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { ASSURED_TEST_ROUTE, withAssuredPublishHeaders } from '../rides/test/assured-ride-test.helpers';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { startRideAndVerifyAllPickups } from '../rides/test/ride-trip-test.helpers';
 
 function pickupOtpPepper(): string {
@@ -438,7 +439,7 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     const response = await request(app.getHttpServer())
       .post('/rides')
       .set(withAssuredPublishHeaders(driver.login.accessToken))
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.ASSURED,
         vehicleId: driver.vehicle.id,
         source: 'Lifecycle Source',
@@ -449,7 +450,7 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
         pricePerSeat: 500,
         ...ASSURED_TEST_ROUTE,
         ...overrides,
-      })
+      }))
       .expect(201);
     return response.body as { id: string; assuredDepositAmount: string };
   }
@@ -1272,7 +1273,7 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     const regularRide = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${regularDriver.login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: regularDriver.vehicle.id,
         source: 'Regular Coupon Source',
@@ -1281,7 +1282,7 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
         departureTime: '13:00',
         totalSeats: 3,
         pricePerSeat: 200,
-      })
+      }))
       .expect(201);
 
     await request(app.getHttpServer())

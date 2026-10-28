@@ -15,6 +15,7 @@ import { ChatModule } from '../chat/chat.module';
 import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { TrackingModule } from '../tracking/tracking.module';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { markVerificationVerified } from '../verification/test/verification-test.helpers';
@@ -222,7 +223,7 @@ describe('Notifications (integration)', () => {
     const res = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${driverToken}`)
-      .send({
+      .send(withSelectedRoute({
         vehicleId,
         rideType: RideType.REGULAR,
         source: 'Noida',
@@ -235,7 +236,7 @@ describe('Notifications (integration)', () => {
         sourceLongitude: 77.391,
         destinationLatitude: 28.6139,
         destinationLongitude: 77.209,
-      })
+      }))
       .expect(201);
     return res.body as { id: string };
   }
@@ -636,7 +637,7 @@ describe('Notifications (integration)', () => {
       const ride = await request(app.getHttpServer())
         .post('/rides')
         .set('Authorization', `Bearer ${driver.accessToken}`)
-        .send({
+        .send(withSelectedRoute({
           vehicleId: vehicle.id,
           rideType: RideType.COMMUTE,
           source: 'Office Park',
@@ -649,7 +650,7 @@ describe('Notifications (integration)', () => {
           sourceLongitude: 77.4,
           destinationLatitude: 28.55,
           destinationLongitude: 77.45,
-        })
+        }))
         .expect(201);
 
       const booking = await request(app.getHttpServer())

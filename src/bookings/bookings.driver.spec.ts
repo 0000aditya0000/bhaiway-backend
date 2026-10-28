@@ -12,6 +12,7 @@ import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideType } from '../rides/enums/ride.enums';
 import { ASSURED_TEST_ROUTE } from '../rides/test/assured-ride-test.helpers';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { RidesModule } from '../rides/rides.module';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
@@ -220,7 +221,7 @@ describe('BookingsController driver my-rides (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: options.rideType ?? RideType.REGULAR,
         ...(options.rideType === RideType.ASSURED ? ASSURED_TEST_ROUTE : {}),
         vehicleId: vehicle.id,
@@ -231,7 +232,7 @@ describe('BookingsController driver my-rides (integration)', () => {
         totalSeats: options.totalSeats ?? 3,
         pricePerSeat: options.pricePerSeat ?? 250,
         notes: 'AC car',
-      })
+      }))
       .expect(201);
 
     return { login, vehicle, ride: rideResponse.body };

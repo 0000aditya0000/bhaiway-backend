@@ -120,6 +120,24 @@ export class RideResponseDto {
   })
   isBookable?: boolean;
 
+  @ApiProperty({
+    description:
+      'True when the stored geometry was explicitly selected by the driver. False for legacy rides.',
+  })
+  routeSelected?: boolean;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Selected driving route length in meters',
+  })
+  routeLengthMeters?: number | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Provider duration for the selected driving route, in seconds',
+  })
+  routeDurationSeconds?: number | null;
+
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;
 

@@ -35,6 +35,7 @@ import {
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 
 describe('Past ride history (integration)', () => {
   let app: INestApplication;
@@ -252,7 +253,7 @@ describe('Past ride history (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
@@ -261,7 +262,7 @@ describe('Past ride history (integration)', () => {
         departureTime: '09:00',
         totalSeats,
         pricePerSeat: 150,
-      })
+      }))
       .expect(201);
 
     return { login, vehicle, ride: rideResponse.body };

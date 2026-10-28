@@ -49,6 +49,10 @@ import {
   RideSearchItemDto,
   RideSearchPageDto,
 } from './dto/ride-search-response.dto';
+import {
+  RequestRouteOptionsDto,
+  RouteOptionsResponseDto,
+} from './dto/route-options.dto';
 import { SearchRidesDto } from './dto/search-rides.dto';
 import { UpdateRideDto } from './dto/update-ride.dto';
 import { RidesService } from './rides.service';
@@ -68,7 +72,8 @@ export class RidesController {
       'Creates a PUBLISHED REGULAR or COMMUTE ride, or an Assured (ASSURANCE_ACTIVE / ASSURANCE_PENDING) ride after verification checks. ' +
       'COMMUTE: pricePerSeat is the driver-published base fare; riderPricePerSeat (+10%) is computed server-side for passenger APIs. ' +
       'ASSURED publishing atomically creates an ACTIVE driver ASSURED_DEPOSIT wallet hold based on totalPublishedSeats × pricePerSeat × admin deposit %. ' +
-      'Assured requires source/destination coordinates, resolvable route geometry, and Idempotency-Key. driverId/status/availableSeats are server-controlled.',
+      'All types require source/destination coordinates and routeSelectionToken from POST /rides/route-options. ' +
+      'Assured also requires Idempotency-Key. driverId/status/availableSeats are server-controlled.',
   })
   @ApiHeader({
     name: 'Idempotency-Key',
@@ -101,6 +106,21 @@ export class RidesController {
     });
   }
 
+  @Post('route-options')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'List selectable driving routes between two coordinates',
+    description:
+      'Calls the configured directions provider with alternatives enabled. ' +
+      'Each option includes a signed, expiring selectionToken to pass as routeSelectionToken when publishing or changing a route. ' +
+      'Does not invent extra alternatives. Geometry is not persisted until the driver publishes a selection.',
+  })
+  @ApiOkResponse({ type: RouteOptionsResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid coordinates' })
+  listRouteOptions(@Body() body: RequestRouteOptionsDto) {
+    return this.ridesService.listRouteOptions(body);
+  }
+
   @Get('search')
   @ApiOperation({
     summary: 'Search published rides (passenger discovery)',
@@ -108,8 +128,9 @@ export class RidesController {
       'Read-only search of passenger-visible rides. REGULAR: status PUBLISHED. COMMUTE: status PUBLISHED (includes riderPricePerSeat = driver fare + 10%). ' +
       'ASSURED: status ASSURANCE_ACTIVE with available seats (ASSURANCE_PENDING is excluded). ' +
       'Optional rideType filters REGULAR, COMMUTE, or ASSURED; when omitted, all visible types are returned. ' +
-      'With pickup/dropoff coordinates, matching uses a 50km route-corridor along the published polyline (direction-aware). ' +
-      'COMMUTE corridor search also returns routeMatchPercentage (0–100) per matching ride. ' +
+      'With pickup/dropoff coordinates, matching uses the driver-selected driving route: 50km source catchment near A (forward only, first 50km of route progress), otherwise 20km corridor, dropoff within 20km and after pickup, never reverse. ' +
+      'Rides without stored driving geometry are excluded from coordinate search (no straight-line fallback). ' +
+      'COMMUTE corridor search also returns routeMatchPercentage (0–100) per matching ride; the score does not override eligibility. ' +
       'Without coordinates, filters by source/destination place-name contains. Also filters by date, optional time (at/after), and seats. Paginated. ' +
       'Each item includes vehicle details plus driver.rating (as-driver averages) and driver.recentRides (last 5 COMPLETED/CANCELLED).',
   })

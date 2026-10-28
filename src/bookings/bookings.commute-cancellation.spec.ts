@@ -13,6 +13,7 @@ import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import { VerificationType } from '../verification/enums/verification.enums';
@@ -247,7 +248,7 @@ describe('Commute cancellation lifecycle (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.COMMUTE,
         vehicleId: vehicle.id,
         source: 'Gurgaon Cyber City',
@@ -257,7 +258,7 @@ describe('Commute cancellation lifecycle (integration)', () => {
         totalSeats,
         pricePerSeat,
         notes: 'Office commute',
-      })
+      }))
       .expect(201);
 
     return { login, wallet, ride: rideResponse.body };

@@ -40,7 +40,7 @@ export class SearchRidesDto {
 
   @ApiPropertyOptional({
     description:
-      'Passenger pickup latitude. Provide all four coordinate fields to use 50km route-corridor matching instead of strict place-name matching.',
+      'Passenger pickup latitude. Provide all four coordinate fields to match against the driver-selected route (50km source catchment / 20km corridor). Place-name search is used when coordinates are omitted.',
     example: 28.6415,
   })
   @ValidateIf(

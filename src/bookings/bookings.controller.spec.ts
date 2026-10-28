@@ -13,6 +13,7 @@ import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { pastCivilTimeToday } from '../rides/test/ride-departure-test.helpers';
 import { RidesModule } from '../rides/rides.module';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import {
   VerificationStatus,
@@ -230,7 +231,7 @@ describe('BookingsController (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Noida Sector 62',
@@ -240,7 +241,7 @@ describe('BookingsController (integration)', () => {
         totalSeats,
         pricePerSeat: 250,
         notes: 'AC car',
-      })
+      }))
       .expect(201);
 
     return { login, vehicle, ride: rideResponse.body };

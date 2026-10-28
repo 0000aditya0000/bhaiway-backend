@@ -1,9 +1,14 @@
 import {
   buildStraightRouteGeometry,
+  finalizeRouteGeometry,
   haversineMeters,
+  isPointBehindRouteSource,
   matchesRouteCorridor,
+  matchesSelectedDriverRoute,
   projectPointOntoRoute,
   ROUTE_CORRIDOR_MAX_METERS,
+  SELECTED_ROUTE_CORRIDOR_METERS,
+  SELECTED_ROUTE_MIN_PROGRESS_METERS,
 } from './route-geometry';
 
 /** Approximate WGS84 points used by corridor search product scenarios. */
@@ -136,5 +141,220 @@ describe('route-geometry corridor matching', () => {
     const decodedEnd = published.points[published.points.length - 1];
     expect(haversineMeters(decodedStart, NOIDA)).toBeLessThan(5);
     expect(haversineMeters(decodedEnd, DEHRADUN)).toBeLessThan(5);
+  });
+});
+
+describe('selected-driver-route passenger matching', () => {
+  const published = buildStraightRouteGeometry(NOIDA, DEHRADUN);
+  const mid = projectPointOntoRoute(
+    { latitude: 29.4, longitude: 77.7 },
+    published.points,
+  ).point;
+
+  it('matches pickup within 50km of A in the first 50km of forward progress', () => {
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: INDIRAPURAM,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects pickup within 50km of A but behind the source', () => {
+    const behind = {
+      latitude: NOIDA.latitude - 0.3,
+      longitude: NOIDA.longitude,
+    };
+    expect(haversineMeters(behind, NOIDA)).toBeLessThan(50_000);
+    expect(isPointBehindRouteSource(behind, published.points)).toBe(true);
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: behind,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
+  });
+
+  it('does not treat a later parallel branch near A as the source exception', () => {
+    const farNorth = {
+      latitude: NOIDA.latitude + 0.7,
+      longitude: NOIDA.longitude,
+    };
+    const parallelNearA = {
+      latitude: NOIDA.latitude + 0.01,
+      longitude: NOIDA.longitude + 0.15,
+    };
+    const branched = finalizeRouteGeometry([
+      NOIDA,
+      farNorth,
+      { latitude: farNorth.latitude, longitude: parallelNearA.longitude },
+      parallelNearA,
+      DEHRADUN,
+    ]);
+    expect(haversineMeters(parallelNearA, NOIDA)).toBeLessThan(50_000);
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: branched.points,
+        pickup: parallelNearA,
+        dropoff: farNorth,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
+  });
+
+  it('does not apply the source exception to a later loop that returns near A', () => {
+    const north = { latitude: NOIDA.latitude + 0.7, longitude: NOIDA.longitude };
+    const loopNearA = {
+      latitude: NOIDA.latitude + 0.01,
+      longitude: NOIDA.longitude + 0.02,
+    };
+    const looped = finalizeRouteGeometry([NOIDA, north, loopNearA, DEHRADUN]);
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: looped.points,
+        pickup: loopNearA,
+        dropoff: north,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
+  });
+
+  it('matches a pickup within 20km of the route and rejects one beyond 20km outside the source zone', () => {
+    const onCorridor = {
+      latitude: mid.latitude,
+      longitude: mid.longitude + 0.02,
+    };
+    expect(
+      haversineMeters(onCorridor, mid) < SELECTED_ROUTE_CORRIDOR_METERS,
+    ).toBe(true);
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: onCorridor,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(true);
+
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: MUMBAI,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
+  });
+
+  it('requires dropoff within 20km and not beyond B', () => {
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(true);
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: MUMBAI,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
+
+    const pastDestination = {
+      latitude: DEHRADUN.latitude + 0.4,
+      longitude: DEHRADUN.longitude + 0.15,
+    };
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: pastDestination,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects reverse searches, reverse mid-route, and dropoff before pickup', () => {
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: DEHRADUN,
+        dropoff: NOIDA,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: DEHRADUN,
+        dropoff: MEERUT,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: DEHRADUN,
+        dropoff: INDIRAPURAM,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects near-identical pickup and dropoff via min progress', () => {
+    expect(SELECTED_ROUTE_MIN_PROGRESS_METERS).toBe(100);
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: NOIDA,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
+  });
+
+  it('matches mid-route pickup to a later dropoff', () => {
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: published.points,
+        pickup: mid,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not match missing geometry via a silent fallback', () => {
+    expect(
+      matchesSelectedDriverRoute({
+        routePoints: [],
+        pickup: NOIDA,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      }),
+    ).toBe(false);
   });
 });

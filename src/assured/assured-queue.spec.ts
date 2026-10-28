@@ -18,6 +18,7 @@ import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
 import { withAssuredPublishHeaders } from '../rides/test/assured-ride-test.helpers';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { SettingsModule } from '../settings/settings.module';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
@@ -299,10 +300,10 @@ describe('Assured Queue Engine (integration)', () => {
     vehicleId: string,
     overrides: Record<string, unknown> = {},
   ) {
-    return {
+    return withSelectedRoute({
       rideType: RideType.ASSURED,
       vehicleId,
-      departureDate: '2027-08-30',
+      departureDate: '2028-07-12',
       departureTime: '13:15',
       totalSeats: 4,
       pricePerSeat: 300,
@@ -312,7 +313,7 @@ describe('Assured Queue Engine (integration)', () => {
       luggageAllowed: true,
       ...ROUTE,
       ...overrides,
-    };
+    });
   }
 
   async function publishAssured(
@@ -328,7 +329,7 @@ describe('Assured Queue Engine (integration)', () => {
     return res.body as { id: string; status: RideStatus };
   }
 
-  async function searchAssured(passengerToken: string, date = '2027-08-30') {
+  async function searchAssured(passengerToken: string, date = '2028-07-12') {
     const res = await request(app.getHttpServer())
       .get('/rides/search')
       .query({

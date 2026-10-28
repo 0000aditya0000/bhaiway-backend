@@ -29,6 +29,7 @@ import {
   ASSURED_TEST_ROUTE,
   withAssuredPublishHeaders,
 } from '../rides/test/assured-ride-test.helpers';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { startRideAndVerifyAllPickups } from '../rides/test/ride-trip-test.helpers';
 import { TrackingModule } from '../tracking/tracking.module';
 import { UserProfile } from '../users/entities/user-profile.entity';
@@ -410,7 +411,7 @@ describe('Ride chat hardening (integration)', () => {
     const res = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${token}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId,
         source: 'Noida Sector 62',
@@ -424,7 +425,7 @@ describe('Ride chat hardening (integration)', () => {
         noPets: true,
         luggageAllowed: true,
         ...overrides,
-      })
+      }))
       .expect(201);
     return res.body;
   }
@@ -605,7 +606,7 @@ describe('Ride chat hardening (integration)', () => {
     const ride = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.COMMUTE,
         vehicleId: driver.vehicle.id,
         source: 'Commute A',
@@ -618,7 +619,7 @@ describe('Ride chat hardening (integration)', () => {
         noSmoking: true,
         noPets: true,
         luggageAllowed: true,
-      })
+      }))
       .expect(201);
 
     const booking = await request(app.getHttpServer())

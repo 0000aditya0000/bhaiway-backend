@@ -56,6 +56,7 @@ import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
 import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 import { RidesService } from './rides.service';
 import { startRideAndVerifyAllPickups } from './test/ride-trip-test.helpers';
 
@@ -269,7 +270,7 @@ describe('Ride completion Phase 3 (integration)', () => {
     const ride = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: driver.vehicle.id,
         source: 'Complete Regular A',
@@ -278,7 +279,7 @@ describe('Ride completion Phase 3 (integration)', () => {
         departureTime: '09:00',
         totalSeats: 3,
         pricePerSeat: 200,
-      })
+      }))
       .expect(201);
 
     await request(app.getHttpServer())
@@ -464,7 +465,7 @@ describe('Ride completion Phase 3 (integration)', () => {
     const ride = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: driver.vehicle.id,
         source: 'Auth Complete A',
@@ -473,7 +474,7 @@ describe('Ride completion Phase 3 (integration)', () => {
         departureTime: '11:00',
         totalSeats: 2,
         pricePerSeat: 100,
-      })
+      }))
       .expect(201);
 
     await request(app.getHttpServer())

@@ -39,6 +39,7 @@ import {
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { rideTrackingKey, rideTrackingRoom, REDIS_CLIENT } from './tracking.constants';
 import {
   TRACKING_SERVER_EVENTS,
@@ -266,7 +267,7 @@ describe('Tracking Socket.IO (integration)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Socket Track A',
@@ -275,7 +276,7 @@ describe('Tracking Socket.IO (integration)', () => {
         departureTime: '09:00',
         totalSeats: 3,
         pricePerSeat: 200,
-      })
+      }))
       .expect(201);
 
     rideIds.push(rideResponse.body.id);

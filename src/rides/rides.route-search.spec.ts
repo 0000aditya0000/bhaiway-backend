@@ -32,6 +32,7 @@ import {
 import { Ride } from './entities/ride.entity';
 import { RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { withSelectedRoute } from './test/selected-route-test.helpers';
 
 const NOIDA = { latitude: 28.5355, longitude: 77.391 };
 const INDIRAPURAM = { latitude: 28.6415, longitude: 77.372 };
@@ -207,7 +208,7 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
     const rideResponse = await request(app.getHttpServer())
       .post('/rides')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
+      .send(withSelectedRoute({
         rideType: options?.rideType ?? RideType.REGULAR,
         vehicleId: vehicle.id,
         source: 'Noida',
@@ -220,7 +221,7 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
         departureTime: '09:00',
         totalSeats,
         pricePerSeat: 250,
-      })
+      }))
       .expect(201);
 
     if (options?.availableSeats !== undefined) {
@@ -476,14 +477,16 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
     await request(app.getHttpServer())
       .patch(`/rides/${ride.id}`)
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({
-        source: 'Meerut',
-        destination: 'Dehradun',
-        sourceLatitude: MEERUT.latitude,
-        sourceLongitude: MEERUT.longitude,
-        destinationLatitude: DEHRADUN.latitude,
-        destinationLongitude: DEHRADUN.longitude,
-      })
+      .send(
+        withSelectedRoute({
+          source: 'Meerut',
+          destination: 'Dehradun',
+          sourceLatitude: MEERUT.latitude,
+          sourceLongitude: MEERUT.longitude,
+          destinationLatitude: DEHRADUN.latitude,
+          destinationLongitude: DEHRADUN.longitude,
+        }),
+      )
       .expect(200);
 
     const stored = await dataSource
@@ -507,5 +510,82 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
     expect(
       noidaSearch.body.items.map((item: { id: string }) => item.id),
     ).not.toContain(ride.id);
+    expect(stored.routeBboxMinLat).toBeCloseTo(MEERUT.latitude, 1);
+  });
+
+  it('excludes rides whose selected geometry is missing from coordinate search', async () => {
+    const { ride } = await publishNoidaDehradun();
+    await dataSource.getRepository(Ride).update(ride.id, {
+      routePolyline: null,
+      routeLengthMeters: null,
+      routeBboxMinLat: null,
+      routeBboxMaxLat: null,
+      routeBboxMinLng: null,
+      routeBboxMaxLng: null,
+    });
+
+    const res = await searchQuery(passengerAccessToken, {
+      source: 'Noida',
+      destination: 'Dehradun',
+      date: departureDate,
+      pickupLatitude: NOIDA.latitude,
+      pickupLongitude: NOIDA.longitude,
+      dropoffLatitude: DEHRADUN.latitude,
+      dropoffLongitude: DEHRADUN.longitude,
+    }).expect(200);
+
+    expect(res.body.items.map((item: { id: string }) => item.id)).not.toContain(
+      ride.id,
+    );
+  });
+
+  it('paginates coordinate matches deterministically without a candidate cap', async () => {
+    const pageDate = '2027-11-03';
+    const first = await publishNoidaDehradun({ date: pageDate });
+    const second = await publishNoidaDehradun({ date: pageDate });
+    const third = await publishNoidaDehradun({ date: pageDate });
+    const ids = [first.ride.id, second.ride.id, third.ride.id];
+    await dataSource.getRepository(Ride).update(first.ride.id, {
+      departureTime: '09:00:00',
+    });
+    await dataSource.getRepository(Ride).update(second.ride.id, {
+      departureTime: '10:00:00',
+    });
+    await dataSource.getRepository(Ride).update(third.ride.id, {
+      departureTime: '11:00:00',
+    });
+
+    const page1 = await searchQuery(passengerAccessToken, {
+      source: 'Noida',
+      destination: 'Dehradun',
+      date: pageDate,
+      pickupLatitude: NOIDA.latitude,
+      pickupLongitude: NOIDA.longitude,
+      dropoffLatitude: DEHRADUN.latitude,
+      dropoffLongitude: DEHRADUN.longitude,
+      page: 1,
+      limit: 2,
+    }).expect(200);
+
+    const page2 = await searchQuery(passengerAccessToken, {
+      source: 'Noida',
+      destination: 'Dehradun',
+      date: pageDate,
+      pickupLatitude: NOIDA.latitude,
+      pickupLongitude: NOIDA.longitude,
+      dropoffLatitude: DEHRADUN.latitude,
+      dropoffLongitude: DEHRADUN.longitude,
+      page: 2,
+      limit: 2,
+    }).expect(200);
+
+    const page1Ids = page1.body.items.map((item: { id: string }) => item.id);
+    const page2Ids = page2.body.items.map((item: { id: string }) => item.id);
+    expect(page1.body.total).toBeGreaterThanOrEqual(3);
+    expect(page1Ids).toEqual([ids[0], ids[1]]);
+    expect(page2Ids[0]).toBe(ids[2]);
+    expect(new Set([...page1Ids, ...page2Ids]).size).toBe(
+      page1Ids.length + page2Ids.length,
+    );
   });
 });
