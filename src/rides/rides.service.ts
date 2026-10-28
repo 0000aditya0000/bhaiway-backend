@@ -377,12 +377,11 @@ export class RidesService {
         });
       }
 
-      const targets =
-        await this.commuteRideSeriesService.findSameDirectionScope(
-          manager,
-          ride,
-          SeriesScope.THIS_AND_FUTURE,
-        );
+      const targets = await this.commuteRideSeriesService.findSeriesDateScope(
+        manager,
+        ride,
+        SeriesScope.THIS_AND_FUTURE,
+      );
 
       const cancelledRideIds: string[] = [];
       const skippedBookedRideIds: string[] = [];
@@ -397,7 +396,8 @@ export class RidesService {
         const isSelected = target.id === ride.id;
         if (
           target.status === RideStatus.COMPLETED ||
-          target.status === RideStatus.CANCELLED
+          target.status === RideStatus.CANCELLED ||
+          target.status === RideStatus.IN_PROGRESS
         ) {
           if (!isSelected) {
             skippedIneligibleRideIds.push(target.id);
@@ -1080,7 +1080,13 @@ export class RidesService {
 
   /**
    * Paginated past rides for the owning driver (COMPLETED / CANCELLED only).
-   * Does not include PUBLISHED or IN_PROGRESS.
+   * Includes cancelled Daily Office Commute series occurrences (outbound and
+   * return). Does not include PUBLISHED or IN_PROGRESS.
+   *
+   * Order: scheduled departure_date DESC, departure_time DESC, then
+   * updated_at DESC. Cancelled rides keep status CANCELLED and expose
+   * cancelledAt when the cancellation service stored it; they are not
+   * sorted as COMPLETED.
    */
   async findHistory(
     driverId: string,

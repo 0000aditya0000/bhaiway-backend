@@ -302,6 +302,28 @@ export class CommuteRideSeriesService {
     ride: Ride,
     scope: SeriesScope,
   ): Promise<Ride[]> {
+    return this.findSeriesOccurrencesFromDate(manager, ride, scope, true);
+  }
+
+  /**
+   * THIS_AND_FUTURE cancellation scope: both outbound and return occurrences
+   * in the same series whose occurrence_date is on or after the selected date.
+   * Matching uses series_id + occurrence_date only (not route labels or times).
+   */
+  async findSeriesDateScope(
+    manager: EntityManager,
+    ride: Ride,
+    scope: SeriesScope,
+  ): Promise<Ride[]> {
+    return this.findSeriesOccurrencesFromDate(manager, ride, scope, false);
+  }
+
+  private async findSeriesOccurrencesFromDate(
+    manager: EntityManager,
+    ride: Ride,
+    scope: SeriesScope,
+    sameDirectionOnly: boolean,
+  ): Promise<Ride[]> {
     if (scope !== SeriesScope.THIS_AND_FUTURE || !ride.seriesId) {
       return [ride];
     }
@@ -309,18 +331,23 @@ export class CommuteRideSeriesService {
     const occurrenceDate = this.toCivilDate(
       ride.occurrenceDate ?? ride.departureDate,
     );
-    const siblings = await manager
+    const qb = manager
       .getRepository(Ride)
       .createQueryBuilder('ride')
       .setLock('pessimistic_write')
       .where('ride.series_id = :seriesId', { seriesId: ride.seriesId })
-      .andWhere('ride.direction = :direction', {
-        direction: ride.direction ?? RideDirection.OUTBOUND,
-      })
+      .andWhere('ride.driver_id = :driverId', { driverId: ride.driverId })
       .andWhere('ride.occurrence_date >= CAST(:occurrenceDate AS date)', {
         occurrenceDate,
-      })
+      });
+    if (sameDirectionOnly) {
+      qb.andWhere('ride.direction = :direction', {
+        direction: ride.direction ?? RideDirection.OUTBOUND,
+      });
+    }
+    const siblings = await qb
       .orderBy('ride.occurrence_date', 'ASC')
+      .addOrderBy('ride.direction', 'ASC')
       .addOrderBy('ride.id', 'ASC')
       .getMany();
 

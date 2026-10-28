@@ -161,7 +161,7 @@ export class RidesController {
   @ApiOperation({
     summary: 'Paginated past rides for the authenticated driver',
     description:
-      'Returns COMPLETED and CANCELLED rides owned by the JWT subject only. PUBLISHED and IN_PROGRESS are excluded. Includes vehicle details, route distance when stored, trip duration when pickup+completion timestamps exist, and an earnings breakdown (passengerTotal, driverShare, platformShare, bonuses).',
+      'Returns COMPLETED and CANCELLED rides owned by the JWT subject only, including cancelled Daily Office Commute outbound and return occurrences. PUBLISHED and IN_PROGRESS are excluded. Ordered by scheduled departure (newest civil date/time first). Cancelled rides keep status CANCELLED and expose cancelledAt. Includes vehicle details, route distance when stored, trip duration when pickup+completion timestamps exist, and an earnings breakdown (passengerTotal, driverShare, platformShare, bonuses).',
   })
   @ApiOkResponse({ type: RideHistoryPageDto })
   @ApiBadRequestResponse({ description: 'Invalid query parameters' })
@@ -265,8 +265,8 @@ export class RidesController {
     summary: 'Cancel a published ride (owning driver only)',
     description:
       'REGULAR: cancels the ride and all active passenger bookings (RIDE_CANCELLED). No wallet deposit/refund processing. ' +
-      'COMMUTE: refunds prepaid rider fares via CommuteCancellationService. Optional seriesScope=THIS_AND_FUTURE also cancels later unbooked same-direction occurrences; booked future dates are skipped. ' +
-      'If the selected occurrence is IN_PROGRESS, THIS_AND_FUTURE returns 409 COMMUTE_SERIES_OCCURRENCE_IN_PROGRESS and does not cancel any sibling. ' +
+      'COMMUTE: refunds prepaid rider fares via CommuteCancellationService. Optional seriesScope=THIS_AND_FUTURE also cancels later unbooked outbound and return occurrences on or after the selected occurrence_date in the same series; booked future dates are skipped. ' +
+      'If the selected occurrence is IN_PROGRESS, THIS_AND_FUTURE returns 409 COMMUTE_SERIES_OCCURRENCE_IN_PROGRESS and does not cancel any sibling. Other in-progress occurrences in the window are skipped (skippedIneligibleRideIds) so a single in-progress trip cannot abort cancellation of eligible published dates. ' +
       'ASSURED: before scheduled departure consumes driver ASSURED_DEPOSIT, releases affected rider deposits, distributes 60/40 compensation, refunds Assured PAY_NOW fares separately, issues NEXT_ASSURED_DEPOSIT_FREE coupons, cancels bookings, and advances the queue when applicable. Idempotent when already cancelled with the same reason. Status cannot be set via PATCH.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })

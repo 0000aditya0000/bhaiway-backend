@@ -73,21 +73,21 @@ export class AssuredRideLifecycleResponseDto {
   @ApiPropertyOptional({
     isArray: true,
     description:
-      'THIS_AND_FUTURE commute cancel: ride ids actually cancelled. Omitted for single-ride cancel.',
+      'THIS_AND_FUTURE commute cancel: ride ids actually cancelled (outbound and return in the date window). Omitted for single-ride cancel.',
   })
   cancelledRideIds?: string[];
 
   @ApiPropertyOptional({
     isArray: true,
     description:
-      'THIS_AND_FUTURE commute cancel: later occurrences skipped because they have pending or confirmed bookings.',
+      'THIS_AND_FUTURE commute cancel: later outbound or return occurrences skipped because they have pending or confirmed bookings.',
   })
   skippedBookedRideIds?: string[];
 
   @ApiPropertyOptional({
     isArray: true,
     description:
-      'THIS_AND_FUTURE commute cancel: later occurrences skipped as ineligible (completed, already cancelled, or past terminal state).',
+      'THIS_AND_FUTURE commute cancel: later outbound or return occurrences skipped as ineligible (completed, already cancelled, in progress, or past terminal state).',
   })
   skippedIneligibleRideIds?: string[];
 }

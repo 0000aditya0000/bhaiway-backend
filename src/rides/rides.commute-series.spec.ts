@@ -10,6 +10,7 @@ import { AuthService } from '../auth/auth.service';
 import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { BookingsModule } from '../bookings/bookings.module';
+import { CommuteCancellationService } from '../bookings/commute-cancellation.service';
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingPaymentMethod } from '../bookings/enums/booking.enums';
 import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
@@ -879,9 +880,20 @@ describe('Daily Office Commute series (integration)', () => {
     const confirmedBefore = await dataSource.getRepository(Ride).findOneByOrFail({
       id: confirmedLater.id,
     });
-    const returnBefore = await dataSource.getRepository(Ride).findOneByOrFail({
-      id: inbound[0].id,
-    });
+    const returnPendingPassenger = await fundedPassenger();
+    await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${returnPendingPassenger.login.accessToken}`)
+      .set('Idempotency-Key', uniqueIdempotencyKey('series-return-pending'))
+      .send({
+        rideId: inbound[1].id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethod.PAY_NOW,
+      })
+      .expect(201);
+    const returnPendingBefore = await dataSource
+      .getRepository(Ride)
+      .findOneByOrFail({ id: inbound[1].id });
 
     const cancelled = await request(app.getHttpServer())
       .post(`/rides/${selected.id}/cancel`)
@@ -890,12 +902,21 @@ describe('Daily Office Commute series (integration)', () => {
       .expect(200);
 
     expect(cancelled.body.cancelledRideIds).toEqual(
-      expect.arrayContaining([selected.id, unbookedLater.id]),
+      expect.arrayContaining([
+        selected.id,
+        inbound[0].id,
+        unbookedLater.id,
+      ]),
     );
     expect(cancelled.body.cancelledRideIds).not.toContain(pendingLater.id);
     expect(cancelled.body.cancelledRideIds).not.toContain(confirmedLater.id);
+    expect(cancelled.body.cancelledRideIds).not.toContain(inbound[1].id);
     expect(cancelled.body.skippedBookedRideIds).toEqual(
-      expect.arrayContaining([pendingLater.id, confirmedLater.id]),
+      expect.arrayContaining([
+        pendingLater.id,
+        confirmedLater.id,
+        inbound[1].id,
+      ]),
     );
     expect(cancelled.body.cancelledBookingCount).toBe(1);
 
@@ -922,9 +943,12 @@ describe('Daily Office Commute series (integration)', () => {
     const confirmedAfter = await dataSource.getRepository(Ride).findOneByOrFail({
       id: confirmedLater.id,
     });
-    const returnAfter = await dataSource.getRepository(Ride).findOneByOrFail({
+    const sameDayReturn = await dataSource.getRepository(Ride).findOneByOrFail({
       id: inbound[0].id,
     });
+    const pendingReturnAfter = await dataSource
+      .getRepository(Ride)
+      .findOneByOrFail({ id: inbound[1].id });
     const unbookedAfter = await dataSource.getRepository(Ride).findOneByOrFail({
       id: unbookedLater.id,
     });
@@ -932,8 +956,11 @@ describe('Daily Office Commute series (integration)', () => {
     expect(pendingAfter.availableSeats).toBe(pendingBefore.availableSeats);
     expect(confirmedAfter.status).toBe(RideStatus.PUBLISHED);
     expect(confirmedAfter.availableSeats).toBe(confirmedBefore.availableSeats);
-    expect(returnAfter.status).toBe(RideStatus.PUBLISHED);
-    expect(returnAfter.availableSeats).toBe(returnBefore.availableSeats);
+    expect(sameDayReturn.status).toBe(RideStatus.CANCELLED);
+    expect(pendingReturnAfter.status).toBe(RideStatus.PUBLISHED);
+    expect(pendingReturnAfter.availableSeats).toBe(
+      returnPendingBefore.availableSeats,
+    );
     expect(unbookedAfter.status).toBe(RideStatus.CANCELLED);
 
     const series = await dataSource.getRepository(RideSeries).findOneByOrFail({
@@ -971,7 +998,7 @@ describe('Daily Office Commute series (integration)', () => {
     expect(siblingAfter.status).toBe(RideStatus.PUBLISHED);
   });
 
-  it('series becomes CANCELLED only after the last remaining occurrence is cancelled', async () => {
+  it('series stays ACTIVE while earlier dates remain, then CANCELLED when none remain', async () => {
     const { login, vehicle } = await publishableDriver();
     const published = await publishSeries(login.accessToken, vehicle.id, {
       returnEnabled: true,
@@ -992,30 +1019,38 @@ describe('Daily Office Commute series (integration)', () => {
     ).filter((item) => item.direction === RideDirection.RETURN);
 
     await request(app.getHttpServer())
+      .post(`/rides/${outbound[1].id}/cancel`)
+      .query({ seriesScope: SeriesScope.THIS_AND_FUTURE })
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    const afterLaterDates = await dataSource
+      .getRepository(RideSeries)
+      .findOneByOrFail({ id: published.body.seriesId });
+    expect(afterLaterDates.status).toBe(RideSeriesStatus.ACTIVE);
+    const firstOutbound = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: outbound[0].id,
+    });
+    const firstReturn = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: inbound[0].id,
+    });
+    const secondReturn = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: inbound[1].id,
+    });
+    expect(firstOutbound.status).toBe(RideStatus.PUBLISHED);
+    expect(firstReturn.status).toBe(RideStatus.PUBLISHED);
+    expect(secondReturn.status).toBe(RideStatus.CANCELLED);
+
+    await request(app.getHttpServer())
       .post(`/rides/${outbound[0].id}/cancel`)
       .query({ seriesScope: SeriesScope.THIS_AND_FUTURE })
       .set('Authorization', `Bearer ${login.accessToken}`)
       .expect(200);
 
-    const afterOutbound = await dataSource
+    const afterFirstDate = await dataSource
       .getRepository(RideSeries)
       .findOneByOrFail({ id: published.body.seriesId });
-    expect(afterOutbound.status).toBe(RideSeriesStatus.ACTIVE);
-    const stillReturn = await dataSource.getRepository(Ride).findOneByOrFail({
-      id: inbound[0].id,
-    });
-    expect(stillReturn.status).toBe(RideStatus.PUBLISHED);
-
-    await request(app.getHttpServer())
-      .post(`/rides/${inbound[0].id}/cancel`)
-      .query({ seriesScope: SeriesScope.THIS_AND_FUTURE })
-      .set('Authorization', `Bearer ${login.accessToken}`)
-      .expect(200);
-
-    const afterReturn = await dataSource
-      .getRepository(RideSeries)
-      .findOneByOrFail({ id: published.body.seriesId });
-    expect(afterReturn.status).toBe(RideSeriesStatus.CANCELLED);
+    expect(afterFirstDate.status).toBe(RideSeriesStatus.CANCELLED);
   });
 
   it('rolls back the series when an occurrence insert fails mid-generation', async () => {
@@ -1348,5 +1383,363 @@ describe('Daily Office Commute series (integration)', () => {
       .find({ where: { rideId: selected.id, campaignId: campaign.id } });
     expect(jobsAfterRetry).toHaveLength(2);
     expect(tripsAfterRetry).toHaveLength(1);
+  });
+
+  it('THIS_AND_FUTURE from outbound or return cancels both directions from that date onward', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const published = await publishSeries(login.accessToken, vehicle.id, {
+      returnEnabled: true,
+      returnDepartureTime: '18:30',
+      returnRouteSelectionToken: reverseRouteToken(),
+    });
+    const outbound = (
+      published.body.series.occurrences as Array<{
+        id: string;
+        direction: RideDirection;
+        availableSeats: number;
+      }>
+    ).filter((item) => item.direction === RideDirection.OUTBOUND);
+    const inbound = (
+      published.body.series.occurrences as Array<{
+        id: string;
+        direction: RideDirection;
+        availableSeats: number;
+      }>
+    ).filter((item) => item.direction === RideDirection.RETURN);
+
+    const fromOutbound = await request(app.getHttpServer())
+      .post(`/rides/${outbound[1].id}/cancel`)
+      .query({ seriesScope: SeriesScope.THIS_AND_FUTURE })
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(fromOutbound.body.cancelledRideIds).toEqual(
+      expect.arrayContaining([outbound[1].id, inbound[1].id, outbound[2].id, inbound[2].id]),
+    );
+    expect(fromOutbound.body.cancelledRideIds).not.toContain(outbound[0].id);
+    expect(fromOutbound.body.cancelledRideIds).not.toContain(inbound[0].id);
+
+    const firstOutbound = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: outbound[0].id,
+    });
+    const firstReturn = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: inbound[0].id,
+    });
+    expect(firstOutbound.status).toBe(RideStatus.PUBLISHED);
+    expect(firstOutbound.availableSeats).toBe(3);
+    expect(firstReturn.status).toBe(RideStatus.PUBLISHED);
+    expect(firstReturn.availableSeats).toBe(3);
+
+    const other = await publishableDriver();
+    const otherSeries = await publishSeries(other.login.accessToken, other.vehicle.id, {
+      returnEnabled: true,
+      returnDepartureTime: '18:30',
+      returnRouteSelectionToken: reverseRouteToken(),
+      departureTime: '09:30',
+    });
+    const otherOutbound = (
+      otherSeries.body.series.occurrences as Array<{
+        id: string;
+        direction: RideDirection;
+      }>
+    ).filter((item) => item.direction === RideDirection.OUTBOUND);
+    const otherReturn = (
+      otherSeries.body.series.occurrences as Array<{
+        id: string;
+        direction: RideDirection;
+      }>
+    ).filter((item) => item.direction === RideDirection.RETURN);
+
+    const fromReturn = await request(app.getHttpServer())
+      .post(`/rides/${otherReturn[1].id}/cancel`)
+      .query({ seriesScope: SeriesScope.THIS_AND_FUTURE })
+      .set('Authorization', `Bearer ${other.login.accessToken}`)
+      .expect(200);
+    expect(fromReturn.body.cancelledRideIds).toEqual(
+      expect.arrayContaining([
+        otherOutbound[1].id,
+        otherReturn[1].id,
+        otherOutbound[2].id,
+        otherReturn[2].id,
+      ]),
+    );
+    const otherFirst = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: otherOutbound[0].id,
+    });
+    expect(otherFirst.status).toBe(RideStatus.PUBLISHED);
+    const originalFirstStill = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: outbound[0].id,
+    });
+    expect(originalFirstStill.status).toBe(RideStatus.PUBLISHED);
+  });
+
+  it('THIS_OCCURRENCE cancels only the selected ride, including when a return exists', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const published = await publishSeries(login.accessToken, vehicle.id, {
+      returnEnabled: true,
+      returnDepartureTime: '18:30',
+      returnRouteSelectionToken: reverseRouteToken(),
+    });
+    const outbound = (
+      published.body.series.occurrences as Array<{
+        id: string;
+        direction: RideDirection;
+      }>
+    ).filter((item) => item.direction === RideDirection.OUTBOUND);
+    const inbound = (
+      published.body.series.occurrences as Array<{
+        id: string;
+        direction: RideDirection;
+      }>
+    ).filter((item) => item.direction === RideDirection.RETURN);
+
+    const response = await request(app.getHttpServer())
+      .post(`/rides/${outbound[0].id}/cancel`)
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+    expect(response.body.cancelledRideIds).toBeUndefined();
+
+    const selected = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: outbound[0].id,
+    });
+    const pairedReturn = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: inbound[0].id,
+    });
+    const laterOutbound = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: outbound[1].id,
+    });
+    expect(selected.status).toBe(RideStatus.CANCELLED);
+    expect(pairedReturn.status).toBe(RideStatus.PUBLISHED);
+    expect(laterOutbound.status).toBe(RideStatus.PUBLISHED);
+  });
+
+  it('skips a future IN_PROGRESS occurrence instead of partially cancelling the series', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const published = await publishSeries(login.accessToken, vehicle.id, {
+      returnEnabled: true,
+      returnDepartureTime: '18:30',
+      returnRouteSelectionToken: reverseRouteToken(),
+    });
+    const outbound = (
+      published.body.series.occurrences as Array<{
+        id: string;
+        direction: RideDirection;
+      }>
+    ).filter((item) => item.direction === RideDirection.OUTBOUND);
+    const inbound = (
+      published.body.series.occurrences as Array<{
+        id: string;
+        direction: RideDirection;
+      }>
+    ).filter((item) => item.direction === RideDirection.RETURN);
+
+    await dataSource.getRepository(Ride).update(
+      { id: inbound[1].id },
+      { status: RideStatus.IN_PROGRESS },
+    );
+
+    const cancelled = await request(app.getHttpServer())
+      .post(`/rides/${outbound[0].id}/cancel`)
+      .query({ seriesScope: SeriesScope.THIS_AND_FUTURE })
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(cancelled.body.cancelledRideIds).toContain(outbound[0].id);
+    expect(cancelled.body.cancelledRideIds).not.toContain(inbound[1].id);
+    expect(cancelled.body.skippedIneligibleRideIds).toContain(inbound[1].id);
+
+    const inProgress = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: inbound[1].id,
+    });
+    expect(inProgress.status).toBe(RideStatus.IN_PROGRESS);
+    const laterOutbound = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: outbound[2].id,
+    });
+    expect(laterOutbound.status).toBe(RideStatus.CANCELLED);
+  });
+
+  it('rolls back THIS_AND_FUTURE cancel when a targeted occurrence fails', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const published = await publishSeries(login.accessToken, vehicle.id, {
+      returnEnabled: true,
+      returnDepartureTime: '18:30',
+      returnRouteSelectionToken: reverseRouteToken(),
+    });
+    const cancellation = moduleRef.get(CommuteCancellationService);
+    const original = cancellation.cancelRideInTransaction.bind(cancellation);
+    let calls = 0;
+    const spy = jest
+      .spyOn(cancellation, 'cancelRideInTransaction')
+      .mockImplementation(async (...args) => {
+        calls += 1;
+        if (calls >= 3) {
+          throw new Error('forced series cancel failure');
+        }
+        return original(...args);
+      });
+
+    try {
+      await request(app.getHttpServer())
+        .post(`/rides/${published.body.id}/cancel`)
+        .query({ seriesScope: SeriesScope.THIS_AND_FUTURE })
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .expect(500);
+
+      const leftover = await dataSource.getRepository(Ride).find({
+        where: { seriesId: published.body.seriesId },
+      });
+      expect(leftover.length).toBeGreaterThan(0);
+      expect(
+        leftover.every((ride) => ride.status === RideStatus.PUBLISHED),
+      ).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('non-series Commute cancel still affects only that ride', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const created = await request(app.getHttpServer())
+      .post('/rides')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send(
+        withSelectedRoute({
+          rideType: RideType.COMMUTE,
+          vehicleId: vehicle.id,
+          source: 'Gurgaon Cyber City',
+          destination: 'Noida Sector 62',
+          departureDate: START_DATE,
+          departureTime: '10:15',
+          totalSeats: 3,
+          pricePerSeat: 100,
+        }),
+      )
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${created.body.id}/cancel`)
+      .query({ seriesScope: SeriesScope.THIS_OCCURRENCE })
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    const stored = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: created.body.id,
+    });
+    expect(stored.status).toBe(RideStatus.CANCELLED);
+    expect(stored.seriesId).toBeNull();
+  });
+
+  it('cancelled Commute occurrences appear in driver history and not in upcoming results', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const other = await publishableDriver();
+    const published = await publishSeries(login.accessToken, vehicle.id, {
+      returnEnabled: true,
+      returnDepartureTime: '18:30',
+      returnRouteSelectionToken: reverseRouteToken(),
+    });
+    const outbound = (
+      published.body.series.occurrences as Array<{
+        id: string;
+        direction: RideDirection;
+        departureDate: string;
+      }>
+    ).filter((item) => item.direction === RideDirection.OUTBOUND);
+    const inbound = (
+      published.body.series.occurrences as Array<{
+        id: string;
+        direction: RideDirection;
+      }>
+    ).filter((item) => item.direction === RideDirection.RETURN);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${outbound[2].id}/cancel`)
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/rides/${inbound[1].id}/cancel`)
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+    await dataSource.getRepository(Ride).update(
+      { id: outbound[0].id },
+      { status: RideStatus.COMPLETED, completedAt: new Date() },
+    );
+
+    const history = await request(app.getHttpServer())
+      .get('/rides/history')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+    const historyIds = history.body.items.map(
+      (item: { ride: { id: string } }) => item.ride.id,
+    );
+    const cancelledOutbound = history.body.items.find(
+      (item: { ride: { id: string; status: string; cancelledAt: string | null } }) =>
+        item.ride.id === outbound[2].id,
+    );
+    const cancelledReturn = history.body.items.find(
+      (item: { ride: { id: string; status: string; cancelledAt: string | null } }) =>
+        item.ride.id === inbound[1].id,
+    );
+    const completedItem = history.body.items.find(
+      (item: { ride: { id: string; status: string } }) =>
+        item.ride.id === outbound[0].id,
+    );
+    expect(cancelledOutbound).toBeDefined();
+    expect(cancelledOutbound.ride.status).toBe(RideStatus.CANCELLED);
+    expect(cancelledOutbound.ride.rideType).toBe(RideType.COMMUTE);
+    expect(cancelledOutbound.ride.cancelledAt).toBeTruthy();
+    expect(cancelledOutbound.ride.completedAt).toBeNull();
+    expect(cancelledReturn).toBeDefined();
+    expect(cancelledReturn.ride.status).toBe(RideStatus.CANCELLED);
+    expect(cancelledReturn.ride.cancelledAt).toBeTruthy();
+    expect(completedItem.ride.status).toBe(RideStatus.COMPLETED);
+
+    const cancelledIndex = historyIds.indexOf(outbound[2].id);
+    const earlierCancelledIndex = historyIds.indexOf(inbound[1].id);
+    expect(cancelledIndex).toBeGreaterThanOrEqual(0);
+    expect(earlierCancelledIndex).toBeGreaterThan(cancelledIndex);
+
+    const page = await request(app.getHttpServer())
+      .get('/rides/history')
+      .query({ page: 1, limit: 1, status: RideStatus.CANCELLED })
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+    expect(page.body.items).toHaveLength(1);
+    expect(page.body.items[0].ride.id).toBe(outbound[2].id);
+    expect(page.body.total).toBeGreaterThanOrEqual(2);
+
+    const otherHistory = await request(app.getHttpServer())
+      .get('/rides/history')
+      .set('Authorization', `Bearer ${other.login.accessToken}`)
+      .expect(200);
+    const otherIds = otherHistory.body.items.map(
+      (item: { ride: { id: string } }) => item.ride.id,
+    );
+    expect(otherIds).not.toContain(outbound[2].id);
+    expect(otherIds).not.toContain(inbound[1].id);
+
+    const mine = await request(app.getHttpServer())
+      .get('/rides/my')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+    const mineIds = mine.body.map((item: { id: string }) => item.id);
+    expect(mineIds).not.toContain(outbound[2].id);
+    expect(mineIds).not.toContain(inbound[1].id);
+    expect(mineIds).toContain(outbound[1].id);
+
+    const search = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${other.login.accessToken}`)
+      .query({
+        source: 'Gurgaon Cyber City',
+        destination: 'Noida Sector 62',
+        date: outbound[2].departureDate,
+        rideType: RideType.COMMUTE,
+      })
+      .expect(200);
+    expect(
+      search.body.items.some(
+        (item: { id: string }) => item.id === outbound[2].id,
+      ),
+    ).toBe(false);
   });
 });
