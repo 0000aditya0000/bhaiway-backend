@@ -350,7 +350,7 @@ describe('Commute booking request lifecycle (integration)', () => {
 
     const searchAfterA = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .set('Authorization', `Bearer ${passengerA.accessToken}`)
       .query({
         source: 'Gurgaon',
         destination: 'Noida',
@@ -365,7 +365,7 @@ describe('Commute booking request lifecycle (integration)', () => {
 
     const searchAfterB = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .set('Authorization', `Bearer ${passengerB.accessToken}`)
       .query({
         source: 'Gurgaon',
         destination: 'Noida',
@@ -415,7 +415,7 @@ describe('Commute booking request lifecycle (integration)', () => {
 
     const search = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
       .query({
         source: 'Gurgaon',
         destination: 'Noida',

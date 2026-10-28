@@ -42,6 +42,8 @@ import {
   commuteConfirmedKey,
   commuteRequestedKey,
   formatInrAmount,
+  noShowClaimOpenedKey,
+  noShowClaimResolvedKey,
   redactToken,
   walletCreditedKey,
   withdrawalCompletedKey,
@@ -592,6 +594,108 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       },
       idempotencyKey: withdrawalCompletedKey(params.withdrawalId),
     });
+  }
+
+  async safeNotifyNoShowClaimOpened(params: {
+    claimId: string;
+    rideId: string;
+    bookingId: string | null;
+    recipientUserId: string;
+    kind: 'DRIVER_NO_SHOW' | 'PASSENGER_NO_SHOW';
+  }): Promise<void> {
+    const isDriverClaim = params.kind === 'DRIVER_NO_SHOW';
+    await this.safeEnqueue({
+      recipientUserId: params.recipientUserId,
+      type: NotificationType.NO_SHOW_CLAIM_OPENED,
+      title: isDriverClaim ? 'Driver no-show reported' : 'Passenger no-show reported',
+      body: isDriverClaim
+        ? 'A passenger reported that you did not arrive. Approve or reject within 15 minutes.'
+        : 'The driver reported that you did not arrive. Approve or reject within 15 minutes.',
+      data: {
+        type: NotificationType.NO_SHOW_CLAIM_OPENED,
+        claimId: params.claimId,
+        rideId: params.rideId,
+        bookingId: params.bookingId,
+        kind: params.kind,
+      },
+      idempotencyKey: noShowClaimOpenedKey(params.claimId, params.recipientUserId),
+    });
+  }
+
+  async safeNotifyNoShowClaimResolved(params: {
+    claimId: string;
+    rideId: string;
+    bookingId: string | null;
+    recipientUserId: string;
+    kind: 'DRIVER_NO_SHOW' | 'PASSENGER_NO_SHOW';
+    resolution: 'approved' | 'rejected' | 'timeout';
+  }): Promise<void> {
+    await this.safeEnqueue(this.toNoShowResolvedInput(params));
+  }
+
+  /**
+   * Inserts the resolved-claim inbox row (or returns the existing unique-key
+   * row). Throws on unexpected failures so the No-Show effect outbox can retry.
+   */
+  async enqueueNoShowClaimResolved(
+    params: {
+      claimId: string;
+      rideId: string;
+      bookingId: string | null;
+      recipientUserId: string;
+      kind: 'DRIVER_NO_SHOW' | 'PASSENGER_NO_SHOW';
+      resolution: 'approved' | 'rejected' | 'timeout';
+    },
+    manager?: EntityManager,
+  ): Promise<void> {
+    await this.enqueue(this.toNoShowResolvedInput(params), manager);
+  }
+
+  private toNoShowResolvedInput(params: {
+    claimId: string;
+    rideId: string;
+    bookingId: string | null;
+    recipientUserId: string;
+    kind: 'DRIVER_NO_SHOW' | 'PASSENGER_NO_SHOW';
+    resolution: 'approved' | 'rejected' | 'timeout';
+  }): EnqueueNotificationInput {
+    const type =
+      params.resolution === 'approved'
+        ? NotificationType.NO_SHOW_CLAIM_APPROVED
+        : params.resolution === 'rejected'
+          ? NotificationType.NO_SHOW_CLAIM_REJECTED
+          : NotificationType.NO_SHOW_CLAIM_TIMEOUT;
+    const title =
+      params.resolution === 'approved'
+        ? 'No-show claim approved'
+        : params.resolution === 'rejected'
+          ? 'No-show claim rejected'
+          : 'No-show claim approved (no response)';
+    const body =
+      params.resolution === 'approved'
+        ? 'The No-Show claim was approved and the ride/booking was settled.'
+        : params.resolution === 'rejected'
+          ? 'The No-Show claim was rejected. No penalties were applied. Open Help & Support if you need help.'
+          : 'There was no response within 15 minutes, so the No-Show claim was approved automatically.';
+    return {
+      recipientUserId: params.recipientUserId,
+      type,
+      title,
+      body,
+      data: {
+        type,
+        claimId: params.claimId,
+        rideId: params.rideId,
+        bookingId: params.bookingId,
+        kind: params.kind,
+        resolution: params.resolution,
+      },
+      idempotencyKey: noShowClaimResolvedKey(
+        params.claimId,
+        params.recipientUserId,
+        params.resolution,
+      ),
+    };
   }
 
   // ---------------------------------------------------------------------------

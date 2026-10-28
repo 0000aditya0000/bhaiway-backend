@@ -73,6 +73,7 @@ import {
   RideType,
 } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { ASSURED_TEST_ROUTE, withAssuredPublishHeaders } from '../rides/test/assured-ride-test.helpers';
 import { startRideAndVerifyAllPickups } from '../rides/test/ride-trip-test.helpers';
 
@@ -87,8 +88,16 @@ import { AssuredModule } from './assured.module';
 import { calculatePartialFillCompensation } from './assured-lifecycle.math';
 import { AssuredGeographicQueue } from './entities/assured-geographic-queue.entity';
 import { AssuredLifecycleEvent } from './entities/assured-lifecycle-event.entity';
+import { AssuredQueueEvent } from './entities/assured-queue-event.entity';
 import { PassengerAssuredDepositPenalty } from './entities/passenger-assured-deposit-penalty.entity';
 import { calculateAssuredHalfTime } from './assured-timing';
+import {
+  reportDriverNoShowAndApprove,
+  reportPassengerNoShowAndApprove,
+} from '../no-show/test/no-show-http.helpers';
+import { NoShowClaim } from '../no-show/entities/no-show-claim.entity';
+import { NoShowClaimStatus } from '../no-show/enums/no-show.enums';
+import { NoShowClaimsService } from '../no-show/no-show-claims.service';
 
 const FUTURE_DATE = '2099-06-15';
 const FUTURE_TIME = '10:00';
@@ -188,6 +197,22 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     await dataSource.getRepository(AssuredLifecycleEvent).delete({
       rideId: In(rideIds),
     });
+    const staleBookings = await dataSource.getRepository(Booking).find({
+      where: { rideId: In(rideIds) },
+      select: { id: true },
+    });
+    const staleBookingIds = staleBookings.map((booking) => booking.id);
+    if (staleBookingIds.length > 0) {
+      await dataSource.query(
+        `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+        [staleBookingIds],
+      );
+    }
+    await deleteChatForBookingIds(dataSource, staleBookingIds);
+    await dataSource.query(
+      `DELETE FROM no_show_claims WHERE ride_id = ANY($1::uuid[])`,
+      [rideIds],
+    );
     await dataSource.getRepository(Booking).delete({ rideId: In(rideIds) });
     for (const ride of staleRides) {
       if (ride.assuredQueueKey) {
@@ -210,11 +235,28 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     }
   }
 
+  async function deleteNotificationsForUser(userId: string) {
+    await dataSource.query(
+      `DELETE FROM notification_email_deliveries
+       WHERE notification_id IN (
+         SELECT id FROM notifications WHERE recipient_user_id = $1
+       )`,
+      [userId],
+    );
+    await dataSource.query(
+      `DELETE FROM notifications WHERE recipient_user_id = $1`,
+      [userId],
+    );
+  }
+
   afterEach(async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     await settingsService.setAssuredRideDepositPercentage(5);
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
+        await deleteNotificationsForUser(ctx.userId);
         await dataSource.getRepository(UserCoupon).delete({
           userId: ctx.userId,
         });
@@ -236,8 +278,38 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
           await dataSource.getRepository(AssuredLifecycleEvent).delete({
             rideId: In(rides.map((r) => r.id)),
           });
+          const rideBookings = await dataSource.getRepository(Booking).find({
+            where: { rideId: In(rides.map((r) => r.id)) },
+            select: { id: true },
+          });
+          const rideBookingIds = rideBookings.map((booking) => booking.id);
+          if (rideBookingIds.length > 0) {
+            await dataSource.query(
+              `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+              [rideBookingIds],
+            );
+          }
+          await deleteChatForBookingIds(dataSource, rideBookingIds);
+          await dataSource.query(
+            `DELETE FROM no_show_claims WHERE ride_id = ANY($1::uuid[])`,
+            [rides.map((r) => r.id)],
+          );
         }
 
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        const passengerBookingIds = passengerBookings.map(
+          (booking) => booking.id,
+        );
+        if (passengerBookingIds.length > 0) {
+          await dataSource.query(
+            `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+            [passengerBookingIds],
+          );
+        }
+        await deleteChatForBookingIds(dataSource, passengerBookingIds);
         await dataSource.getRepository(Booking).delete({
           passengerId: ctx.userId,
         });
@@ -380,6 +452,17 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       })
       .expect(201);
     return response.body as { id: string; assuredDepositAmount: string };
+  }
+
+  async function markRideEligibleForNoShow(
+    rideId: string,
+    departureTime = PAST_TIME,
+  ) {
+    await dataSource.getRepository(Ride).update(rideId, {
+      departureDate: PAST_DATE,
+      departureTime:
+        departureTime.length >= 8 ? departureTime : `${departureTime}:00`,
+    });
   }
 
   async function bookAssured(
@@ -926,17 +1009,22 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       .set('Authorization', `Bearer ${futurePassenger.login.accessToken}`)
       .expect(409);
 
+    await request(app.getHttpServer())
+      .post(`/rides/${futureRide.id}/cancel`)
+      .set('Authorization', `Bearer ${futureDriver.login.accessToken}`)
+      .expect(200);
+
     const driver = await fundedDriver();
     const passengerA = await fundedPassenger();
     const passengerB = await fundedPassenger();
     const ride = await publishAssuredRide(driver, {
-      departureDate: PAST_DATE,
-      departureTime: PAST_TIME,
+      departureTime: '12:00',
       source: 'NoShow Source',
       destination: 'NoShow Dest',
     });
     await bookAssured(passengerA, ride.id, 1);
     await bookAssured(passengerB, ride.id, 1);
+    await markRideEligibleForNoShow(ride.id, '12:00');
 
     await request(app.getHttpServer())
       .post(`/rides/${ride.id}/driver-no-show`)
@@ -953,12 +1041,16 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     ]);
     expect([first.status, concurrent.status].sort()).toEqual([200, 200]);
     const bodies = [first.body, concurrent.body];
-    expect(bodies.every((b) => b.status === RideStatus.CANCELLED)).toBe(true);
-    expect(bodies.some((b) => b.alreadyApplied === true)).toBe(true);
-    expect(bodies.some((b) => b.alreadyApplied === false)).toBe(true);
-    expect(bodies[0].driverDepositForfeited).toBe('100');
-    expect(bodies[0].riderCompensationTotal).toBe('60');
-    expect(bodies[0].platformForfeiture).toBe('40');
+    expect(bodies.every((b) => b.status === NoShowClaimStatus.PENDING)).toBe(
+      true,
+    );
+    expect(bodies[0].id).toBe(bodies[1].id);
+    expect(bodies.some((b) => b.alreadyOpen === true)).toBe(true);
+
+    await request(app.getHttpServer())
+      .post(`/no-show-claims/${first.body.id}/approve`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
 
     const rideRow = await dataSource
       .getRepository(Ride)
@@ -980,36 +1072,93 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     ).toBe(1);
   });
 
+  it('two concurrent timeout workers settle Assured driver No-Show once', async () => {
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger();
+    const ride = await publishAssuredRide(driver, {
+      source: 'Two Worker Source',
+      destination: 'Two Worker Dest',
+    });
+    await bookAssured(passenger, ride.id, 1);
+    await markRideEligibleForNoShow(ride.id);
+
+    const opened = await request(app.getHttpServer())
+      .post(`/rides/${ride.id}/no-show/driver`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    await dataSource.getRepository(NoShowClaim).update(opened.body.id, {
+      respondBy: new Date(Date.now() - 1000),
+    });
+
+    const worker = moduleRef.get(NoShowClaimsService);
+    await Promise.all([
+      worker.processDueClaimsConcurrent(),
+      worker.processDueClaimsConcurrent(),
+    ]);
+
+    const claim = await dataSource
+      .getRepository(NoShowClaim)
+      .findOneByOrFail({ id: opened.body.id });
+    expect(claim.status).toBe(NoShowClaimStatus.APPROVED);
+    expect(claim.settlementIdempotencyKey).toBe(
+      `no-show-settle:${opened.body.id}`,
+    );
+
+    const rideRow = await dataSource
+      .getRepository(Ride)
+      .findOneByOrFail({ id: ride.id });
+    expect(rideRow.cancellationReason).toBe(
+      RideCancellationReason.DRIVER_NO_SHOW,
+    );
+    const driverHold = await dataSource
+      .getRepository(WalletHold)
+      .findOneByOrFail({ id: rideRow.driverDepositHoldId! });
+    expect(driverHold.status).toBe(WalletHoldStatus.CONSUMED);
+    expect(
+      await dataSource.getRepository(AssuredLifecycleEvent).count({
+        where: {
+          rideId: ride.id,
+          idempotencyKey: `assured:driver-no-show:${ride.id}`,
+        },
+      }),
+    ).toBe(1);
+    const queueEvents = await dataSource.getRepository(AssuredQueueEvent).find({
+      where: { sourceRideId: ride.id },
+    });
+    const queueKeys = queueEvents.map((row) => row.idempotencyKey);
+    expect(new Set(queueKeys).size).toBe(queueKeys.length);
+  });
+
   it('rider no-show: by driver after departure; coupon issued once; deposit consumed; partial-fill', async () => {
     const driver = await fundedDriver();
     const passenger = await fundedPassenger();
     const ride = await publishAssuredRide(driver, {
-      departureDate: PAST_DATE,
-      departureTime: PAST_TIME,
       source: 'RiderNoShow Source',
       destination: 'RiderNoShow Dest',
     });
     const booking = await bookAssured(passenger, ride.id, 1);
+    await markRideEligibleForNoShow(ride.id);
 
     await request(app.getHttpServer())
       .post(`/bookings/${booking.id}/rider-no-show`)
       .set('Authorization', `Bearer ${passenger.login.accessToken}`)
       .expect(404);
 
-    const reported = await request(app.getHttpServer())
-      .post(`/bookings/${booking.id}/rider-no-show`)
-      .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .expect(200);
+    const reported = await reportPassengerNoShowAndApprove(
+      app,
+      booking.id,
+      driver.login.accessToken,
+      passenger.login.accessToken,
+    );
+    expect(reported.body.status).toBe(NoShowClaimStatus.APPROVED);
 
-    expect(reported.body).toMatchObject({
-      bookingId: booking.id,
-      status: BookingStatus.CANCELLED,
-      cancellationReason: BookingCancellationReason.RIDER_NO_SHOW,
-      seatsRestored: 1,
-      partialFillCompensation: '250',
-      couponIssued: true,
-      alreadyApplied: false,
-    });
+    const cancelledBooking = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking.id });
+    expect(cancelledBooking.status).toBe(BookingStatus.CANCELLED);
+    expect(cancelledBooking.cancellationReason).toBe(
+      BookingCancellationReason.RIDER_NO_SHOW,
+    );
 
     const bookingRow = await dataSource
       .getRepository(Booking)
@@ -1030,12 +1179,10 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     expect(coupons).toHaveLength(1);
     expect(coupons[0].status).toBe(UserCouponStatus.UNUSED);
 
-    const retry = await request(app.getHttpServer())
+    await request(app.getHttpServer())
       .post(`/bookings/${booking.id}/rider-no-show`)
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .expect(200);
-    expect(retry.body.alreadyApplied).toBe(true);
-    expect(retry.body.couponIssued).toBe(true);
+      .expect(409);
 
     expect(
       await dataSource.getRepository(UserCoupon).count({
@@ -1069,12 +1216,14 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
 
     const racePassenger = await fundedPassenger();
     await issueUnusedDepositCoupon(racePassenger.login.user.id);
-    const rideA = await publishAssuredRide(driver, {
+    const raceDriverA = await fundedDriver();
+    const raceDriverB = await fundedDriver();
+    const rideA = await publishAssuredRide(raceDriverA, {
       source: 'Race A',
       destination: 'Race A Dest',
       departureTime: '11:00',
     });
-    const rideB = await publishAssuredRide(driver, {
+    const rideB = await publishAssuredRide(raceDriverB, {
       source: 'Race B',
       destination: 'Race B Dest',
       departureTime: '12:00',
@@ -1159,30 +1308,42 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     const ride = await publishAssuredRide(driver, {
       totalSeats: 2,
       pricePerSeat: 2000,
-      departureDate: PAST_DATE,
-      departureTime: PAST_TIME,
       source: 'Partial Cap Source',
       destination: 'Partial Cap Dest',
     });
     expect(ride.assuredDepositAmount).toBe('200');
     const booking = await bookAssured(passenger, ride.id, 1);
+    await markRideEligibleForNoShow(ride.id);
     expect(booking.securityDepositAmount).toBe('100');
 
-    const capped = await request(app.getHttpServer())
-      .post(`/bookings/${booking.id}/rider-no-show`)
-      .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .expect(200);
-    expect(capped.body.partialFillCompensation).toBe('700');
+    await reportPassengerNoShowAndApprove(
+      app,
+      booking.id,
+      driver.login.accessToken,
+      passenger.login.accessToken,
+    );
+    const cancelledAfterCap = await dataSource
+      .getRepository(Booking)
+      .findOneByOrFail({ id: booking.id });
+    expect(cancelledAfterCap.status).toBe(BookingStatus.CANCELLED);
+    expect(
+      await dataSource.getRepository(AssuredLifecycleEvent).count({
+        where: {
+          bookingId: booking.id,
+          idempotencyKey: `assured:rider-no-show:${booking.id}`,
+        },
+      }),
+    ).toBe(1);
 
     const driver2 = await fundedDriver();
     const passenger2 = await fundedPassenger();
     const ride2 = await publishAssuredRide(driver2, {
-      departureDate: PAST_DATE,
       departureTime: '15:00',
       source: 'Partial Fail Source',
       destination: 'Partial Fail Dest',
     });
     const booking2 = await bookAssured(passenger2, ride2.id, 1);
+    await markRideEligibleForNoShow(ride2.id, '15:00');
     const holdBefore = await dataSource
       .getRepository(WalletHold)
       .findOneByOrFail({
@@ -1195,9 +1356,13 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     expect(holdBefore.status).toBe(WalletHoldStatus.ACTIVE);
 
     await withZeroedPlatformFunds(async () => {
-      await request(app.getHttpServer())
+      const opened = await request(app.getHttpServer())
         .post(`/bookings/${booking2.id}/rider-no-show`)
         .set('Authorization', `Bearer ${driver2.login.accessToken}`)
+        .expect(200);
+      await request(app.getHttpServer())
+        .post(`/no-show-claims/${opened.body.id}/approve`)
+        .set('Authorization', `Bearer ${passenger2.login.accessToken}`)
         .expect(422);
     });
 
@@ -1232,6 +1397,11 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({ policy: RegularSeatsPolicy.ALLOW_REGULAR_RIDERS })
       .expect(409);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${earlyRide.id}/cancel`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
 
     const ride = await publishAssuredRide(driver, {
       departureDate: tomorrowDate(),
@@ -1676,19 +1846,20 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       const driver = await fundedDriver();
       const passenger = await fundedPassenger(5000n);
       const ride = await publishAssuredRide(driver, {
-        departureDate: PAST_DATE,
-        departureTime: PAST_TIME,
         source: 'NoShow Fare Source',
         destination: 'NoShow Fare Dest',
       });
       await bookAssured(passenger, ride.id, 1, {
         farePayment: BookingFarePayment.PAY_NOW,
       });
+      await markRideEligibleForNoShow(ride.id);
 
-      await request(app.getHttpServer())
-        .post(`/rides/${ride.id}/driver-no-show`)
-        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
-        .expect(200);
+      await reportDriverNoShowAndApprove(
+        app,
+        ride.id,
+        passenger.login.accessToken,
+        driver.login.accessToken,
+      );
 
       expect(
         await dataSource.getRepository(WalletTransaction).count({

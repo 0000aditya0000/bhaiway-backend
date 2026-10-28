@@ -13,6 +13,7 @@ import { DatabaseModule } from './database/database.module';
 import { CorporateIdentityModule } from './corporate-identity/corporate-identity.module';
 import { EmailVerificationModule } from './email-verification/email-verification.module';
 import { HealthModule } from './health/health.module';
+import { NoShowModule } from './no-show/no-show.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RatingsModule } from './ratings/ratings.module';
 import { ReferralsModule } from './referrals/referrals.module';
@@ -54,6 +55,7 @@ import { WalletModule } from './wallet/wallet.module';
     TrackingModule,
     ChatModule,
     NotificationsModule,
+    NoShowModule,
     SupportModule,
     SafetyModule,
   ],

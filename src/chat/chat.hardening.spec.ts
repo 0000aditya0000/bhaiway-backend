@@ -812,9 +812,13 @@ describe('Ride chat hardening (integration)', () => {
       { departureDate: '2020-01-01', departureTime: '00:00:00' },
     );
 
-    await request(app.getHttpServer())
+    const opened = await request(app.getHttpServer())
       .post(`/bookings/${bA.body.id}/rider-no-show`)
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/no-show-claims/${opened.body.id}/approve`)
+      .set('Authorization', `Bearer ${pA.accessToken}`)
       .expect(200);
 
     const aClosed = await request(app.getHttpServer())

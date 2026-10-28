@@ -448,9 +448,10 @@ describe('Assured Ride Phase 1 (integration)', () => {
         .getRepository(Ride)
         .update({ id: cancelled.body.id }, { status: RideStatus.CANCELLED });
 
+      const passenger = await createAuthenticatedUser('Passenger Searcher');
       const both = await request(app.getHttpServer())
         .get('/rides/search')
-        .set('Authorization', `Bearer ${login.accessToken}`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
@@ -464,7 +465,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
 
       const onlyAssured = await request(app.getHttpServer())
         .get('/rides/search')
-        .set('Authorization', `Bearer ${login.accessToken}`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
@@ -477,7 +478,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
 
       const onlyRegular = await request(app.getHttpServer())
         .get('/rides/search')
-        .set('Authorization', `Bearer ${login.accessToken}`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
@@ -490,7 +491,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
 
       const byTime = await request(app.getHttpServer())
         .get('/rides/search')
-        .set('Authorization', `Bearer ${login.accessToken}`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
@@ -503,7 +504,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
 
       const bySeats = await request(app.getHttpServer())
         .get('/rides/search')
-        .set('Authorization', `Bearer ${login.accessToken}`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
@@ -516,7 +517,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
 
       const wrongDate = await request(app.getHttpServer())
         .get('/rides/search')
-        .set('Authorization', `Bearer ${login.accessToken}`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
@@ -527,7 +528,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
 
       const page1 = await request(app.getHttpServer())
         .get('/rides/search')
-        .set('Authorization', `Bearer ${login.accessToken}`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',
@@ -548,7 +549,7 @@ describe('Assured Ride Phase 1 (integration)', () => {
       ).availableSeats;
       await request(app.getHttpServer())
         .get('/rides/search')
-        .set('Authorization', `Bearer ${login.accessToken}`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
         .query({
           source: 'Noida Phase1 Search',
           destination: 'Delhi',

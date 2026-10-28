@@ -77,6 +77,7 @@ describe('Commute route match percentage (GET /rides/search)', () => {
   let walletService: WalletService;
   const tracked: TestWalletContext[] = [];
   const departureDate = '2027-09-20';
+  let passengerAccessToken: string;
 
   beforeAll(async () => {
     assertSafeTestDatabaseUrl(process.env.DATABASE_URL);
@@ -148,6 +149,35 @@ describe('Commute route match percentage (GET /rides/search)', () => {
       await app.close();
     }
   });
+
+  beforeEach(async () => {
+    passengerAccessToken = (await createPassenger()).accessToken;
+  });
+
+  async function createPassenger() {
+    const phone = `+91${Date.now().toString().slice(-9)}${Math.floor(
+      Math.random() * 10,
+    )}`;
+    const login = await authService.loginOrRegisterWithVerifiedIdentity({
+      phone,
+      verified: true,
+    });
+    const wallet = await dataSource.getRepository(Wallet).findOneByOrFail({
+      userId: login.user.id,
+    });
+    const balance = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+
+    tracked.push({
+      userId: login.user.id,
+      walletId: wallet.id,
+      balanceId: balance.id,
+      phone,
+    });
+
+    return login;
+  }
 
   async function createDriver() {
     const phone = `+91${Date.now().toString().slice(-9)}${Math.floor(
@@ -254,9 +284,9 @@ describe('Commute route match percentage (GET /rides/search)', () => {
   }
 
   it('returns routeMatchPercentage near 100 for exact same route', async () => {
-    const { login, ride } = await publishCommuteNoidaDehradun();
+    const { ride } = await publishCommuteNoidaDehradun();
 
-    const res = await corridorSearch(login.accessToken, {
+    const res = await corridorSearch(passengerAccessToken, {
       source: 'Noida',
       destination: 'Dehradun',
       date: departureDate,
@@ -276,9 +306,9 @@ describe('Commute route match percentage (GET /rides/search)', () => {
   });
 
   it('omits routeMatchPercentage when coordinates are not supplied', async () => {
-    const { login, ride } = await publishCommuteNoidaDehradun();
+    const { ride } = await publishCommuteNoidaDehradun();
 
-    const res = await corridorSearch(login.accessToken, {
+    const res = await corridorSearch(passengerAccessToken, {
       source: 'Noida',
       destination: 'Dehradun',
       date: departureDate,
@@ -293,9 +323,9 @@ describe('Commute route match percentage (GET /rides/search)', () => {
   });
 
   it('returns high routeMatchPercentage for on-route partial-to-end trip', async () => {
-    const { login, ride } = await publishCommuteNoidaDehradun();
+    const { ride } = await publishCommuteNoidaDehradun();
 
-    const res = await corridorSearch(login.accessToken, {
+    const res = await corridorSearch(passengerAccessToken, {
       source: 'Indirapuram',
       destination: 'Dehradun',
       date: departureDate,
@@ -313,7 +343,7 @@ describe('Commute route match percentage (GET /rides/search)', () => {
   });
 
   it('partial segment on driver route scores high (not penalized by total route length)', async () => {
-    const { login, ride } = await publishCommuteNoidaDehradun();
+    const { ride } = await publishCommuteNoidaDehradun();
 
     const stored = await dataSource
       .getRepository(Ride)
@@ -323,7 +353,7 @@ describe('Commute route match percentage (GET /rides/search)', () => {
     const pickupLat = Number(partialPickup.latitude.toFixed(8));
     const pickupLng = Number(partialPickup.longitude.toFixed(8));
 
-    const partial = await corridorSearch(login.accessToken, {
+    const partial = await corridorSearch(passengerAccessToken, {
       source: 'Indirapuram',
       destination: 'Dehradun',
       date: departureDate,
@@ -362,7 +392,7 @@ describe('Commute route match percentage (GET /rides/search)', () => {
       })
       .expect(201);
 
-    const res = await corridorSearch(login.accessToken, {
+    const res = await corridorSearch(passengerAccessToken, {
       source: 'Noida',
       destination: 'Dehradun',
       date: departureDate,
@@ -381,9 +411,9 @@ describe('Commute route match percentage (GET /rides/search)', () => {
   });
 
   it('reverse direction still excluded from corridor search', async () => {
-    const { login, ride } = await publishCommuteNoidaDehradun();
+    const { ride } = await publishCommuteNoidaDehradun();
 
-    const res = await corridorSearch(login.accessToken, {
+    const res = await corridorSearch(passengerAccessToken, {
       source: 'Dehradun',
       destination: 'Meerut',
       date: departureDate,

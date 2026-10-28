@@ -28,6 +28,7 @@ import {
 } from '@nestjs/common';
 
 import { AssuredBookingLifecycleResponseDto } from '../assured/dto/assured-lifecycle-response.dto';
+import { NoShowClaimResponseDto } from '../no-show/dto/no-show-claim-response.dto';
 import { CommuteBookingCancellationResponseDto } from './dto/commute-cancellation-response.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -238,19 +239,43 @@ export class BookingsController {
     );
   }
 
-  @Post(':id/rider-no-show')
+  @Post(':id/no-show/passenger')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Report rider no-show (ride owning driver only)',
+    summary: 'Report that the passenger did not arrive (owning driver)',
     description:
-      'At/after departure for a CONFIRMED Assured-mode booking. Consumes rider deposit (100% platform), issues NEXT_ASSURED_DEPOSIT_FREE, restores seats, optional partial-fill. Passengers cannot report themselves. Idempotent.',
+      'Creates a pending No-Show claim 5 minutes after scheduled Asia/Kolkata departure. The passenger has 15 minutes to approve or reject. Pickup already recorded is rejected. Pending Commute requests are not eligible. Compatibility: POST /bookings/:id/rider-no-show is the same action and no longer settles immediately.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
-  @ApiOkResponse({ type: AssuredBookingLifecycleResponseDto })
+  @ApiOkResponse({ type: NoShowClaimResponseDto })
   @ApiNotFoundResponse({
     description: 'Booking not found for this driver',
   })
-  @ApiConflictResponse({ description: 'Before departure or invalid state' })
+  @ApiConflictResponse({
+    description: 'Too early, picked up, pending request, or invalid state',
+  })
+  reportPassengerNoShowClaim(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.bookingsService.reportRiderNoShow(currentUser.userId, id);
+  }
+
+  @Post(':id/rider-no-show')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Report rider no-show (compat — creates a pending claim)',
+    description:
+      'Compatibility alias for POST /bookings/:id/no-show/passenger. Previously settled Assured rider no-show immediately; it now opens a 15-minute claim. Settlement still uses the existing RIDER_NO_SHOW financial path after approval or timeout.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOkResponse({ type: NoShowClaimResponseDto })
+  @ApiNotFoundResponse({
+    description: 'Booking not found for this driver',
+  })
+  @ApiConflictResponse({
+    description: 'Too early, picked up, pending request, or invalid state',
+  })
   reportRiderNoShow(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,

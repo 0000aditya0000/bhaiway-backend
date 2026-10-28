@@ -31,6 +31,18 @@ export class UpdateProfileDto {
   displayName?: string | null;
 
   @ApiPropertyOptional({
+    maxLength: 150,
+    description:
+      'Full name. Updates displayName and, unless firstName/lastName are also sent, splits into first and last name.',
+    example: 'Ada Lovelace',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(150)
+  name?: string;
+
+  @ApiPropertyOptional({
     enum: Gender,
     enumName: 'Gender',
     nullable: true,

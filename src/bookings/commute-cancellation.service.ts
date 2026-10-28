@@ -27,6 +27,8 @@ import {
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { WalletService } from '../wallet/wallet.service';
 import {
+  commuteDriverNoShowRefundKey,
+  commutePassengerNoShowRefundKey,
   commuteRideCancelRefundKey,
   commuteRideFullRefundKey,
   commuteRiderCancelRefundKey,
@@ -130,98 +132,75 @@ export class CommuteCancellationService {
     }
   }
 
+  async settleDriverNoShowInTransaction(
+    manager: EntityManager,
+    params: { rideId: string; cancelledByUserId: string },
+  ): Promise<{
+    response: AssuredRideLifecycleResponseDto;
+    cancelledForNotify: Array<{ bookingId: string; passengerId: string }>;
+  }> {
+    return this.cancelRideInTransaction(manager, {
+      rideId: params.rideId,
+      cancelledByUserId: params.cancelledByUserId,
+      requireDriverOwnership: false,
+      rideCancellationReason: RideCancellationReason.DRIVER_NO_SHOW,
+      bookingCancellationReason: BookingCancellationReason.DRIVER_NO_SHOW,
+      refundKeyForBooking: commuteDriverNoShowRefundKey,
+    });
+  }
+
+  async settlePassengerNoShowInTransaction(
+    manager: EntityManager,
+    params: { bookingId: string; driverId: string },
+  ): Promise<CommuteBookingCancelResult> {
+    const bookingPeek = await manager.getRepository(Booking).findOne({
+      where: { id: params.bookingId },
+    });
+    if (!bookingPeek) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    const ride = await this.lockRideForUpdate(manager, bookingPeek.rideId);
+    if (ride.driverId !== params.driverId) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    const booking = await this.lockBookingForUpdate(manager, params.bookingId);
+    if (!booking) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    this.assertCommuteBooking(booking, ride);
+
+    if (booking.status !== BookingStatus.CONFIRMED) {
+      throw new ConflictException(
+        'Passenger no-show requires a CONFIRMED Commute booking',
+      );
+    }
+
+    return this.cancelCommuteBookingInTransaction(manager, {
+      ride,
+      booking,
+      cancellationReason: BookingCancellationReason.RIDER_NO_SHOW,
+      refundIdempotencyKey: commutePassengerNoShowRefundKey(booking.id),
+      restoreSeats: true,
+    });
+  }
+
   async cancelRideByDriver(
     driverId: string,
     rideId: string,
   ): Promise<AssuredRideLifecycleResponseDto> {
     try {
       const result = await this.dataSource.transaction(async (manager) => {
-        const ride = await this.lockRideForUpdate(manager, rideId);
-        if (!ride || ride.driverId !== driverId) {
-          throw new NotFoundException('Ride not found');
-        }
-
-        if (ride.rideType !== RideType.COMMUTE) {
-          throw new ConflictException('Ride is not a Commute ride');
-        }
-
-        if (ride.status === RideStatus.COMPLETED) {
-          throw new ConflictException('Completed rides cannot be cancelled');
-        }
-
-        if (ride.status === RideStatus.CANCELLED) {
-          if (
-            ride.cancellationReason === RideCancellationReason.DRIVER_CANCELLED
-          ) {
-            return {
-              response: this.toRideCancelResponse(ride, 0n, 0, true),
-              cancelledForNotify: [],
-            };
-          }
-          throw new ConflictException(
-            `Ride is already cancelled (${ride.cancellationReason})`,
-          );
-        }
-
-        if (ride.status !== RideStatus.PUBLISHED) {
-          throw new ConflictException(
-            `Ride cannot be cancelled from status ${ride.status}`,
-          );
-        }
-
-        const activeBookings = await manager
-          .getRepository(Booking)
-          .createQueryBuilder('booking')
-          .setLock('pessimistic_write')
-          .where('booking.ride_id = :rideId', { rideId: ride.id })
-          .andWhere('booking.status IN (:...statuses)', {
-            statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
-          })
-          .orderBy('booking.created_at', 'ASC')
-          .addOrderBy('booking.id', 'ASC')
-          .getMany();
-
-        let fareRefundedTotal = 0n;
-        const cancelledForNotify: Array<{
-          bookingId: string;
-          passengerId: string;
-        }> = [];
-        for (const booking of activeBookings) {
-          const cancelResult = await this.cancelCommuteBookingInTransaction(
-            manager,
-            {
-              ride,
-              booking,
-              cancellationReason: BookingCancellationReason.RIDE_CANCELLED,
-              refundIdempotencyKey: commuteRideCancelRefundKey(booking.id),
-              restoreSeats: false,
-            },
-          );
-          fareRefundedTotal += cancelResult.fareRefunded;
-          if (!cancelResult.alreadyApplied) {
-            cancelledForNotify.push({
-              bookingId: booking.id,
-              passengerId: booking.passengerId,
-            });
-          }
-        }
-
-        const now = new Date();
-        ride.status = RideStatus.CANCELLED;
-        ride.cancellationReason = RideCancellationReason.DRIVER_CANCELLED;
-        ride.cancelledByUserId = driverId;
-        ride.cancelledAt = now;
-        await manager.getRepository(Ride).save(ride);
-
-        return {
-          response: this.toRideCancelResponse(
-            ride,
-            fareRefundedTotal,
-            activeBookings.length,
-            false,
-          ),
-          cancelledForNotify,
-        };
+        return this.cancelRideInTransaction(manager, {
+          rideId,
+          cancelledByUserId: driverId,
+          requireDriverOwnership: true,
+          rideCancellationReason: RideCancellationReason.DRIVER_CANCELLED,
+          bookingCancellationReason: BookingCancellationReason.RIDE_CANCELLED,
+          refundKeyForBooking: commuteRideCancelRefundKey,
+        });
       });
       await this.chatService.safeCloseForRide(rideId);
       for (const item of result.cancelledForNotify) {
@@ -303,6 +282,106 @@ export class CommuteCancellationService {
     }
 
     return autoCancelled;
+  }
+
+  async cancelRideInTransaction(
+    manager: EntityManager,
+    params: {
+      rideId: string;
+      cancelledByUserId: string;
+      requireDriverOwnership: boolean;
+      rideCancellationReason: RideCancellationReason;
+      bookingCancellationReason: BookingCancellationReason;
+      refundKeyForBooking: (bookingId: string) => string;
+    },
+  ): Promise<{
+    response: AssuredRideLifecycleResponseDto;
+    cancelledForNotify: Array<{ bookingId: string; passengerId: string }>;
+  }> {
+    const ride = await this.lockRideForUpdate(manager, params.rideId);
+    if (params.requireDriverOwnership && ride.driverId !== params.cancelledByUserId) {
+      throw new NotFoundException('Ride not found');
+    }
+
+    if (ride.rideType !== RideType.COMMUTE) {
+      throw new ConflictException('Ride is not a Commute ride');
+    }
+
+    if (ride.status === RideStatus.COMPLETED) {
+      throw new ConflictException('Completed rides cannot be cancelled');
+    }
+
+    if (ride.status === RideStatus.CANCELLED) {
+      if (ride.cancellationReason === params.rideCancellationReason) {
+        return {
+          response: this.toRideCancelResponse(ride, 0n, 0, true),
+          cancelledForNotify: [],
+        };
+      }
+      throw new ConflictException(
+        `Ride is already cancelled (${ride.cancellationReason})`,
+      );
+    }
+
+    if (ride.status !== RideStatus.PUBLISHED) {
+      throw new ConflictException(
+        `Ride cannot be cancelled from status ${ride.status}`,
+      );
+    }
+
+    const activeBookings = await manager
+      .getRepository(Booking)
+      .createQueryBuilder('booking')
+      .setLock('pessimistic_write')
+      .where('booking.ride_id = :rideId', { rideId: ride.id })
+      .andWhere('booking.status IN (:...statuses)', {
+        statuses: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+      })
+      .orderBy('booking.created_at', 'ASC')
+      .addOrderBy('booking.id', 'ASC')
+      .getMany();
+
+    let fareRefundedTotal = 0n;
+    const cancelledForNotify: Array<{
+      bookingId: string;
+      passengerId: string;
+    }> = [];
+    for (const booking of activeBookings) {
+      const cancelResult = await this.cancelCommuteBookingInTransaction(
+        manager,
+        {
+          ride,
+          booking,
+          cancellationReason: params.bookingCancellationReason,
+          refundIdempotencyKey: params.refundKeyForBooking(booking.id),
+          restoreSeats: false,
+        },
+      );
+      fareRefundedTotal += cancelResult.fareRefunded;
+      if (!cancelResult.alreadyApplied) {
+        cancelledForNotify.push({
+          bookingId: booking.id,
+          passengerId: booking.passengerId,
+        });
+      }
+    }
+
+    const now = new Date();
+    ride.status = RideStatus.CANCELLED;
+    ride.cancellationReason = params.rideCancellationReason;
+    ride.cancelledByUserId = params.cancelledByUserId;
+    ride.cancelledAt = now;
+    await manager.getRepository(Ride).save(ride);
+
+    return {
+      response: this.toRideCancelResponse(
+        ride,
+        fareRefundedTotal,
+        activeBookings.length,
+        false,
+      ),
+      cancelledForNotify,
+    };
   }
 
   async cancelCommuteBookingInTransaction(

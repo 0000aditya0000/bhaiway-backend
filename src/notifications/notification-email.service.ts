@@ -249,6 +249,14 @@ export class NotificationEmailService implements OnModuleInit, OnModuleDestroy {
           `Email delivery failed notification=${notificationId} attempt=${delivery.attemptCount}: ${reason}`,
         );
       }
+    } catch (error) {
+      if (this.isForeignKeyViolation(error)) {
+        this.logger.warn(
+          `Email delivery skipped notification=${notificationId}: notification row is gone`,
+        );
+        return;
+      }
+      throw error;
     } finally {
       this.inFlight.delete(notificationId);
     }
@@ -260,6 +268,15 @@ export class NotificationEmailService implements OnModuleInit, OnModuleDestroy {
       error !== null &&
       'code' in error &&
       (error as { code?: string }).code === '23505'
+    );
+  }
+
+  private isForeignKeyViolation(error: unknown): boolean {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: string }).code === '23503'
     );
   }
 }

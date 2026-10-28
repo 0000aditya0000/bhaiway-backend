@@ -90,7 +90,7 @@ type DriverForfeitEvent =
   | AssuredLifecycleEventType.DRIVER_CANCEL
   | AssuredLifecycleEventType.DRIVER_NO_SHOW;
 
-type DriverForfeitResult = AssuredRideLifecycleResponseDto & {
+export type DriverForfeitResult = AssuredRideLifecycleResponseDto & {
   promotedRide: Ride | null;
   cancelledBookings: Array<{
     bookingId: string;
@@ -146,39 +146,6 @@ export class AssuredLifecycleService {
     }
   }
 
-  async reportDriverNoShow(
-    reporterPassengerId: string,
-    rideId: string,
-  ): Promise<AssuredRideLifecycleResponseDto> {
-    const idempotencyKey = `assured:driver-no-show:${rideId}`;
-    try {
-      const result = await this.dataSource.transaction((manager) =>
-        this.executeDriverForfeit(manager, {
-          actorUserId: reporterPassengerId,
-          rideId,
-          eventType: AssuredLifecycleEventType.DRIVER_NO_SHOW,
-          rideCancellationReason: RideCancellationReason.DRIVER_NO_SHOW,
-          bookingCancellationReason: BookingCancellationReason.DRIVER_NO_SHOW,
-          idempotencyKey,
-          platformEventSuffix: 'driver-no-show',
-          requireOwnership: false,
-          timing: 'at_or_after_departure',
-          reporterPassengerId,
-        }),
-      );
-      await this.chatService.safeCloseForRide(rideId);
-      await this.afterAssuredRideCancelledNotifications(result);
-      const { promotedRide: _p, cancelledBookings: _c, ...response } = result;
-      return response;
-    } catch (error) {
-      if (this.isLifecycleEventUniqueViolation(error, idempotencyKey)) {
-        await this.chatService.safeCloseForRide(rideId);
-        return this.buildRideLifecycleResponseFromDb(rideId, true);
-      }
-      throw error;
-    }
-  }
-
   async cancelBookingByRider(
     passengerId: string,
     bookingId: string,
@@ -211,36 +178,63 @@ export class AssuredLifecycleService {
     }
   }
 
-  async reportRiderNoShow(
+  /**
+   * Assured DRIVER_NO_SHOW settlement for an already-open outer transaction.
+   * Does not close chat or send notifications — the caller does that after commit.
+   */
+  async settleDriverNoShowInTransaction(
+    manager: EntityManager,
+    reporterPassengerId: string,
+    rideId: string,
+  ): Promise<DriverForfeitResult> {
+    return this.executeDriverForfeit(manager, {
+      actorUserId: reporterPassengerId,
+      rideId,
+      eventType: AssuredLifecycleEventType.DRIVER_NO_SHOW,
+      rideCancellationReason: RideCancellationReason.DRIVER_NO_SHOW,
+      bookingCancellationReason: BookingCancellationReason.DRIVER_NO_SHOW,
+      idempotencyKey: `assured:driver-no-show:${rideId}`,
+      platformEventSuffix: 'driver-no-show',
+      requireOwnership: false,
+      timing: 'at_or_after_departure',
+      reporterPassengerId,
+    });
+  }
+
+  /**
+   * Assured RIDER_NO_SHOW settlement for an already-open outer transaction.
+   */
+  async settleRiderNoShowInTransaction(
+    manager: EntityManager,
     driverId: string,
     bookingId: string,
   ): Promise<AssuredBookingLifecycleResponseDto> {
-    const idempotencyKey = `assured:rider-no-show:${bookingId}`;
-    try {
-      const result = await this.dataSource.transaction((manager) =>
-        this.executeRiderBookingExit(manager, {
-          actorUserId: driverId,
-          bookingId,
-          eventType: AssuredLifecycleEventType.RIDER_NO_SHOW,
-          cancellationReason: BookingCancellationReason.RIDER_NO_SHOW,
-          idempotencyKey,
-          timing: 'at_or_after_departure',
-          requirePassengerOwnership: false,
-          requireDriverOwnership: true,
-          requireConfirmed: true,
-          issueNoShowCoupon: true,
-          partialFillSuffix: `rider-no-show:${bookingId}`,
-        }),
-      );
-      await this.chatService.safeCloseForBooking(bookingId);
-      return result;
-    } catch (error) {
-      if (this.isLifecycleEventUniqueViolation(error, idempotencyKey)) {
-        await this.chatService.safeCloseForBooking(bookingId);
-        return this.buildBookingLifecycleResponseFromDb(bookingId, true, true);
-      }
-      throw error;
-    }
+    return this.executeRiderBookingExit(manager, {
+      actorUserId: driverId,
+      bookingId,
+      eventType: AssuredLifecycleEventType.RIDER_NO_SHOW,
+      cancellationReason: BookingCancellationReason.RIDER_NO_SHOW,
+      idempotencyKey: `assured:rider-no-show:${bookingId}`,
+      timing: 'at_or_after_departure',
+      requirePassengerOwnership: false,
+      requireDriverOwnership: true,
+      requireConfirmed: true,
+      issueNoShowCoupon: true,
+      partialFillSuffix: `rider-no-show:${bookingId}`,
+    });
+  }
+
+  async notifyAfterAssuredRideForfeit(result: {
+    rideId: string;
+    alreadyApplied: boolean;
+    promotedRide?: Ride | null;
+    cancelledBookings?: Array<{
+      bookingId: string;
+      passengerId: string;
+      bookingMode: BookingMode;
+    }>;
+  }): Promise<void> {
+    await this.afterAssuredRideCancelledNotifications(result);
   }
 
   async decideRegularSeatsPolicy(

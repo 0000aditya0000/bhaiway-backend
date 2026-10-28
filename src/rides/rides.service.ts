@@ -48,6 +48,9 @@ import {
   BookingStatus,
 } from '../bookings/enums/booking.enums';
 import { BookingsService } from '../bookings/bookings.service';
+import { RegularRideCancellationService } from './regular-ride-cancellation.service';
+import { NoShowClaimResponseDto } from '../no-show/dto/no-show-claim-response.dto';
+import { NoShowClaimsService } from '../no-show/no-show-claims.service';
 import { CommuteCancellationService } from '../bookings/commute-cancellation.service';
 import {
   CommuteSettlementService,
@@ -115,6 +118,8 @@ import {
   RideStatus,
   RideType,
 } from './enums/ride.enums';
+import { isAtOrAfterDeparture } from '../assured/assured-timing';
+import { currentCivilClock } from '../common/time/ride-timezone';
 import { supportsTripLifecycle } from './ride-trip-lifecycle';
 import { computeCommuteRiderPricePerSeat } from './commute-fare.math';
 import { computeCommuteRouteMatchPercentage } from './commute-route-match.math';
@@ -169,6 +174,8 @@ export class RidesService {
     private readonly notificationsService: NotificationsService,
     private readonly couponIssuanceService: CouponIssuanceService,
     private readonly commuteRewardProgressService: CommuteRewardProgressService,
+    private readonly regularRideCancellationService: RegularRideCancellationService,
+    private readonly noShowClaimsService: NoShowClaimsService,
   ) {}
 
   async cancelByDriver(
@@ -266,101 +273,16 @@ export class RidesService {
     rideId: string,
   ): Promise<AssuredRideLifecycleResponseDto> {
     const result = await this.dataSource.transaction(async (manager) => {
-      const ride = await manager
-        .getRepository(Ride)
-        .createQueryBuilder('ride')
-        .setLock('pessimistic_write')
-        .where('ride.id = :rideId', { rideId })
-        .getOne();
-
-      if (!ride || ride.driverId !== driverId) {
-        throw new NotFoundException('Ride not found');
-      }
-
-      if (ride.rideType !== RideType.REGULAR) {
-        throw new BadRequestException('Ride is not a Regular ride');
-      }
-
-      if (ride.status === RideStatus.COMPLETED) {
-        throw new ConflictException('Completed rides cannot be cancelled');
-      }
-
-      if (ride.status === RideStatus.CANCELLED) {
-        if (
-          ride.cancellationReason === RideCancellationReason.DRIVER_CANCELLED
-        ) {
-          const cancelledBookingCount = await manager
-            .getRepository(Booking)
-            .count({
-              where: {
-                rideId: ride.id,
-                status: BookingStatus.CANCELLED,
-                cancellationReason: BookingCancellationReason.RIDE_CANCELLED,
-              },
-            });
-          return {
-            rideId: ride.id,
-            status: ride.status,
-            cancellationReason: ride.cancellationReason,
-            cancelledBookingCount,
-            driverDepositForfeited: null,
-            riderCompensationTotal: '0',
-            platformForfeiture: '0',
-            fareRefundedTotal: '0',
-            couponsIssuedCount: 0,
-            alreadyApplied: true,
-          };
-        }
-        throw new ConflictException(
-          `Ride is already cancelled (${ride.cancellationReason})`,
-        );
-      }
-
-      if (ride.status !== RideStatus.PUBLISHED) {
-        throw new ConflictException(
-          `Ride cannot be cancelled from status ${ride.status}`,
-        );
-      }
-
-      const now = new Date();
-      const activeBookings = await manager.getRepository(Booking).find({
-        where: {
-          rideId: ride.id,
-          status: In([BookingStatus.PENDING, BookingStatus.CONFIRMED]),
+      return this.regularRideCancellationService.cancelRideInTransaction(
+        manager,
+        {
+          rideId,
+          cancelledByUserId: driverId,
+          requireDriverOwnership: true,
+          rideCancellationReason: RideCancellationReason.DRIVER_CANCELLED,
+          bookingCancellationReason: BookingCancellationReason.RIDE_CANCELLED,
         },
-        order: { createdAt: 'ASC', id: 'ASC' },
-      });
-
-      for (const booking of activeBookings) {
-        booking.status = BookingStatus.CANCELLED;
-        booking.cancellationReason = BookingCancellationReason.RIDE_CANCELLED;
-        booking.cancelledAt = now;
-        await manager.getRepository(Booking).save(booking);
-      }
-
-      // Do not restore availableSeats — the ride is cancelled and unbookable.
-      ride.status = RideStatus.CANCELLED;
-      ride.cancellationReason = RideCancellationReason.DRIVER_CANCELLED;
-      ride.cancelledByUserId = driverId;
-      ride.cancelledAt = now;
-      await manager.getRepository(Ride).save(ride);
-
-      return {
-        rideId: ride.id,
-        status: ride.status,
-        cancellationReason: ride.cancellationReason,
-        cancelledBookingCount: activeBookings.length,
-        driverDepositForfeited: null,
-        riderCompensationTotal: '0',
-        platformForfeiture: '0',
-        fareRefundedTotal: '0',
-        couponsIssuedCount: 0,
-        alreadyApplied: false,
-        cancelledBookings: activeBookings.map((b) => ({
-          bookingId: b.id,
-          passengerId: b.passengerId,
-        })),
-      };
+      );
     });
 
     await this.trackingService.clearRideTracking(rideId, 'cancel');
@@ -382,8 +304,8 @@ export class RidesService {
   async reportDriverNoShow(
     passengerId: string,
     rideId: string,
-  ): Promise<AssuredRideLifecycleResponseDto> {
-    return this.assuredLifecycleService.reportDriverNoShow(passengerId, rideId);
+  ): Promise<NoShowClaimResponseDto> {
+    return this.noShowClaimsService.reportDriverDidNotCome(passengerId, rideId);
   }
 
   async decideRegularSeatsPolicy(
@@ -773,10 +695,31 @@ export class RidesService {
   }
 
   async findMine(driverId: string): Promise<RideResponseDto[]> {
-    const rides = await this.rideRepository.find({
-      where: { driverId },
-      order: { departureDate: 'ASC', departureTime: 'ASC', createdAt: 'DESC' },
-    });
+    const qb = this.rideRepository
+      .createQueryBuilder('ride')
+      .where('ride.driver_id = :driverId', { driverId })
+      .andWhere('ride.status != :cancelled', {
+        cancelled: RideStatus.CANCELLED,
+      })
+      .andWhere(
+        new Brackets((inner) => {
+          inner
+            .where('ride.status NOT IN (:...preTripStatuses)', {
+              preTripStatuses: [
+                RideStatus.DRAFT,
+                RideStatus.PUBLISHED,
+                RideStatus.ASSURANCE_PENDING,
+                RideStatus.ASSURANCE_ACTIVE,
+              ],
+            })
+            .orWhere(this.futureDepartureSql(), this.futureDepartureParams());
+        }),
+      )
+      .orderBy('ride.departure_date', 'ASC')
+      .addOrderBy('ride.departure_time', 'ASC')
+      .addOrderBy('ride.created_at', 'DESC');
+
+    const rides = await qb.getMany();
     return rides.map((ride) => this.toResponse(ride));
   }
 
@@ -970,7 +913,10 @@ export class RidesService {
     }
   }
 
-  async search(dto: SearchRidesDto): Promise<RideSearchPageDto> {
+  async search(
+    searcherUserId: string,
+    dto: SearchRidesDto,
+  ): Promise<RideSearchPageDto> {
     const page = dto.page ?? 1;
     const limit = dto.limit ?? 20;
     const useCorridor = this.hasCompleteSearchCoordinates(dto);
@@ -983,6 +929,10 @@ export class RidesService {
       .createQueryBuilder('ride')
       .where('ride.departure_date = :date', { date: dto.date });
     this.applyPassengerVisibilityFilter(qb);
+    this.applyFutureDepartureFilter(qb);
+    qb.andWhere('ride.driver_id != :searcherUserId', {
+      searcherUserId,
+    });
 
     if (dto.rideType !== undefined) {
       qb.andWhere('ride.ride_type = :rideType', { rideType: dto.rideType });
@@ -1290,6 +1240,15 @@ export class RidesService {
   }
 
   private isPassengerVisibleRide(ride: Ride): boolean {
+    if (
+      isAtOrAfterDeparture(
+        new Date(),
+        this.toCivilDate(ride.departureDate),
+        this.normalizeTime(this.formatTime(ride.departureTime)),
+      )
+    ) {
+      return false;
+    }
     if (ride.rideType === RideType.ASSURED) {
       return isAssuredSearchVisibleOffer(ride.status, ride.availableSeats);
     }
@@ -1328,6 +1287,26 @@ export class RidesService {
           );
       }),
     );
+  }
+
+  /**
+   * Keep only rides whose civil departure is still strictly in the future
+   * in Asia/Kolkata. Parameterized so Postgres compares date+time columns
+   * without depending on the Node process timezone.
+   */
+  private applyFutureDepartureFilter(
+    qb: ReturnType<Repository<Ride>['createQueryBuilder']>,
+  ): void {
+    qb.andWhere(this.futureDepartureSql(), this.futureDepartureParams());
+  }
+
+  private futureDepartureSql(): string {
+    return '(ride.departure_date > :nowCivilDate OR (ride.departure_date = :nowCivilDate AND ride.departure_time > :nowCivilTime))';
+  }
+
+  private futureDepartureParams(): { nowCivilDate: string; nowCivilTime: string } {
+    const clock = currentCivilClock();
+    return { nowCivilDate: clock.date, nowCivilTime: clock.time };
   }
 
   private async applyUnrestrictedRideFields(
@@ -1650,6 +1629,7 @@ export class RidesService {
       .where('ride.departure_date = :date', { date: dto.date })
       .andWhere('ride.route_polyline IS NULL');
     this.applyPassengerVisibilityFilter(qb);
+    this.applyFutureDepartureFilter(qb);
     qb.orderBy('ride.created_at', 'ASC').take(20);
 
     if (dto.rideType !== undefined) {

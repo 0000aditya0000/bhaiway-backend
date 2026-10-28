@@ -10,6 +10,7 @@ import { BookingsModule } from '../bookings/bookings.module';
 import { ChatModule } from '../chat/chat.module';
 import { CommuteRewardsModule } from '../commute-rewards/commute-rewards.module';
 import { CouponsModule } from '../coupons/coupons.module';
+import { NoShowModule } from '../no-show/no-show.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SettingsModule } from '../settings/settings.module';
 import { TrackingModule } from '../tracking/tracking.module';
@@ -22,6 +23,7 @@ import { WalletHold } from '../wallet/entities/wallet-hold.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { WalletModule } from '../wallet/wallet.module';
 import { Ride } from './entities/ride.entity';
+import { RegularCancellationModule } from './regular-cancellation.module';
 import { RidesController } from './rides.controller';
 import { RidesService } from './rides.service';
 import { RideDirectionsService } from './route/ride-directions.service';
@@ -51,6 +53,8 @@ import { RideDirectionsService } from './route/ride-directions.service';
     CouponsModule,
     CommuteRewardsModule,
     NotificationsModule,
+    RegularCancellationModule,
+    NoShowModule,
   ],
   controllers: [RidesController],
   providers: [RidesService, RideDirectionsService],

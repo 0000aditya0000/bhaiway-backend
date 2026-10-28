@@ -257,6 +257,23 @@ describe('Regular ride driver cancellation (integration)', () => {
       RideCancellationReason.DRIVER_CANCELLED,
     );
     expect(rideRow.availableSeats).toBe(ride.availableSeats);
+
+    const mine = await request(app.getHttpServer())
+      .get('/rides/my')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+    expect(mine.body.map((item: { id: string }) => item.id)).not.toContain(
+      ride.id,
+    );
+
+    const history = await request(app.getHttpServer())
+      .get('/rides/history')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .query({ status: RideStatus.CANCELLED })
+      .expect(200);
+    expect(
+      history.body.items.map((item: { ride: { id: string } }) => item.ride.id),
+    ).toContain(ride.id);
   });
 
   it('Regular ride with PAY_LATER passenger cancels ride and booking', async () => {
@@ -421,6 +438,38 @@ describe('Regular ride driver cancellation (integration)', () => {
       where: { walletId: driverWallet.id },
     });
     expect(txAfter).toBe(txBefore);
+  });
+
+  it('keeps other published rides in GET /rides/my after cancelling one', async () => {
+    const { login, vehicle, ride: cancelledRide } = await publishableDriver();
+
+    const activeRide = await request(app.getHttpServer())
+      .post('/rides')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        rideType: RideType.REGULAR,
+        vehicleId: vehicle.id,
+        source: 'Noida Sector 62',
+        destination: 'Connaught Place',
+        departureDate: '2027-08-20',
+        departureTime: '11:00',
+        totalSeats: 3,
+        pricePerSeat: 250,
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/rides/${cancelledRide.id}/cancel`)
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    const mine = await request(app.getHttpServer())
+      .get('/rides/my')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+    const mineIds = mine.body.map((item: { id: string }) => item.id);
+    expect(mineIds).toContain(activeRide.body.id);
+    expect(mineIds).not.toContain(cancelledRide.id);
   });
 
   it('already cancelled Regular ride is idempotent', async () => {

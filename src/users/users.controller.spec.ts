@@ -314,6 +314,105 @@ describe('UsersController (integration)', () => {
     expect(updated.body.lastName).toBe('Lovelace');
   });
 
+  it('updates firstName, lastName, and displayName from a single name field', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        firstName: 'Old',
+        lastName: 'Name',
+        displayName: 'Old Name',
+      })
+      .expect(201);
+
+    const updated = await request(app.getHttpServer())
+      .patch('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ name: 'Ada Lovelace' })
+      .expect(200);
+
+    expect(updated.body).toMatchObject({
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+      displayName: 'Ada Lovelace',
+    });
+
+    const me = await request(app.getHttpServer())
+      .get('/users/me')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(me.body.profile).toMatchObject({
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+      displayName: 'Ada Lovelace',
+    });
+  });
+
+  it('recomputes displayName when firstName and lastName change without name or displayName', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        firstName: 'Ada',
+        lastName: 'Lovelace',
+        displayName: 'Original',
+      })
+      .expect(201);
+
+    const updated = await request(app.getHttpServer())
+      .patch('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ firstName: 'Ada', lastName: 'Byron' })
+      .expect(200);
+
+    expect(updated.body).toMatchObject({
+      firstName: 'Ada',
+      lastName: 'Byron',
+      displayName: 'Ada Byron',
+    });
+
+    const me = await request(app.getHttpServer())
+      .get('/users/me')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(me.body.profile.displayName).toBe('Ada Byron');
+    expect(me.body.profile.firstName).toBe('Ada');
+    expect(me.body.profile.lastName).toBe('Byron');
+  });
+
+  it('lets explicit firstName, lastName, and displayName take precedence over name', async () => {
+    const login = await createAuthenticatedUser();
+
+    await request(app.getHttpServer())
+      .post('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({ firstName: 'Old', lastName: 'Name' })
+      .expect(201);
+
+    const updated = await request(app.getHttpServer())
+      .patch('/users/profile')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        name: 'Ignored Split',
+        firstName: 'Ada',
+        lastName: 'Byron',
+        displayName: 'Ada L',
+      })
+      .expect(200);
+
+    expect(updated.body).toMatchObject({
+      firstName: 'Ada',
+      lastName: 'Byron',
+      displayName: 'Ada L',
+    });
+  });
+
   it('user cannot modify phone via profile endpoints', async () => {
     const login = await createAuthenticatedUser();
 

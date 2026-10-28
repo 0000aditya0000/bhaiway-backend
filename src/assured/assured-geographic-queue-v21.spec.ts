@@ -14,6 +14,7 @@ import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { BookingsModule } from '../bookings/bookings.module';
 import { Booking } from '../bookings/entities/booking.entity';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
@@ -42,6 +43,7 @@ import {
 } from '../wallet/test/wallet-test.helpers';
 import { WalletModule } from '../wallet/wallet.module';
 import { WalletService } from '../wallet/wallet.service';
+import { reportDriverNoShowAndApprove } from '../no-show/test/no-show-http.helpers';
 
 describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
   let app: INestApplication;
@@ -124,14 +126,44 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
   });
 
   afterEach(async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
-        await dataSource.getRepository(Booking).delete({
-          passengerId: ctx.userId,
+        await dataSource.query(
+          `DELETE FROM notification_email_deliveries
+           WHERE notification_id IN (
+             SELECT id FROM notifications WHERE recipient_user_id = $1
+           )`,
+          [ctx.userId],
+        );
+        await dataSource.query(
+          `DELETE FROM notifications WHERE recipient_user_id = $1`,
+          [ctx.userId],
+        );
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
         });
         const rides = await dataSource.getRepository(Ride).find({
           where: { driverId: ctx.userId },
+        });
+        const rideBookingIds =
+          rides.length === 0
+            ? []
+            : (
+                await dataSource.getRepository(Booking).find({
+                  where: { rideId: In(rides.map((ride) => ride.id)) },
+                  select: { id: true },
+                })
+              ).map((booking) => booking.id);
+        await deleteChatForBookingIds(dataSource, [
+          ...passengerBookings.map((booking) => booking.id),
+          ...rideBookingIds,
+        ]);
+        await dataSource.getRepository(Booking).delete({
+          passengerId: ctx.userId,
         });
         const queueIds = [
           ...new Set(
@@ -140,6 +172,12 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
               .filter((id): id is string => id != null),
           ),
         ];
+        if (rides.length > 0) {
+          await dataSource.query(
+            `DELETE FROM no_show_claims WHERE ride_id = ANY($1::uuid[])`,
+            [rides.map((ride) => ride.id)],
+          );
+        }
         for (const ride of rides) {
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
           if (ride.assuredQueueKey) {
@@ -394,17 +432,19 @@ describe('Assured Geographic Queue V2.1 hardening (integration)', () => {
   });
 
   it('CRITICAL: driver no-show of FULL A does not promote C when B is bookable ACTIVE', async () => {
-    const { passenger, a, b, c } = await setupFullWithSibling();
+    const { d1, passenger, a, b, c } = await setupFullWithSibling();
 
     await dataSource.getRepository(Ride).update(a.id, {
       departureDate: '2020-01-01',
       departureTime: '10:00:00',
     });
 
-    await request(app.getHttpServer())
-      .post(`/rides/${a.id}/driver-no-show`)
-      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
-      .expect(200);
+    await reportDriverNoShowAndApprove(
+      app,
+      a.id,
+      passenger.login.accessToken,
+      d1.login.accessToken,
+    );
 
     const [aAfter, bAfter, cAfter] = await Promise.all([
       dataSource.getRepository(Ride).findOneByOrFail({ id: a.id }),

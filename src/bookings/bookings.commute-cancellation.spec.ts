@@ -584,7 +584,7 @@ describe('Commute cancellation lifecycle (integration)', () => {
 
     const search = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .set('Authorization', `Bearer ${a.login.accessToken}`)
       .query({
         source: 'Gurgaon',
         destination: 'Noida',

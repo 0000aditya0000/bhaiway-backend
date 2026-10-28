@@ -1,6 +1,7 @@
 import {
   RIDE_TIME_ZONE,
   civilDateTimeToUtcMs,
+  currentCivilClock,
 } from './ride-timezone';
 
 describe('ride-timezone (Asia/Kolkata policy)', () => {
@@ -30,5 +31,11 @@ describe('ride-timezone (Asia/Kolkata policy)', () => {
         process.env.TZ = previous;
       }
     }
+  });
+
+  it('currentCivilClock returns Kolkata civil date/time for a known UTC instant', () => {
+    // 2026-06-15 04:30 UTC = 10:00 Asia/Kolkata
+    const clock = currentCivilClock(new Date(Date.UTC(2026, 5, 15, 4, 30, 0)));
+    expect(clock).toEqual({ date: '2026-06-15', time: '10:00:00' });
   });
 });

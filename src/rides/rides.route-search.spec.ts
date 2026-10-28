@@ -48,6 +48,7 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   let vehiclesService: VehiclesService;
   const tracked: TestWalletContext[] = [];
   const departureDate = '2027-09-15';
+  let passengerAccessToken: string;
 
   beforeAll(async () => {
     assertSafeTestDatabaseUrl(process.env.DATABASE_URL);
@@ -127,6 +128,10 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
     if (app) {
       await app.close();
     }
+  });
+
+  beforeEach(async () => {
+    passengerAccessToken = (await createAuthenticatedUser()).accessToken;
   });
 
   async function createAuthenticatedUser() {
@@ -244,8 +249,8 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   }
 
   it('Test 1: published Noida → Dehradun matches exact coordinate search', async () => {
-    const { login, ride } = await publishNoidaDehradun();
-    const res = await searchQuery(login.accessToken, {
+    const { ride } = await publishNoidaDehradun();
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Noida',
       destination: 'Dehradun',
       date: departureDate,
@@ -261,8 +266,8 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 2: Indirapuram → Dehradun matches corridor search', async () => {
-    const { login, ride } = await publishNoidaDehradun();
-    const res = await searchQuery(login.accessToken, {
+    const { ride } = await publishNoidaDehradun();
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Indirapuram',
       destination: 'Dehradun',
       date: departureDate,
@@ -278,8 +283,8 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 3: Noida → Meerut matches when Meerut is on/near the route', async () => {
-    const { login, ride } = await publishNoidaDehradun();
-    const res = await searchQuery(login.accessToken, {
+    const { ride } = await publishNoidaDehradun();
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Noida',
       destination: 'Meerut',
       date: departureDate,
@@ -295,8 +300,8 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 4: Meerut → Dehradun matches', async () => {
-    const { login, ride } = await publishNoidaDehradun();
-    const res = await searchQuery(login.accessToken, {
+    const { ride } = await publishNoidaDehradun();
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Meerut',
       destination: 'Dehradun',
       date: departureDate,
@@ -312,8 +317,8 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 5: Dehradun → Meerut does not match (reversed)', async () => {
-    const { login, ride } = await publishNoidaDehradun();
-    const res = await searchQuery(login.accessToken, {
+    const { ride } = await publishNoidaDehradun();
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Dehradun',
       destination: 'Meerut',
       date: departureDate,
@@ -329,8 +334,8 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 6: pickup > 50km from route does not match', async () => {
-    const { login, ride } = await publishNoidaDehradun();
-    const res = await searchQuery(login.accessToken, {
+    const { ride } = await publishNoidaDehradun();
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Mumbai',
       destination: 'Dehradun',
       date: departureDate,
@@ -346,8 +351,8 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 7: destination > 50km from route does not match', async () => {
-    const { login, ride } = await publishNoidaDehradun();
-    const res = await searchQuery(login.accessToken, {
+    const { ride } = await publishNoidaDehradun();
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Noida',
       destination: 'Mumbai',
       date: departureDate,
@@ -363,8 +368,8 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 8: Indirapuram → Meerut within corridor matches', async () => {
-    const { login, ride } = await publishNoidaDehradun();
-    const res = await searchQuery(login.accessToken, {
+    const { ride } = await publishNoidaDehradun();
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Indirapuram',
       destination: 'Meerut',
       date: departureDate,
@@ -380,8 +385,8 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 9: exact place-name search without coordinates still matches', async () => {
-    const { login, ride } = await publishNoidaDehradun();
-    const res = await searchQuery(login.accessToken, {
+    const { ride } = await publishNoidaDehradun();
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Noida',
       destination: 'Dehradun',
       date: departureDate,
@@ -393,11 +398,11 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 10: insufficient seats does not match', async () => {
-    const { login, ride } = await publishNoidaDehradun({
+    const { ride } = await publishNoidaDehradun({
       totalSeats: 2,
       availableSeats: 1,
     });
-    const res = await searchQuery(login.accessToken, {
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Noida',
       destination: 'Dehradun',
       date: departureDate,
@@ -414,8 +419,8 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 11: different date does not match', async () => {
-    const { login, ride } = await publishNoidaDehradun();
-    const res = await searchQuery(login.accessToken, {
+    const { ride } = await publishNoidaDehradun();
+    const res = await searchQuery(passengerAccessToken, {
       source: 'Noida',
       destination: 'Dehradun',
       date: '2027-09-16',
@@ -431,10 +436,10 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
   });
 
   it('Test 12: rideType filter preserves Regular vs Assured separation', async () => {
-    const { login, ride } = await publishNoidaDehradun({
+    const { ride } = await publishNoidaDehradun({
       rideType: RideType.REGULAR,
     });
-    const assuredOnly = await searchQuery(login.accessToken, {
+    const assuredOnly = await searchQuery(passengerAccessToken, {
       source: 'Noida',
       destination: 'Dehradun',
       date: departureDate,
@@ -449,7 +454,7 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
       assuredOnly.body.items.map((item: { id: string }) => item.id),
     ).not.toContain(ride.id);
 
-    const regularOnly = await searchQuery(login.accessToken, {
+    const regularOnly = await searchQuery(passengerAccessToken, {
       source: 'Noida',
       destination: 'Dehradun',
       date: departureDate,
@@ -488,7 +493,7 @@ describe('Regular ride route-corridor search (GET /rides/search)', () => {
     expect(stored.sourceLatitude).toBeCloseTo(MEERUT.latitude, 4);
     expect(stored.routePolyline).toBeTruthy();
 
-    const noidaSearch = await searchQuery(login.accessToken, {
+    const noidaSearch = await searchQuery(passengerAccessToken, {
       source: 'Noida',
       destination: 'Dehradun',
       date: departureDate,

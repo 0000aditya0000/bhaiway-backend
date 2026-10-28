@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AssuredModule } from '../assured/assured.module';
@@ -7,6 +7,7 @@ import { AuthModule } from '../auth/auth.module';
 import { ChatModule } from '../chat/chat.module';
 import { CouponsModule } from '../coupons/coupons.module';
 import { UserCoupon } from '../coupons/entities/user-coupon.entity';
+import { NoShowModule } from '../no-show/no-show.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Ride } from '../rides/entities/ride.entity';
 import { SettingsModule } from '../settings/settings.module';
@@ -45,6 +46,7 @@ import { Booking } from './entities/booking.entity';
     CouponsModule,
     ChatModule,
     NotificationsModule,
+    forwardRef(() => NoShowModule),
   ],
   controllers: [BookingsController],
   providers: [BookingsService, CommuteCancellationService],

@@ -41,6 +41,7 @@ import {
 } from '../wallet/test/wallet-test.helpers';
 import { WalletModule } from '../wallet/wallet.module';
 import { WalletService } from '../wallet/wallet.service';
+import { reportDriverNoShowAndApprove } from '../no-show/test/no-show-http.helpers';
 
 describe('Assured Queue Engine (integration)', () => {
   let app: INestApplication;
@@ -111,9 +112,22 @@ describe('Assured Queue Engine (integration)', () => {
   });
 
   afterEach(async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
+        await dataSource.query(
+          `DELETE FROM notification_email_deliveries
+           WHERE notification_id IN (
+             SELECT id FROM notifications WHERE recipient_user_id = $1
+           )`,
+          [ctx.userId],
+        );
+        await dataSource.query(
+          `DELETE FROM notifications WHERE recipient_user_id = $1`,
+          [ctx.userId],
+        );
         const passengerBookings = await dataSource.getRepository(Booking).find({
           where: { passengerId: ctx.userId },
           select: { id: true },
@@ -144,6 +158,12 @@ describe('Assured Queue Engine (integration)', () => {
               .filter((id): id is string => id != null),
           ),
         ];
+        if (rides.length > 0) {
+          await dataSource.query(
+            `DELETE FROM no_show_claims WHERE ride_id = ANY($1::uuid[])`,
+            [rides.map((ride) => ride.id)],
+          );
+        }
         for (const ride of rides) {
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
           if (ride.assuredQueueKey) {
@@ -530,23 +550,27 @@ describe('Assured Queue Engine (integration)', () => {
     const pastDate = '2020-01-01';
 
     const active = await publishAssured(d1.login.accessToken, d1.vehicle.id, {
-      departureDate: pastDate,
       departureTime: '13:10',
       totalSeats: 2,
     });
     const pending = await publishAssured(d2.login.accessToken, d2.vehicle.id, {
-      departureDate: pastDate,
       departureTime: '13:40',
       totalSeats: 2,
     });
     expect(pending.status).toBe(RideStatus.ASSURANCE_PENDING);
 
     await bookAssured(passenger.login.accessToken, active.id).expect(201);
+    await dataSource.getRepository(Ride).update(active.id, {
+      departureDate: pastDate,
+      departureTime: '13:10:00',
+    });
 
-    await request(app.getHttpServer())
-      .post(`/rides/${active.id}/driver-no-show`)
-      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
-      .expect(200);
+    await reportDriverNoShowAndApprove(
+      app,
+      active.id,
+      passenger.login.accessToken,
+      d1.login.accessToken,
+    );
 
     const [activeAfter, pendingAfter] = await Promise.all([
       dataSource.getRepository(Ride).findOneByOrFail({ id: active.id }),

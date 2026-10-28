@@ -2,8 +2,10 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -12,6 +14,7 @@ import {
   DataSource,
   EntityManager,
   In,
+  Not,
   QueryFailedError,
   Repository,
 } from 'typeorm';
@@ -22,12 +25,16 @@ import {
 } from '../assured/passenger-assured-deposit-penalty.service';
 import { AssuredLifecycleService } from '../assured/assured-lifecycle.service';
 import { AssuredQueueService } from '../assured/assured-queue.service';
+import { isAtOrAfterDeparture } from '../assured/assured-timing';
 import {
   isAssuredBookableStatus,
   isCommutePublishedStatus,
   isRegularPublishedStatus,
 } from '../assured/assured-ride-status';
+import { RideDepartureInPastError } from '../rides/errors/ride-publishing.errors';
 import { AssuredBookingLifecycleResponseDto } from '../assured/dto/assured-lifecycle-response.dto';
+import { NoShowClaimResponseDto } from '../no-show/dto/no-show-claim-response.dto';
+import { NoShowClaimsService } from '../no-show/no-show-claims.service';
 import {
   ASSURED_BOOKING_RIDER_DEPOSIT_REF,
   calculateRiderAssuredDeposit,
@@ -165,6 +172,8 @@ export class BookingsService {
     private readonly chatService: ChatService,
     private readonly notificationsService: NotificationsService,
     private readonly couponRedemptionService: CouponRedemptionService,
+    @Inject(forwardRef(() => NoShowClaimsService))
+    private readonly noShowClaimsService: NoShowClaimsService,
   ) {}
 
   async cancelByPassenger(
@@ -307,8 +316,11 @@ export class BookingsService {
   async reportRiderNoShow(
     driverId: string,
     bookingId: string,
-  ): Promise<AssuredBookingLifecycleResponseDto> {
-    return this.assuredLifecycleService.reportRiderNoShow(driverId, bookingId);
+  ): Promise<NoShowClaimResponseDto> {
+    return this.noShowClaimsService.reportPassengerDidNotCome(
+      driverId,
+      bookingId,
+    );
   }
 
   /**
@@ -326,25 +338,19 @@ export class BookingsService {
     }
 
     return this.dataSource.transaction(async (manager) => {
-      const booking = await manager
-        .getRepository(Booking)
-        .createQueryBuilder('booking')
-        .setLock('pessimistic_write')
-        .where('booking.id = :bookingId', { bookingId })
-        .getOne();
-
-      if (!booking) {
+      const bookingPeek = await manager.getRepository(Booking).findOne({
+        where: { id: bookingId },
+      });
+      if (!bookingPeek) {
         throw new NotFoundException('Booking not found');
       }
 
-      const ride = await manager
-        .getRepository(Ride)
-        .createQueryBuilder('ride')
-        .setLock('pessimistic_write')
-        .where('ride.id = :rideId', { rideId: booking.rideId })
-        .getOne();
-
-      if (!ride || ride.driverId !== driverId) {
+      const ride = await this.lockRideForUpdate(manager, bookingPeek.rideId);
+      const booking = await this.lockBookingForUpdate(manager, bookingId);
+      if (!booking) {
+        throw new NotFoundException('Booking not found');
+      }
+      if (ride.driverId !== driverId) {
         throw new NotFoundException('Booking not found');
       }
 
@@ -1608,7 +1614,7 @@ export class BookingsService {
 
   async findMine(passengerId: string): Promise<BookingResponseDto[]> {
     const bookings = await this.bookingRepository.find({
-      where: { passengerId },
+      where: { passengerId, status: Not(BookingStatus.CANCELLED) },
       order: { createdAt: 'DESC' },
     });
 
@@ -1973,6 +1979,8 @@ export class BookingsService {
       throw new BadRequestException('Only published rides can be booked');
     }
 
+    this.assertRideDepartureIsInFuture(ride);
+
     if (ride.driverId === passengerId) {
       throw new ForbiddenException('Drivers cannot book their own ride');
     }
@@ -1987,8 +1995,20 @@ export class BookingsService {
         'Only published Commute rides can be booked',
       );
     }
+    this.assertRideDepartureIsInFuture(ride);
     if (ride.driverId === passengerId) {
       throw new ForbiddenException('Drivers cannot book their own ride');
+    }
+  }
+
+  private assertRideDepartureIsInFuture(ride: Ride): void {
+    const departureDate = String(ride.departureDate).slice(0, 10);
+    const departureTime =
+      ride.departureTime.length >= 8
+        ? ride.departureTime.slice(0, 8)
+        : ride.departureTime;
+    if (isAtOrAfterDeparture(new Date(), departureDate, departureTime)) {
+      throw new RideDepartureInPastError();
     }
   }
 

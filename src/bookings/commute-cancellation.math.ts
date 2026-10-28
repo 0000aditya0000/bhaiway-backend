@@ -13,3 +13,11 @@ export function commuteRideCancelRefundKey(bookingId: string): string {
 export function commuteRejectRefundKey(bookingId: string): string {
   return `commute:reject:${bookingId}`;
 }
+
+export function commuteDriverNoShowRefundKey(bookingId: string): string {
+  return `commute:driver-no-show:${bookingId}`;
+}
+
+export function commutePassengerNoShowRefundKey(bookingId: string): string {
+  return `commute:passenger-no-show:${bookingId}`;
+}

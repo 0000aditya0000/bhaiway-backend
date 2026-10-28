@@ -11,6 +11,7 @@ import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { BookingsModule } from '../bookings/bookings.module';
 import { Booking } from '../bookings/entities/booking.entity';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import {
   BookingCancellationReason,
   BookingPaymentMethod,
@@ -104,15 +105,51 @@ describe('Regular ride trip lifecycle (integration)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
-        const rides = await dataSource.getRepository(Ride).find({
-          where: { driverId: ctx.userId },
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
         });
-        for (const ride of rides) {
-          await dataSource.getRepository(Booking).delete({ rideId: ride.id });
+        const passengerBookingIds = passengerBookings.map((row) => row.id);
+        if (passengerBookingIds.length > 0) {
+          await dataSource.query(
+            `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+            [passengerBookingIds],
+          );
+          await deleteChatForBookingIds(dataSource, passengerBookingIds);
+          await dataSource.query(
+            `DELETE FROM no_show_claims WHERE booking_id = ANY($1::uuid[])`,
+            [passengerBookingIds],
+          );
         }
         await dataSource.getRepository(Booking).delete({
           passengerId: ctx.userId,
         });
+        const rides = await dataSource.getRepository(Ride).find({
+          where: { driverId: ctx.userId },
+        });
+        for (const ride of rides) {
+          const rideBookings = await dataSource.getRepository(Booking).find({
+            where: { rideId: ride.id },
+            select: { id: true },
+          });
+          const rideBookingIds = rideBookings.map((row) => row.id);
+          if (rideBookingIds.length > 0) {
+            await dataSource.query(
+              `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+              [rideBookingIds],
+            );
+          }
+          await dataSource.query(
+            `DELETE FROM rating_tasks WHERE ride_id = $1`,
+            [ride.id],
+          );
+          await deleteChatForBookingIds(dataSource, rideBookingIds);
+          await dataSource.query(
+            `DELETE FROM no_show_claims WHERE ride_id = $1`,
+            [ride.id],
+          );
+          await dataSource.getRepository(Booking).delete({ rideId: ride.id });
+        }
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
         await dataSource.getRepository(Vehicle).delete({ userId: ctx.userId });
         await dataSource.getRepository(UserProfile).delete({

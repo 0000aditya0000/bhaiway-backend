@@ -46,6 +46,34 @@ export function civilDateTimeToDate(
   return new Date(civilDateTimeToUtcMs(departureDate, departureTime, timeZone));
 }
 
+/**
+ * Current civil calendar date (YYYY-MM-DD) and wall-clock time (HH:mm:ss)
+ * in `timeZone`. Used to exclude already-departed rides from retrieval.
+ */
+export function currentCivilClock(
+  now: Date = new Date(),
+  timeZone: string = RIDE_TIME_ZONE,
+): { date: string; time: string } {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const get = (type: string) =>
+    parts.find((part) => part.type === type)?.value ?? '00';
+  const hourRaw = get('hour');
+  const hour = hourRaw === '24' ? '00' : hourRaw;
+  return {
+    date: `${get('year')}-${get('month')}-${get('day')}`,
+    time: `${hour}:${get('minute')}:${get('second')}`,
+  };
+}
+
 /** Offset of `timeZone` east of UTC at `date`, in milliseconds. */
 function getTimeZoneOffsetMs(timeZone: string, date: Date): number {
   const dtf = new Intl.DateTimeFormat('en-US', {

@@ -38,6 +38,10 @@ import {
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import {
+  pastCivilDate,
+  pastCivilTimeToday,
+} from './test/ride-departure-test.helpers';
 
 describe('RidesController (integration)', () => {
   let app: INestApplication;
@@ -455,6 +459,102 @@ describe('RidesController (integration)', () => {
 
     expect(mine.body).toHaveLength(1);
     expect(mine.body[0].id).toBe(created.body.id);
+  });
+
+  it('GET /rides/my excludes expired pre-trip rides and keeps IN_PROGRESS and COMPLETED', async () => {
+    const { login, vehicle } = await fullyEligibleDriver();
+    const pendingDriver = await fullyEligibleDriver();
+    const token = login.accessToken;
+
+    async function publish(accessToken: string, vehicleId: string, time: string) {
+      return request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send(ridePayload(vehicleId, { departureTime: time }))
+        .expect(201);
+    }
+
+    const published = await publish(token, vehicle.id, '09:00');
+    const draft = await publish(token, vehicle.id, '10:00');
+    const active = await publish(token, vehicle.id, '12:00');
+    const inProgress = await publish(token, vehicle.id, '13:00');
+    const completed = await publish(token, vehicle.id, '14:00');
+    const future = await publish(token, vehicle.id, '15:00');
+    const cancelled = await publish(token, vehicle.id, '16:00');
+    const pending = await publish(
+      pendingDriver.login.accessToken,
+      pendingDriver.vehicle.id,
+      '11:00',
+    );
+
+    const past = pastCivilTimeToday();
+    const yesterday = {
+      departureDate: pastCivilDate(1),
+      departureTime: '08:00:00',
+    };
+
+    await dataSource.getRepository(Ride).update(
+      { id: published.body.id },
+      { ...past, status: RideStatus.PUBLISHED },
+    );
+    await dataSource.getRepository(Ride).update(
+      { id: draft.body.id },
+      { ...yesterday, status: RideStatus.DRAFT },
+    );
+    await dataSource.getRepository(Ride).update(
+      { id: active.body.id },
+      { ...past, status: RideStatus.ASSURANCE_ACTIVE },
+    );
+    await dataSource.getRepository(Ride).update(
+      { id: pending.body.id },
+      { ...yesterday, status: RideStatus.ASSURANCE_PENDING },
+    );
+    await dataSource.getRepository(Ride).update(
+      { id: inProgress.body.id },
+      { ...past, status: RideStatus.IN_PROGRESS },
+    );
+    await dataSource.getRepository(Ride).update(
+      { id: completed.body.id },
+      { ...yesterday, status: RideStatus.COMPLETED },
+    );
+    await dataSource.getRepository(Ride).update(
+      { id: cancelled.body.id },
+      { status: RideStatus.CANCELLED },
+    );
+
+    const mine = await request(app.getHttpServer())
+      .get('/rides/my')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const mineIds = mine.body.map((item: { id: string }) => item.id);
+
+    expect(mineIds).toContain(future.body.id);
+    expect(mineIds).toContain(inProgress.body.id);
+    expect(mineIds).toContain(completed.body.id);
+    expect(mineIds).not.toContain(published.body.id);
+    expect(mineIds).not.toContain(draft.body.id);
+    expect(mineIds).not.toContain(active.body.id);
+    expect(mineIds).not.toContain(cancelled.body.id);
+
+    const pendingMine = await request(app.getHttpServer())
+      .get('/rides/my')
+      .set('Authorization', `Bearer ${pendingDriver.login.accessToken}`)
+      .expect(200);
+    expect(
+      pendingMine.body.map((item: { id: string }) => item.id),
+    ).not.toContain(pending.body.id);
+
+    const history = await request(app.getHttpServer())
+      .get('/rides/history')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const historyIds = history.body.items.map(
+      (item: { ride: { id: string } }) => item.ride.id,
+    );
+    expect(historyIds).toContain(completed.body.id);
+    expect(historyIds).toContain(cancelled.body.id);
+    expect(historyIds).not.toContain(published.body.id);
+    expect(historyIds).not.toContain(future.body.id);
   });
 
   it('GET /rides/:id is owner-only (IDOR-safe)', async () => {

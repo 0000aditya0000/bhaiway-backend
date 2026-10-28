@@ -36,6 +36,7 @@ import {
   HalfTimeDecisionResponseDto,
 } from '../assured/dto/assured-lifecycle-response.dto';
 import { HalfTimeDecisionDto } from '../assured/dto/half-time-decision.dto';
+import { NoShowClaimResponseDto } from '../no-show/dto/no-show-claim-response.dto';
 import { CompleteRideResponseDto } from './dto/complete-ride-response.dto';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { RideHistoryQueryDto } from './dto/ride-history-query.dto';
@@ -114,8 +115,11 @@ export class RidesController {
   })
   @ApiOkResponse({ type: RideSearchPageDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
-  search(@Query() query: SearchRidesDto) {
-    return this.ridesService.search(query);
+  search(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Query() query: SearchRidesDto,
+  ) {
+    return this.ridesService.search(currentUser.userId, query);
   }
 
   @Get('my')
@@ -254,20 +258,44 @@ export class RidesController {
     return this.ridesService.cancelByDriver(currentUser.userId, id);
   }
 
-  @Post(':id/driver-no-show')
+  @Post(':id/no-show/driver')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Report driver no-show (affected Assured passenger)',
+    summary: 'Report that the driver did not arrive (passenger)',
     description:
-      'Callable only by a passenger with an active Assured booking on the ride, and only at/after scheduled departure. Financially identical to driver cancellation (deposit consume, 60/40 split, rider deposit release). No GPS verification. Idempotent. Drivers cannot mark themselves no-show via this endpoint.',
+      'Creates a pending No-Show claim 5 minutes after scheduled Asia/Kolkata departure. The driver has 15 minutes to approve or reject. No GPS or photo evidence. Duplicate pending reports return the existing claim. Compatibility: POST /rides/:id/driver-no-show is the same action and no longer settles immediately.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
-  @ApiOkResponse({ type: AssuredRideLifecycleResponseDto })
+  @ApiOkResponse({ type: NoShowClaimResponseDto })
   @ApiNotFoundResponse({
     description: 'Ride not found for this reporter',
   })
   @ApiConflictResponse({
-    description: 'Before departure, already completed/cancelled, or duplicate',
+    description:
+      'Too early, ride started/cancelled/completed, or ineligible booking',
+  })
+  reportDriverNoShowClaim(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.ridesService.reportDriverNoShow(currentUser.userId, id);
+  }
+
+  @Post(':id/driver-no-show')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Report driver no-show (compat — creates a pending claim)',
+    description:
+      'Compatibility alias for POST /rides/:id/no-show/driver. Previously settled Assured no-show immediately; it now opens a 15-minute claim so clients cannot bypass the response window. Settlement still uses the existing Assured DRIVER_NO_SHOW financial path after approval or timeout.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOkResponse({ type: NoShowClaimResponseDto })
+  @ApiNotFoundResponse({
+    description: 'Ride not found for this reporter',
+  })
+  @ApiConflictResponse({
+    description:
+      'Too early, ride started/cancelled/completed, or ineligible booking',
   })
   reportDriverNoShow(
     @CurrentUser() currentUser: AuthenticatedUser,

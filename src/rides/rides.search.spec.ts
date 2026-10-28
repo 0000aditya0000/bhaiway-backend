@@ -37,6 +37,10 @@ import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
 import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
+import {
+  pastCivilDate,
+  pastCivilTimeToday,
+} from './test/ride-departure-test.helpers';
 
 describe('Rides search (integration)', () => {
   let app: INestApplication;
@@ -47,6 +51,7 @@ describe('Rides search (integration)', () => {
   let vehiclesService: VehiclesService;
   let walletService: WalletService;
   const tracked: TestWalletContext[] = [];
+  let passengerAccessToken: string;
 
   beforeAll(async () => {
     assertSafeTestDatabaseUrl(process.env.DATABASE_URL);
@@ -117,6 +122,10 @@ describe('Rides search (integration)', () => {
     if (app) {
       await app.close();
     }
+  });
+
+  beforeEach(async () => {
+    passengerAccessToken = (await createAuthenticatedUser()).accessToken;
   });
 
   async function createAuthenticatedUser() {
@@ -210,7 +219,7 @@ describe('Rides search (integration)', () => {
         vehicleId,
         source: 'Noida Sector 62',
         destination: 'Connaught Place, Delhi',
-        departureDate: '2027-08-20',
+        departureDate: '2028-04-17',
         departureTime: '09:00',
         totalSeats: 3,
         pricePerSeat: 250,
@@ -227,13 +236,20 @@ describe('Rides search (integration)', () => {
     return response.body;
   }
 
+  async function expireRide(
+    rideId: string,
+    departure: { departureDate: string; departureTime: string },
+  ) {
+    await dataSource.getRepository(Ride).update({ id: rideId }, departure);
+  }
+
   it('search requires JWT', async () => {
     await request(app.getHttpServer())
       .get('/rides/search')
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
       })
       .expect(401);
   });
@@ -253,11 +269,11 @@ describe('Rides search (integration)', () => {
 
     const response = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
       })
       .expect(200);
 
@@ -276,11 +292,11 @@ describe('Rides search (integration)', () => {
 
     const response = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
       })
       .expect(200);
 
@@ -300,11 +316,11 @@ describe('Rides search (integration)', () => {
 
     const response = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
         time: '09:00',
       })
       .expect(200);
@@ -327,11 +343,11 @@ describe('Rides search (integration)', () => {
 
     const response = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
         seats: 2,
       })
       .expect(200);
@@ -349,11 +365,11 @@ describe('Rides search (integration)', () => {
 
     const response = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
       })
       .expect(200);
 
@@ -368,11 +384,11 @@ describe('Rides search (integration)', () => {
 
     const response = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
       })
       .expect(200);
 
@@ -393,11 +409,11 @@ describe('Rides search (integration)', () => {
 
     const regular = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida Filter',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
         rideType: RideType.REGULAR,
       })
       .expect(200);
@@ -406,11 +422,11 @@ describe('Rides search (integration)', () => {
 
     const assured = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida Filter',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
         rideType: RideType.ASSURED,
       })
       .expect(200);
@@ -419,14 +435,140 @@ describe('Rides search (integration)', () => {
 
     const both = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida Filter',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
       })
       .expect(200);
     expect(both.body.items).toHaveLength(2);
+  });
+
+  it('excludes the searcher own published ride and keeps other drivers eligible rides (place-name)', async () => {
+    const owner = await publishableDriver();
+    const other = await publishableDriver();
+    const ownRide = await createRide(owner.login.accessToken, owner.vehicle.id, {
+      source: 'Noida Own Place',
+    });
+    const otherRegular = await createRide(
+      other.login.accessToken,
+      other.vehicle.id,
+      {
+        source: 'Noida Other Regular',
+        departureTime: '10:00',
+      },
+    );
+    const otherCommute = await createRide(
+      other.login.accessToken,
+      other.vehicle.id,
+      {
+        rideType: RideType.COMMUTE,
+        source: 'Noida Other Commute',
+        departureTime: '11:00',
+      },
+    );
+    const otherAssured = await createRide(
+      other.login.accessToken,
+      other.vehicle.id,
+      {
+        rideType: RideType.ASSURED,
+        source: 'Noida Other Assured',
+        departureTime: '12:00',
+      },
+    );
+
+    const asOwner = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${owner.login.accessToken}`)
+      .query({
+        source: 'Noida',
+        destination: 'Delhi',
+        date: '2028-04-17',
+      })
+      .expect(200);
+
+    const asOwnerIds = asOwner.body.items.map((item: { id: string }) => item.id);
+    expect(asOwnerIds).not.toContain(ownRide.id);
+    expect(asOwnerIds).toEqual(
+      expect.arrayContaining([
+        otherRegular.id,
+        otherCommute.id,
+        otherAssured.id,
+      ]),
+    );
+
+    const asPassenger = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
+      .query({
+        source: 'Noida',
+        destination: 'Delhi',
+        date: '2028-04-17',
+      })
+      .expect(200);
+
+    const asPassengerIds = asPassenger.body.items.map(
+      (item: { id: string }) => item.id,
+    );
+    expect(asPassengerIds).toEqual(
+      expect.arrayContaining([
+        ownRide.id,
+        otherRegular.id,
+        otherCommute.id,
+        otherAssured.id,
+      ]),
+    );
+  });
+
+  it('excludes the searcher own published ride on corridor search', async () => {
+    const owner = await publishableDriver();
+    const other = await publishableDriver();
+    const ownRide = await createRide(owner.login.accessToken, owner.vehicle.id, {
+      source: 'Noida Corridor Own',
+      ...ASSURED_TEST_ROUTE,
+    });
+    const otherRide = await createRide(
+      other.login.accessToken,
+      other.vehicle.id,
+      {
+        source: 'Noida Corridor Other',
+        departureTime: '10:00',
+        ...ASSURED_TEST_ROUTE,
+      },
+    );
+
+    const corridorQuery = {
+      source: 'Noida',
+      destination: 'Delhi',
+      date: '2028-04-17',
+      pickupLatitude: ASSURED_TEST_ROUTE.sourceLatitude,
+      pickupLongitude: ASSURED_TEST_ROUTE.sourceLongitude,
+      dropoffLatitude: ASSURED_TEST_ROUTE.destinationLatitude,
+      dropoffLongitude: ASSURED_TEST_ROUTE.destinationLongitude,
+    };
+
+    const asOwner = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${owner.login.accessToken}`)
+      .query(corridorQuery)
+      .expect(200);
+
+    const asOwnerIds = asOwner.body.items.map((item: { id: string }) => item.id);
+    expect(asOwnerIds).not.toContain(ownRide.id);
+    expect(asOwnerIds).toContain(otherRide.id);
+
+    const asPassenger = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
+      .query(corridorQuery)
+      .expect(200);
+
+    const asPassengerIds = asPassenger.body.items.map(
+      (item: { id: string }) => item.id,
+    );
+    expect(asPassengerIds).toContain(ownRide.id);
+    expect(asPassengerIds).toContain(otherRide.id);
   });
 
   it('pagination defaults and max limit work with correct total', async () => {
@@ -441,11 +583,11 @@ describe('Rides search (integration)', () => {
 
     const defaults = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
       })
       .expect(200);
 
@@ -456,11 +598,11 @@ describe('Rides search (integration)', () => {
 
     const page1 = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
         page: 1,
         limit: 2,
       })
@@ -472,11 +614,11 @@ describe('Rides search (integration)', () => {
 
     await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
         limit: 51,
       })
       .expect(400);
@@ -499,11 +641,11 @@ describe('Rides search (integration)', () => {
 
     const response = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
       })
       .expect(200);
 
@@ -523,11 +665,11 @@ describe('Rides search (integration)', () => {
 
     await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
         seats: 1,
       })
       .expect(200);
@@ -545,11 +687,11 @@ describe('Rides search (integration)', () => {
 
     const response = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
       })
       .expect(200);
 
@@ -662,7 +804,7 @@ describe('Rides search (integration)', () => {
     const live = await createRide(login.accessToken, vehicle.id, {
       source: 'Noida Sector 62',
       destination: 'Connaught Place, Delhi',
-      departureDate: '2027-08-20',
+      departureDate: '2028-04-17',
       departureTime: '09:00',
     });
 
@@ -683,7 +825,7 @@ describe('Rides search (integration)', () => {
       .query({
         source: 'Noida',
         destination: 'Delhi',
-        date: '2027-08-20',
+        date: '2028-04-17',
       })
       .expect(200);
 
@@ -723,6 +865,187 @@ describe('Rides search (integration)', () => {
     expect(publicView.body.driver.recentRides).toEqual(
       searchItem.driver.recentRides,
     );
+  });
+
+  it('excludes past-time-today rides from search even without a time filter', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const expired = await createRide(login.accessToken, vehicle.id, {
+      source: 'Noida Expiry Morning',
+    });
+    const future = await createRide(login.accessToken, vehicle.id, {
+      source: 'Noida Expiry Morning',
+      departureTime: '18:00',
+    });
+    const past = pastCivilTimeToday();
+    await expireRide(expired.id, past);
+
+    const response = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
+      .query({
+        source: 'Noida Expiry Morning',
+        destination: 'Delhi',
+        date: past.departureDate,
+      })
+      .expect(200);
+
+    const ids = response.body.items.map((item: { id: string }) => item.id);
+    expect(ids).not.toContain(expired.id);
+    expect(ids).not.toContain(future.id);
+  });
+
+  it('excludes yesterday rides from search', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const expired = await createRide(login.accessToken, vehicle.id, {
+      source: 'Noida Expiry Yesterday',
+    });
+    const yesterday = pastCivilDate(1);
+    await expireRide(expired.id, {
+      departureDate: yesterday,
+      departureTime: '18:00:00',
+    });
+
+    const response = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
+      .query({
+        source: 'Noida Expiry Yesterday',
+        destination: 'Delhi',
+        date: yesterday,
+      })
+      .expect(200);
+
+    expect(response.body.items.map((item: { id: string }) => item.id)).not.toContain(
+      expired.id,
+    );
+  });
+
+  it('client-supplied earlier time cannot reveal an already-departed ride', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const expired = await createRide(login.accessToken, vehicle.id, {
+      source: 'Noida Expiry EarlyTime',
+    });
+    const past = pastCivilTimeToday();
+    await expireRide(expired.id, past);
+
+    const response = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
+      .query({
+        source: 'Noida Expiry EarlyTime',
+        destination: 'Delhi',
+        date: past.departureDate,
+        time: '00:00',
+      })
+      .expect(200);
+
+    expect(response.body.items.map((item: { id: string }) => item.id)).not.toContain(
+      expired.id,
+    );
+  });
+
+  it('future REGULAR and COMMUTE rides remain searchable', async () => {
+    const { login, vehicle } = await publishableDriver();
+    const regular = await createRide(login.accessToken, vehicle.id, {
+      rideType: RideType.REGULAR,
+      source: 'Noida Future Visible',
+    });
+    const commute = await createRide(login.accessToken, vehicle.id, {
+      rideType: RideType.COMMUTE,
+      source: 'Noida Future Visible',
+      departureTime: '10:00',
+    });
+
+    const response = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
+      .query({
+        source: 'Noida Future Visible',
+        destination: 'Delhi',
+        date: '2028-04-17',
+      })
+      .expect(200);
+
+    const ids = response.body.items.map((item: { id: string }) => item.id);
+    expect(ids).toEqual(expect.arrayContaining([regular.id, commute.id]));
+  });
+
+  it('hides expired ASSURED rides and keeps future eligible ASSURED rides searchable', async () => {
+    const expiredDriver = await publishableDriver();
+    const futureDriver = await publishableDriver();
+    const expired = await createRide(
+      expiredDriver.login.accessToken,
+      expiredDriver.vehicle.id,
+      {
+        rideType: RideType.ASSURED,
+        source: 'Noida Assured Expiry',
+      },
+    );
+    const future = await createRide(
+      futureDriver.login.accessToken,
+      futureDriver.vehicle.id,
+      {
+        rideType: RideType.ASSURED,
+        source: 'Noida Assured Expiry',
+        departureDate: '2028-04-18',
+        departureTime: '11:00',
+      },
+    );
+    await expireRide(expired.id, {
+      departureDate: pastCivilDate(1),
+      departureTime: '08:00:00',
+    });
+
+    const pastSearch = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
+      .query({
+        source: 'Noida Assured Expiry',
+        destination: 'Delhi',
+        date: pastCivilDate(1),
+        rideType: RideType.ASSURED,
+      })
+      .expect(200);
+    expect(
+      pastSearch.body.items.map((item: { id: string }) => item.id),
+    ).not.toContain(expired.id);
+
+    const futureSearch = await request(app.getHttpServer())
+      .get('/rides/search')
+      .set('Authorization', `Bearer ${passengerAccessToken}`)
+      .query({
+        source: 'Noida Assured Expiry',
+        destination: 'Delhi',
+        date: '2028-04-18',
+        rideType: RideType.ASSURED,
+      })
+      .expect(200);
+    const futureIds = futureSearch.body.items.map(
+      (item: { id: string }) => item.id,
+    );
+    expect(futureIds).toContain(future.id);
+    expect(futureIds).not.toContain(expired.id);
+  });
+
+  it('GET /rides/public/:id hides expired rides and still returns future published rides', async () => {
+    const owner = await publishableDriver();
+    const stranger = await createAuthenticatedUser();
+    const expired = await createRide(owner.login.accessToken, owner.vehicle.id);
+    const future = await createRide(owner.login.accessToken, owner.vehicle.id, {
+      departureTime: '11:00',
+    });
+    await expireRide(expired.id, pastCivilTimeToday());
+
+    await request(app.getHttpServer())
+      .get(`/rides/public/${expired.id}`)
+      .set('Authorization', `Bearer ${stranger.accessToken}`)
+      .expect(404);
+
+    const publicView = await request(app.getHttpServer())
+      .get(`/rides/public/${future.id}`)
+      .set('Authorization', `Bearer ${stranger.accessToken}`)
+      .expect(200);
+    expect(publicView.body.id).toBe(future.id);
   });
 
   it('GET /rides/public/:id returns published ride only', async () => {

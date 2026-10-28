@@ -324,9 +324,10 @@ describe('Daily Office Commute (integration)', () => {
       source: 'Gurgaon Commute Search',
     });
 
+    const passenger = await createAuthenticatedUser();
     const search = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
       .query({
         source: 'Gurgaon Commute',
         destination: 'Noida',
@@ -370,9 +371,10 @@ describe('Daily Office Commute (integration)', () => {
       pricePerSeat: 250,
     });
 
+    const passenger = await createAuthenticatedUser();
     const search = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
       .query({
         source: 'Noida Regular Commute',
         destination: 'Delhi',
@@ -400,9 +402,10 @@ describe('Daily Office Commute (integration)', () => {
       pricePerSeat: 500,
     });
 
+    const passenger = await createAuthenticatedUser();
     const search = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
       .query({
         source: 'Noida Assured Commute',
         destination: 'Delhi',
@@ -421,9 +424,10 @@ describe('Daily Office Commute (integration)', () => {
     const { login, vehicle } = await publishableDriver();
     const ride = await publishRide(login.accessToken, vehicle.id);
 
+    const passenger = await createAuthenticatedUser();
     const search = await request(app.getHttpServer())
       .get('/rides/search')
-      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
       .query({
         source: 'Gurgaon',
         destination: 'Noida',

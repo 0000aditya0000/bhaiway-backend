@@ -126,15 +126,37 @@ export class UsersService {
       throw new NotFoundException('User profile not found');
     }
 
+    const trimmedName =
+      dto.name !== undefined ? dto.name.trim() : undefined;
+    const nameParts =
+      trimmedName && trimmedName.length > 0
+        ? trimmedName.split(/\s+/).filter((part) => part.length > 0)
+        : [];
+
     if (dto.firstName !== undefined) {
       profile.firstName = dto.firstName.trim();
+    } else if (nameParts.length > 0) {
+      profile.firstName = nameParts[0];
     }
+
     if (dto.lastName !== undefined) {
       profile.lastName = dto.lastName;
+    } else if (trimmedName !== undefined) {
+      profile.lastName =
+        nameParts.length > 1 ? nameParts.slice(1).join(' ') : null;
     }
+
     if (dto.displayName !== undefined) {
       profile.displayName = dto.displayName;
+    } else if (trimmedName !== undefined) {
+      profile.displayName = trimmedName.length > 0 ? trimmedName : null;
+    } else if (dto.firstName !== undefined || dto.lastName !== undefined) {
+      profile.displayName = this.composeDisplayName(
+        profile.firstName,
+        profile.lastName,
+      );
     }
+
     if (dto.dateOfBirth !== undefined) {
       profile.dateOfBirth = dto.dateOfBirth;
     }
@@ -193,6 +215,16 @@ export class UsersService {
     userId: string,
   ): Promise<UserProfile | null> {
     return this.userProfileRepository.findOne({ where: { userId } });
+  }
+
+  private composeDisplayName(
+    firstName: string,
+    lastName: string | null,
+  ): string | null {
+    const combined = [firstName?.trim(), lastName?.trim()].filter(
+      (part): part is string => Boolean(part && part.length > 0),
+    );
+    return combined.length > 0 ? combined.join(' ') : null;
   }
 
   private toProfileResponse(profile: UserProfile) {

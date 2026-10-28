@@ -54,6 +54,21 @@ export function chatMessageKey(messageId: string): string {
   return `chat-message:${messageId}`;
 }
 
+export function noShowClaimOpenedKey(
+  claimId: string,
+  recipientUserId: string,
+): string {
+  return `no-show-opened:${claimId}:${recipientUserId}`;
+}
+
+export function noShowClaimResolvedKey(
+  claimId: string,
+  recipientUserId: string,
+  resolution: 'approved' | 'rejected' | 'timeout',
+): string {
+  return `no-show-${resolution}:${claimId}:${recipientUserId}`;
+}
+
 export function redactToken(token: string): string {
   if (token.length <= 12) {
     return '***';
@@ -103,4 +118,8 @@ export const NOTIFICATION_TYPE_LABEL: Record<NotificationType, string> = {
   [NotificationType.SUPPORT_TICKET_IN_PROGRESS]: 'SUPPORT_TICKET_IN_PROGRESS',
   [NotificationType.SUPPORT_TICKET_RESOLVED]: 'SUPPORT_TICKET_RESOLVED',
   [NotificationType.SUPPORT_TICKET_COMMENT]: 'SUPPORT_TICKET_COMMENT',
+  [NotificationType.NO_SHOW_CLAIM_OPENED]: 'NO_SHOW_CLAIM_OPENED',
+  [NotificationType.NO_SHOW_CLAIM_APPROVED]: 'NO_SHOW_CLAIM_APPROVED',
+  [NotificationType.NO_SHOW_CLAIM_REJECTED]: 'NO_SHOW_CLAIM_REJECTED',
+  [NotificationType.NO_SHOW_CLAIM_TIMEOUT]: 'NO_SHOW_CLAIM_TIMEOUT',
 };

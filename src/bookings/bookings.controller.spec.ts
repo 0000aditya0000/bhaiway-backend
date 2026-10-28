@@ -11,6 +11,7 @@ import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
+import { pastCivilTimeToday } from '../rides/test/ride-departure-test.helpers';
 import { RidesModule } from '../rides/rides.module';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import {
@@ -33,6 +34,7 @@ import {
   TestWalletContext,
 } from '../wallet/test/wallet-test.helpers';
 import { UserProfile } from '../users/entities/user-profile.entity';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { BookingsModule } from './bookings.module';
 import { BookingsService } from './bookings.service';
 import { Booking } from './entities/booking.entity';
@@ -101,15 +103,31 @@ describe('BookingsController (integration)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
-        await dataSource.getRepository(Booking).delete({
-          passengerId: ctx.userId,
-        });
         const rides = await dataSource.getRepository(Ride).find({
           where: { driverId: ctx.userId },
         });
         for (const ride of rides) {
+          const rideBookings = await dataSource.getRepository(Booking).find({
+            where: { rideId: ride.id },
+            select: { id: true },
+          });
+          await deleteChatForBookingIds(
+            dataSource,
+            rideBookings.map((b) => b.id),
+          );
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
         }
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        await deleteChatForBookingIds(
+          dataSource,
+          passengerBookings.map((b) => b.id),
+        );
+        await dataSource.getRepository(Booking).delete({
+          passengerId: ctx.userId,
+        });
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
         await dataSource.getRepository(Vehicle).delete({ userId: ctx.userId });
         await dataSource.getRepository(UserProfile).delete({
@@ -236,7 +254,6 @@ describe('BookingsController (integration)', () => {
     } = {},
   ) {
     const login = await createAuthenticatedUser();
-    await markVerified(login.user.id, VerificationType.IDENTITY);
     await dataSource.getRepository(UserProfile).save(
       dataSource.getRepository(UserProfile).create({
         userId: login.user.id,
@@ -249,6 +266,7 @@ describe('BookingsController (integration)', () => {
           options.profilePhoto === undefined ? null : options.profilePhoto,
       }),
     );
+    await markVerified(login.user.id, VerificationType.IDENTITY);
     return login;
   }
 
@@ -534,6 +552,38 @@ describe('BookingsController (integration)', () => {
       .expect(404);
   });
 
+  it('rejects new bookings for expired rides and still allows future rides', async () => {
+    const { ride: expiredRide } = await publishableDriver();
+    const { ride: futureRide } = await publishableDriver();
+    const passenger = await verifiedPassenger();
+
+    await dataSource.getRepository(Ride).update(
+      { id: expiredRide.id },
+      pastCivilTimeToday(),
+    );
+
+    const expired = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .send({
+        rideId: expiredRide.id,
+        seats: 1,
+        paymentMethod: 'PAY_LATER',
+      })
+      .expect(422);
+    expect(expired.body.code).toBe('RIDE_DEPARTURE_IN_PAST');
+
+    await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .send({
+        rideId: futureRide.id,
+        seats: 1,
+        paymentMethod: 'PAY_LATER',
+      })
+      .expect(201);
+  });
+
   it('unpublished/cancelled/completed rides rejected', async () => {
     const { ride } = await publishableDriver();
     const passenger = await verifiedPassenger();
@@ -697,6 +747,48 @@ describe('BookingsController (integration)', () => {
       color: 'White',
     });
     expect(mine.body[0].vehicle.registrationNumber).toBeTruthy();
+  });
+
+  it('excludes cancelled bookings from GET /bookings/my and keeps them in history', async () => {
+    const { ride: cancelledRide } = await publishableDriver();
+    const { ride: activeRide } = await publishableDriver();
+    const passenger = await verifiedPassenger();
+
+    const cancelledBooking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .send({ rideId: cancelledRide.id, seats: 1, paymentMethod: 'PAY_LATER' })
+      .expect(201);
+
+    const activeBooking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .send({ rideId: activeRide.id, seats: 1, paymentMethod: 'PAY_LATER' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/bookings/${cancelledBooking.body.id}/cancel`)
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .expect(200);
+
+    const mine = await request(app.getHttpServer())
+      .get('/bookings/my')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .expect(200);
+    const mineIds = mine.body.map((item: { id: string }) => item.id);
+    expect(mineIds).toContain(activeBooking.body.id);
+    expect(mineIds).not.toContain(cancelledBooking.body.id);
+
+    const history = await request(app.getHttpServer())
+      .get('/bookings/history')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .query({ status: BookingStatus.CANCELLED })
+      .expect(200);
+    expect(
+      history.body.items.map(
+        (item: { trip: { bookingId: string } }) => item.trip.bookingId,
+      ),
+    ).toContain(cancelledBooking.body.id);
   });
 
   it('GET another user booking rejected', async () => {
