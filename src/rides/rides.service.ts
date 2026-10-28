@@ -32,7 +32,10 @@ import {
   isCommutePublishedStatus,
   isRegularPublishedStatus,
 } from '../assured/assured-ride-status';
-import { ActiveAssuredRideExistsError } from './errors/ride-publishing.errors';
+import {
+  ActiveAssuredRideExistsError,
+  CommuteScheduleConflictError,
+} from './errors/ride-publishing.errors';
 import {
   ACTIVE_ASSURED_RIDE_STATUSES,
   assertDepartureIsInFuture,
@@ -52,6 +55,7 @@ import { BookingsService } from '../bookings/bookings.service';
 import { RegularRideCancellationService } from './regular-ride-cancellation.service';
 import { NoShowClaimResponseDto } from '../no-show/dto/no-show-claim-response.dto';
 import { NoShowClaimsService } from '../no-show/no-show-claims.service';
+import { commuteRideCancelRefundKey } from '../bookings/commute-cancellation.math';
 import { CommuteCancellationService } from '../bookings/commute-cancellation.service';
 import {
   CommuteSettlementService,
@@ -113,15 +117,27 @@ import {
   RideSearchPageDto,
 } from './dto/ride-search-response.dto';
 import { SearchRidesDto } from './dto/search-rides.dto';
+import { RideSeries } from './entities/ride-series.entity';
 import { Ride } from './entities/ride.entity';
 import {
   RegularSeatsPolicy,
   RideCancellationReason,
+  RideDirection,
+  RideSeriesStatus,
   RideStatus,
   RideType,
+  SeriesScope,
 } from './enums/ride.enums';
+import { isCommuteSeriesPublish } from './commute-recurrence';
+import {
+  CommuteRideSeriesService,
+  isPastOccurrence,
+} from './commute-ride-series.service';
 import { isAtOrAfterDeparture } from '../assured/assured-timing';
-import { currentCivilClock } from '../common/time/ride-timezone';
+import {
+  currentCivilClock,
+  toCivilDateString,
+} from '../common/time/ride-timezone';
 import { supportsTripLifecycle } from './ride-trip-lifecycle';
 import { computeCommuteRiderPricePerSeat } from './commute-fare.math';
 import { computeCommuteRouteMatchPercentage } from './commute-route-match.math';
@@ -187,19 +203,35 @@ export class RidesService {
     private readonly regularRideCancellationService: RegularRideCancellationService,
     private readonly noShowClaimsService: NoShowClaimsService,
     private readonly invoicesService: InvoicesService,
+    private readonly commuteRideSeriesService: CommuteRideSeriesService,
   ) {}
 
   async cancelByDriver(
     driverId: string,
     rideId: string,
+    seriesScope: SeriesScope = SeriesScope.THIS_OCCURRENCE,
   ): Promise<AssuredRideLifecycleResponseDto> {
     const ride = await this.rideRepository.findOne({
       where: { id: rideId },
-      select: { id: true, driverId: true, rideType: true },
+      select: {
+        id: true,
+        driverId: true,
+        rideType: true,
+        seriesId: true,
+      },
     });
 
     if (!ride || ride.driverId !== driverId) {
       throw new NotFoundException('Ride not found');
+    }
+
+    if (
+      seriesScope === SeriesScope.THIS_AND_FUTURE &&
+      (ride.rideType !== RideType.COMMUTE || !ride.seriesId)
+    ) {
+      throw new BadRequestException(
+        'seriesScope=THIS_AND_FUTURE is only valid for Daily Office Commute series occurrences',
+      );
     }
 
     if (ride.rideType === RideType.REGULAR) {
@@ -211,6 +243,12 @@ export class RidesService {
     }
 
     if (ride.rideType === RideType.COMMUTE) {
+      if (
+        seriesScope === SeriesScope.THIS_AND_FUTURE &&
+        ride.seriesId
+      ) {
+        return this.cancelCommuteSeriesByDriver(driverId, rideId);
+      }
       const result = await this.commuteCancellationService.cancelRideByDriver(
         driverId,
         rideId,
@@ -312,6 +350,162 @@ export class RidesService {
     return response;
   }
 
+  private async cancelCommuteSeriesByDriver(
+    driverId: string,
+    rideId: string,
+  ): Promise<AssuredRideLifecycleResponseDto> {
+    const outcome = await this.dataSource.transaction(async (manager) => {
+      const ride = await manager
+        .getRepository(Ride)
+        .createQueryBuilder('ride')
+        .setLock('pessimistic_write')
+        .where('ride.id = :rideId', { rideId })
+        .getOne();
+      if (!ride || ride.driverId !== driverId) {
+        throw new NotFoundException('Ride not found');
+      }
+
+      // In-progress trips cannot be driver-cancelled. Abort before touching
+      // siblings so THIS_AND_FUTURE never partially cancels later dates.
+      if (ride.status === RideStatus.IN_PROGRESS) {
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'COMMUTE_SERIES_OCCURRENCE_IN_PROGRESS',
+          message:
+            'The selected occurrence is in progress. Series cancellation does not cancel in-progress or sibling occurrences. Complete the trip, or cancel remaining dates after this ride is no longer in progress.',
+          error: 'Conflict',
+        });
+      }
+
+      const targets =
+        await this.commuteRideSeriesService.findSameDirectionScope(
+          manager,
+          ride,
+          SeriesScope.THIS_AND_FUTURE,
+        );
+
+      const cancelledRideIds: string[] = [];
+      const skippedBookedRideIds: string[] = [];
+      const skippedIneligibleRideIds: string[] = [];
+      const notify: Array<{ bookingId: string; passengerId: string; rideId: string }> =
+        [];
+      let fareRefundedTotal = 0n;
+      let cancelledBookingCount = 0;
+      let selectedResponse: AssuredRideLifecycleResponseDto | null = null;
+
+      for (const target of targets) {
+        const isSelected = target.id === ride.id;
+        if (
+          target.status === RideStatus.COMPLETED ||
+          target.status === RideStatus.CANCELLED
+        ) {
+          if (!isSelected) {
+            skippedIneligibleRideIds.push(target.id);
+          }
+          if (isSelected && target.status === RideStatus.CANCELLED) {
+            const selectedCancel =
+              await this.commuteCancellationService.cancelRideInTransaction(
+                manager,
+                {
+                  rideId: target.id,
+                  cancelledByUserId: driverId,
+                  requireDriverOwnership: true,
+                  rideCancellationReason: RideCancellationReason.DRIVER_CANCELLED,
+                  bookingCancellationReason:
+                    BookingCancellationReason.RIDE_CANCELLED,
+                  refundKeyForBooking: commuteRideCancelRefundKey,
+                },
+              );
+            selectedResponse = selectedCancel.response;
+          }
+          continue;
+        }
+
+        if (!isSelected) {
+          const bookedSeats = await this.sumActiveBookedSeats(
+            manager,
+            target.id,
+          );
+          if (bookedSeats > 0) {
+            skippedBookedRideIds.push(target.id);
+            continue;
+          }
+        }
+
+        const cancelled =
+          await this.commuteCancellationService.cancelRideInTransaction(
+            manager,
+            {
+              rideId: target.id,
+              cancelledByUserId: driverId,
+              requireDriverOwnership: true,
+              rideCancellationReason: RideCancellationReason.DRIVER_CANCELLED,
+              bookingCancellationReason: BookingCancellationReason.RIDE_CANCELLED,
+              refundKeyForBooking: commuteRideCancelRefundKey,
+            },
+          );
+        cancelledRideIds.push(target.id);
+        cancelledBookingCount += cancelled.response.cancelledBookingCount;
+        fareRefundedTotal += BigInt(cancelled.response.fareRefundedTotal);
+        for (const item of cancelled.cancelledForNotify) {
+          notify.push({ ...item, rideId: target.id });
+        }
+        if (isSelected) {
+          selectedResponse = cancelled.response;
+        }
+      }
+
+      if (ride.seriesId) {
+        const remaining = await manager
+          .getRepository(Ride)
+          .createQueryBuilder('ride')
+          .where('ride.series_id = :seriesId', { seriesId: ride.seriesId })
+          .andWhere('ride.status NOT IN (:...terminal)', {
+            terminal: [RideStatus.CANCELLED, RideStatus.COMPLETED],
+          })
+          .getCount();
+        if (remaining === 0) {
+          await manager.getRepository(RideSeries).update(
+            { id: ride.seriesId },
+            { status: RideSeriesStatus.CANCELLED },
+          );
+        }
+      }
+
+      if (!selectedResponse) {
+        throw new ConflictException(
+          'No eligible occurrences in this series could be cancelled',
+        );
+      }
+
+      return {
+        response: {
+          ...selectedResponse,
+          cancelledBookingCount,
+          fareRefundedTotal: fareRefundedTotal.toString(),
+          cancelledRideIds,
+          skippedBookedRideIds,
+          skippedIneligibleRideIds,
+        },
+        notify,
+        cancelledRideIds,
+      };
+    });
+
+    for (const id of outcome.cancelledRideIds) {
+      await this.trackingService.clearRideTracking(id, 'cancel');
+      await this.chatService.safeCloseForRide(id);
+    }
+    for (const item of outcome.notify) {
+      await this.notificationsService.safeNotifyCommuteCancelled({
+        bookingId: item.bookingId,
+        rideId: item.rideId,
+        recipientUserId: item.passengerId,
+      });
+    }
+    return outcome.response;
+  }
+
   async reportDriverNoShow(
     passengerId: string,
     rideId: string,
@@ -336,6 +530,7 @@ export class RidesService {
     dto: CreateRideDto,
     options?: { idempotencyKey?: string | null },
   ): Promise<RideResponseDto> {
+    this.assertCommuteSeriesFieldsForRideType(dto);
     await this.assertDriverCanPublish(driverId, dto.vehicleId);
 
     assertDepartureIsInFuture(
@@ -348,7 +543,18 @@ export class RidesService {
     }
 
     if (dto.rideType === RideType.COMMUTE) {
-      return this.createCommuteRide(driverId, dto);
+      if (isCommuteSeriesPublish(dto)) {
+        const result = await this.commuteRideSeriesService.publish(
+          driverId,
+          dto,
+          options?.idempotencyKey,
+        );
+        return this.toResponse(result.original, {
+          series: result.series,
+          occurrences: result.occurrences,
+        });
+      }
+      return this.createCommuteRide(driverId, dto, options?.idempotencyKey);
     }
 
     return this.createRegularRide(driverId, dto);
@@ -442,7 +648,25 @@ export class RidesService {
   private async createCommuteRide(
     driverId: string,
     dto: CreateRideDto,
+    idempotencyKey?: string | null,
   ): Promise<RideResponseDto> {
+    const clientKey = idempotencyKey?.trim() || null;
+    if (clientKey && clientKey.length > 255) {
+      throw new BadRequestException(
+        'Idempotency-Key must be at most 255 characters',
+      );
+    }
+
+    if (clientKey) {
+      const existing = await this.rideRepository.findOne({
+        where: { publishIdempotencyKey: clientKey },
+      });
+      if (existing) {
+        this.assertCommutePublishIdempotentMatches(existing, driverId, dto);
+        return this.toResponse(existing);
+      }
+    }
+
     const routeFields = this.resolveDtoSelectedRoute(dto);
 
     const ride = this.rideRepository.create({
@@ -466,12 +690,31 @@ export class RidesService {
       assuredDepositPercentage: null,
       assuredDepositAmount: null,
       driverDepositHoldId: null,
-      publishIdempotencyKey: null,
+      publishIdempotencyKey: clientKey,
+      seriesId: null,
+      occurrenceDate: null,
+      direction: null,
       ...routeFields,
     });
 
-    const saved = await this.rideRepository.save(ride);
-    return this.toResponse(saved);
+    try {
+      const saved = await this.rideRepository.save(ride);
+      return this.toResponse(saved);
+    } catch (error) {
+      if (clientKey && this.isAssuredPublishIdempotencyUniqueViolation(error)) {
+        const recovered = await this.rideRepository.findOne({
+          where: { publishIdempotencyKey: clientKey },
+        });
+        if (recovered) {
+          this.assertCommutePublishIdempotentMatches(recovered, driverId, dto);
+          return this.toResponse(recovered);
+        }
+      }
+      if (this.isCommuteSlotUniqueViolation(error)) {
+        throw new CommuteScheduleConflictError();
+      }
+      throw error;
+    }
   }
 
   /**
@@ -644,6 +887,82 @@ export class RidesService {
         'Assured ride publishing requires destination coordinates',
       );
     }
+  }
+
+  private assertCommuteSeriesFieldsForRideType(dto: CreateRideDto): void {
+    const hasSeriesFields =
+      dto.recurring === true ||
+      dto.returnEnabled === true ||
+      (dto.excludeWeekdays?.length ?? 0) > 0 ||
+      Boolean(dto.returnDepartureTime) ||
+      Boolean(dto.returnRouteSelectionToken) ||
+      Boolean(dto.returnSource) ||
+      Boolean(dto.returnDestination);
+    if (dto.rideType !== RideType.COMMUTE && hasSeriesFields) {
+      throw new BadRequestException(
+        'Recurring and return ride fields are only supported for COMMUTE rides',
+      );
+    }
+    if (
+      dto.rideType === RideType.COMMUTE &&
+      !isCommuteSeriesPublish(dto) &&
+      ((dto.excludeWeekdays?.length ?? 0) > 0 ||
+        Boolean(dto.returnDepartureTime) ||
+        Boolean(dto.returnRouteSelectionToken) ||
+        Boolean(dto.returnSource) ||
+        Boolean(dto.returnDestination))
+    ) {
+      throw new BadRequestException(
+        'excludeWeekdays and return fields require recurring=true or returnEnabled=true',
+      );
+    }
+  }
+
+  private assertCommutePublishIdempotentMatches(
+    existing: Ride,
+    driverId: string,
+    dto: CreateRideDto,
+  ): void {
+    if (
+      existing.driverId !== driverId ||
+      existing.rideType !== RideType.COMMUTE ||
+      existing.vehicleId !== dto.vehicleId ||
+      existing.source.trim() !== dto.source.trim() ||
+      existing.destination.trim() !== dto.destination.trim() ||
+      this.toCivilDate(existing.departureDate) !== dto.departureDate ||
+      this.formatTime(existing.departureTime) !==
+        this.normalizeTime(dto.departureTime) ||
+      existing.totalSeats !== dto.totalSeats ||
+      existing.pricePerSeat !== String(dto.pricePerSeat)
+    ) {
+      throw new ConflictException(
+        'Idempotency key was reused for a different Commute publish request',
+      );
+    }
+  }
+
+  private isCommuteSlotUniqueViolation(error: unknown): boolean {
+    if (!(error instanceof QueryFailedError)) {
+      return false;
+    }
+    const driverError = error.driverError as {
+      code?: string;
+      constraint?: string;
+      detail?: string;
+    };
+    const code = driverError?.code ?? (error as { code?: string }).code;
+    const constraint =
+      driverError?.constraint ??
+      (error as { constraint?: string }).constraint ??
+      '';
+    const detail = driverError?.detail ?? '';
+    return (
+      code === '23505' &&
+      (constraint.includes('UQ_rides_commute_driver_slot') ||
+        constraint.includes('UQ_rides_commute_vehicle_slot') ||
+        detail.includes('UQ_rides_commute_driver_slot') ||
+        detail.includes('UQ_rides_commute_vehicle_slot'))
+    );
   }
 
   private assertAssuredPublishIdempotentMatches(
@@ -892,7 +1211,20 @@ export class RidesService {
 
   async findOne(requesterId: string, rideId: string): Promise<RideResponseDto> {
     const ride = await this.requireOwnedRide(requesterId, rideId);
-    return this.toResponse(ride);
+    if (!ride.seriesId) {
+      return this.toResponse(ride);
+    }
+    const series = await this.dataSource.getRepository(RideSeries).findOne({
+      where: { id: ride.seriesId },
+    });
+    const occurrences = await this.rideRepository.find({
+      where: { seriesId: ride.seriesId },
+      order: { occurrenceDate: 'ASC', departureTime: 'ASC', id: 'ASC' },
+    });
+    return this.toResponse(ride, {
+      series: series ?? undefined,
+      occurrences,
+    });
   }
 
   /**
@@ -1092,6 +1424,9 @@ export class RidesService {
     rideId: string,
     dto: UpdateRideDto,
   ): Promise<RideResponseDto> {
+    const { seriesScope, ...ridePatch } = dto;
+    const scope = seriesScope ?? SeriesScope.THIS_OCCURRENCE;
+
     return this.dataSource.transaction(async (manager) => {
       const ride = await manager
         .getRepository(Ride)
@@ -1105,12 +1440,103 @@ export class RidesService {
       }
 
       if (
+        scope === SeriesScope.THIS_AND_FUTURE &&
+        (ride.rideType !== RideType.COMMUTE || !ride.seriesId)
+      ) {
+        throw new BadRequestException(
+          'seriesScope=THIS_AND_FUTURE is only valid for Daily Office Commute series occurrences',
+        );
+      }
+
+      if (
+        ride.seriesId &&
+        ridePatch.rideType !== undefined &&
+        ridePatch.rideType !== RideType.COMMUTE
+      ) {
+        throw new BadRequestException(
+          'Commute series occurrences cannot change rideType',
+        );
+      }
+
+      if (
+        scope === SeriesScope.THIS_AND_FUTURE &&
+        ridePatch.departureDate !== undefined &&
+        this.toCivilDate(ridePatch.departureDate) !==
+          this.toCivilDate(ride.departureDate)
+      ) {
+        throw new BadRequestException(
+          'THIS_AND_FUTURE cannot change occurrence dates; update departureTime or cancel individual dates instead',
+        );
+      }
+
+      if (
+        scope === SeriesScope.THIS_AND_FUTURE &&
+        ride.rideType === RideType.COMMUTE &&
+        ride.seriesId
+      ) {
+        const targets =
+          await this.commuteRideSeriesService.findSameDirectionScope(
+            manager,
+            ride,
+            SeriesScope.THIS_AND_FUTURE,
+          );
+        const eligible = targets.filter(
+          (target) =>
+            target.status === RideStatus.PUBLISHED &&
+            !isPastOccurrence(target),
+        );
+        if (eligible.length === 0) {
+          throw new ConflictException(
+            'No eligible future occurrences in this series can be updated',
+          );
+        }
+
+        const blockedIds: string[] = [];
+        for (const target of eligible) {
+          const bookedSeats = await this.sumActiveBookedSeats(
+            manager,
+            target.id,
+          );
+          if (bookedSeats > 0) {
+            try {
+              this.assertRegularProtectedFieldsUnchanged(target, ridePatch);
+            } catch {
+              blockedIds.push(target.id);
+            }
+          }
+        }
+        if (blockedIds.length > 0) {
+          throw new ConflictException({
+            statusCode: 409,
+            code: 'COMMUTE_SERIES_OCCURRENCES_BOOKED',
+            message:
+              'Some future occurrences already have bookings and cannot accept this update. Use THIS_OCCURRENCE or cancel bookings first.',
+            blockedRideIds: blockedIds,
+            error: 'Conflict',
+          });
+        }
+
+        for (const target of eligible) {
+          await this.applyRegularRideUpdate(
+            manager,
+            driverId,
+            target,
+            ridePatch,
+          );
+          await manager.getRepository(Ride).save(target);
+        }
+
+        const fresh = eligible.find((row) => row.id === ride.id) ?? eligible[0];
+        return this.toResponse(fresh);
+      }
+
+      if (
         ride.rideType === RideType.REGULAR ||
         ride.rideType === RideType.COMMUTE
       ) {
-        await this.applyRegularRideUpdate(manager, driverId, ride, dto);
+        await this.applyRegularRideUpdate(manager, driverId, ride, ridePatch);
       } else {
-        await this.applyAssuredRideUpdate(manager, driverId, ride, dto);
+        await this.applyAssuredRideUpdate(manager, driverId, ride, ridePatch);
       }
 
       const saved = await manager.getRepository(Ride).save(ride);
@@ -1850,13 +2276,7 @@ export class RidesService {
   }
 
   private toCivilDate(value: string | Date): string {
-    if (value instanceof Date) {
-      const year = value.getFullYear();
-      const month = String(value.getMonth() + 1).padStart(2, '0');
-      const day = String(value.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
-    }
-    return String(value).slice(0, 10);
+    return toCivilDateString(value);
   }
 
   private async sumActiveBookedSeats(
@@ -2385,6 +2805,8 @@ export class RidesService {
               ...(routeMatchPercentage !== undefined
                 ? { routeMatchPercentage }
                 : {}),
+              seriesId: ride.seriesId,
+              direction: ride.direction,
             }
           : {}),
         preferences: {
@@ -3013,7 +3435,10 @@ export class RidesService {
     return true;
   }
 
-  private toResponse(ride: Ride): RideResponseDto {
+  private toResponse(
+    ride: Ride,
+    options?: { series?: RideSeries; occurrences?: Ride[] },
+  ): RideResponseDto {
     const isAssured = ride.rideType === RideType.ASSURED;
     const isCommute = ride.rideType === RideType.COMMUTE;
     const isBookable = isAssured
@@ -3065,6 +3490,34 @@ export class RidesService {
       routeSelected: ride.routeSelectedAt != null,
       routeLengthMeters: ride.routeLengthMeters,
       routeDurationSeconds: ride.routeDurationSeconds,
+      seriesId: ride.seriesId ?? null,
+      occurrenceDate: ride.occurrenceDate
+        ? this.toCivilDate(ride.occurrenceDate)
+        : null,
+      direction: ride.direction ?? null,
+      isOriginalOccurrence: Boolean(
+        options?.series?.originalRideId &&
+          options.series.originalRideId === ride.id,
+      ),
+      ...(options?.series
+        ? {
+            series: {
+              id: options.series.id,
+              status: options.series.status,
+              startDate: this.toCivilDate(options.series.startDate),
+              endDate: this.toCivilDate(options.series.endDate),
+              excludedWeekdays: options.series.excludedWeekdays ?? [],
+              returnEnabled: options.series.returnEnabled,
+              returnDepartureTime: options.series.returnDepartureTime
+                ? this.formatTime(options.series.returnDepartureTime)
+                : null,
+              originalRideId: options.series.originalRideId,
+              occurrences: (options.occurrences ?? []).map((occurrence) =>
+                this.toResponse(occurrence),
+              ),
+            },
+          }
+        : {}),
       createdAt: ride.createdAt.toISOString(),
       updatedAt: ride.updatedAt.toISOString(),
     };

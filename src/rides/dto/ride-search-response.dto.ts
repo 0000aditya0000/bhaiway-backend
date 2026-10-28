@@ -1,7 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { VehicleType } from '../../vehicles/enums/vehicle-type.enum';
-import { RideStatus, RideType } from '../enums/ride.enums';
+import { RideDirection, RideStatus, RideType } from '../enums/ride.enums';
 
 export class RideSearchPreferencesDto {
   @ApiProperty()
@@ -170,6 +170,20 @@ export class RideSearchItemDto {
     example: 92,
   })
   routeMatchPercentage?: number | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
+    description: 'Commute series id when this search hit is a generated occurrence.',
+  })
+  seriesId?: string | null;
+
+  @ApiPropertyOptional({
+    enum: RideDirection,
+    enumName: 'RideDirection',
+    nullable: true,
+  })
+  direction?: RideDirection | null;
 
   @ApiProperty({ type: RideSearchPreferencesDto })
   preferences!: RideSearchPreferencesDto;

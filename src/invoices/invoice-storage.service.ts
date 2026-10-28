@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
@@ -6,8 +6,8 @@ import path from 'path';
 
 import {
   INVOICE_LOGO_MAX_BYTES,
-  INVOICE_LOGO_MIME,
   INVOICE_STORAGE_SUBDIR,
+  detectInvoiceLogoMime,
 } from './invoice.constants';
 
 @Injectable()
@@ -53,12 +53,17 @@ export class InvoiceStorageService {
 
   async saveLogo(buffer: Buffer, mimeType: string): Promise<string> {
     if (buffer.length === 0 || buffer.length > INVOICE_LOGO_MAX_BYTES) {
-      throw new Error('Invoice logo must be between 1 byte and 1 MB');
+      throw new BadRequestException(
+        'Invoice logo must be between 1 byte and 1 MB',
+      );
     }
-    if (!INVOICE_LOGO_MIME.includes(mimeType as (typeof INVOICE_LOGO_MIME)[number])) {
-      throw new Error('Invoice logo must be PNG, JPEG, or WebP');
+    const detected = detectInvoiceLogoMime(buffer, mimeType);
+    if (!detected) {
+      throw new BadRequestException(
+        'Invoice logo must be PNG, JPEG, or WebP',
+      );
     }
-    const ext = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
+    const ext = detected === 'image/jpeg' ? 'jpg' : detected === 'image/webp' ? 'webp' : 'png';
     const storageKey = `logo/${randomUUID()}.${ext}`;
     await this.writeAtomic(storageKey, buffer);
     return storageKey;
@@ -87,7 +92,17 @@ export class InvoiceStorageService {
     await fs.mkdir(path.dirname(dest), { recursive: true });
     const tmp = `${dest}.${randomUUID()}.tmp`;
     await fs.writeFile(tmp, buffer);
-    await fs.rename(tmp, dest);
+    try {
+      try {
+        await fs.rename(tmp, dest);
+        return;
+      } catch {
+        // Windows cannot always rename over an existing path; copy then unlink.
+        await fs.copyFile(tmp, dest);
+      }
+    } finally {
+      await fs.unlink(tmp).catch(() => undefined);
+    }
   }
 
   private absolutePath(storageKey: string): string {

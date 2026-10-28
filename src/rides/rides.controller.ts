@@ -55,6 +55,8 @@ import {
 } from './dto/route-options.dto';
 import { SearchRidesDto } from './dto/search-rides.dto';
 import { UpdateRideDto } from './dto/update-ride.dto';
+import { CancelRideQueryDto } from './dto/cancel-ride-query.dto';
+import { SeriesScope } from './enums/ride.enums';
 import { RidesService } from './rides.service';
 
 @ApiTags('Rides')
@@ -71,6 +73,9 @@ export class RidesController {
     description:
       'Creates a PUBLISHED REGULAR or COMMUTE ride, or an Assured (ASSURANCE_ACTIVE / ASSURANCE_PENDING) ride after verification checks. ' +
       'COMMUTE: pricePerSeat is the driver-published base fare; riderPricePerSeat (+10%) is computed server-side for passenger APIs. ' +
+      'COMMUTE recurring=true generates independently bookable rides for the publishing date plus the next six Asia/Kolkata calendar dates, skipping excludeWeekdays. ' +
+      'COMMUTE returnEnabled=true creates a same-date reverse-direction ride per eligible outbound date; requires returnDepartureTime (strictly later) and a separate reverse returnRouteSelectionToken. ' +
+      'Recurring/return publishes require Idempotency-Key. Single COMMUTE/REGULAR still work without it. ' +
       'ASSURED publishing atomically creates an ACTIVE driver ASSURED_DEPOSIT wallet hold based on totalPublishedSeats × pricePerSeat × admin deposit %. ' +
       'All types require source/destination coordinates and routeSelectionToken from POST /rides/route-options. ' +
       'Assured also requires Idempotency-Key. driverId/status/availableSeats are server-controlled.',
@@ -79,7 +84,7 @@ export class RidesController {
     name: 'Idempotency-Key',
     required: false,
     description:
-      'Strongly recommended for ASSURED publish (required to prevent double-tap duplicates). Safe to retry the same payload with the same key; reusing a key with a different payload returns 409. Regular rides ignore this header.',
+      'Required for ASSURED and for COMMUTE recurring/return series publishes. Optional for single-date COMMUTE (honoured when sent). Safe to retry the same payload with the same key; reusing a key with a different payload returns 409. Regular rides ignore this header.',
   })
   @ApiCreatedResponse({ type: RideResponseDto })
   @ApiBadRequestResponse({
@@ -259,7 +264,10 @@ export class RidesController {
   @ApiOperation({
     summary: 'Cancel a published ride (owning driver only)',
     description:
-      'REGULAR: cancels the ride and all active passenger bookings (RIDE_CANCELLED). No wallet deposit/refund processing. ASSURED: before scheduled departure consumes driver ASSURED_DEPOSIT, releases affected rider deposits, distributes 60/40 compensation, refunds Assured PAY_NOW fares separately, issues NEXT_ASSURED_DEPOSIT_FREE coupons, cancels bookings, and advances the queue when applicable. Idempotent when already cancelled with the same reason. Status cannot be set via PATCH.',
+      'REGULAR: cancels the ride and all active passenger bookings (RIDE_CANCELLED). No wallet deposit/refund processing. ' +
+      'COMMUTE: refunds prepaid rider fares via CommuteCancellationService. Optional seriesScope=THIS_AND_FUTURE also cancels later unbooked same-direction occurrences; booked future dates are skipped. ' +
+      'If the selected occurrence is IN_PROGRESS, THIS_AND_FUTURE returns 409 COMMUTE_SERIES_OCCURRENCE_IN_PROGRESS and does not cancel any sibling. ' +
+      'ASSURED: before scheduled departure consumes driver ASSURED_DEPOSIT, releases affected rider deposits, distributes 60/40 compensation, refunds Assured PAY_NOW fares separately, issues NEXT_ASSURED_DEPOSIT_FREE coupons, cancels bookings, and advances the queue when applicable. Idempotent when already cancelled with the same reason. Status cannot be set via PATCH.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: AssuredRideLifecycleResponseDto })
@@ -275,8 +283,13 @@ export class RidesController {
   cancel(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: CancelRideQueryDto,
   ) {
-    return this.ridesService.cancelByDriver(currentUser.userId, id);
+    return this.ridesService.cancelByDriver(
+      currentUser.userId,
+      id,
+      query.seriesScope ?? SeriesScope.THIS_OCCURRENCE,
+    );
   }
 
   @Post(':id/no-show/driver')
@@ -369,7 +382,9 @@ export class RidesController {
   @ApiOperation({
     summary: 'Update an owned ride',
     description:
-      'Only the owning driver may update. Regular PUBLISHED rides: with zero active bookings, route/schedule/fare/seats may change; with active bookings, only seats may change and totalSeats cannot fall below booked seats. IN_PROGRESS/COMPLETED/CANCELLED Regular rides cannot be modified. status/driverId/availableSeats cannot be client-controlled. Vehicle changes re-run eligibility checks.',
+      'Only the owning driver may update. Regular/COMMUTE PUBLISHED rides: with zero active bookings, route/schedule/fare/seats may change; with active bookings, only seats may change and totalSeats cannot fall below booked seats. ' +
+      'COMMUTE series: optional seriesScope=THIS_AND_FUTURE updates this and later same-direction occurrences transactionally; booked occurrences that cannot accept the patch cause 409 without partial updates. THIS_AND_FUTURE cannot change occurrence dates. ' +
+      'IN_PROGRESS/COMPLETED/CANCELLED Regular rides cannot be modified. status/driverId/availableSeats cannot be client-controlled. Vehicle changes re-run eligibility checks.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: RideResponseDto })

@@ -23,7 +23,9 @@ import { VerificationModule } from '../verification/verification.module';
 import { WalletHold } from '../wallet/entities/wallet-hold.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { WalletModule } from '../wallet/wallet.module';
+import { RideSeries } from './entities/ride-series.entity';
 import { Ride } from './entities/ride.entity';
+import { CommuteRideSeriesService } from './commute-ride-series.service';
 import { RegularCancellationModule } from './regular-cancellation.module';
 import { RidesController } from './rides.controller';
 import { RidesService } from './rides.service';
@@ -34,6 +36,7 @@ import { RouteSelectionService } from './route/route-selection.service';
   imports: [
     TypeOrmModule.forFeature([
       Ride,
+      RideSeries,
       User,
       UserProfile,
       UserVerification,
@@ -60,7 +63,12 @@ import { RouteSelectionService } from './route/route-selection.service';
     NoShowModule,
   ],
   controllers: [RidesController],
-  providers: [RidesService, RideDirectionsService, RouteSelectionService],
+  providers: [
+    RidesService,
+    CommuteRideSeriesService,
+    RideDirectionsService,
+    RouteSelectionService,
+  ],
   exports: [TypeOrmModule, RidesService],
 })
 export class RidesModule {}

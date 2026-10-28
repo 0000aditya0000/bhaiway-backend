@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -97,6 +98,24 @@ export class AdminInvoicesController {
     FileInterceptor('file', {
       storage: memoryStorage(),
       limits: { fileSize: INVOICE_LOGO_MAX_BYTES },
+      fileFilter: (_req, file, callback) => {
+        const mime =
+          file.mimetype === 'image/jpg' ? 'image/jpeg' : file.mimetype;
+        const allowed =
+          mime === 'application/octet-stream' ||
+          mime === '' ||
+          mime === 'image/png' ||
+          mime === 'image/jpeg' ||
+          mime === 'image/webp';
+        if (allowed) {
+          callback(null, true);
+          return;
+        }
+        callback(
+          new BadRequestException('Invoice logo must be PNG, JPEG, or WebP'),
+          false,
+        );
+      },
     }),
   )
   @ApiConsumes('multipart/form-data')

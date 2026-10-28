@@ -74,6 +74,82 @@ export function currentCivilClock(
   };
 }
 
+/**
+ * Add `days` to a civil YYYY-MM-DD date using calendar arithmetic only
+ * (not the process timezone and not UTC-midnight local conversion).
+ */
+export function addCivilDays(departureDate: string, days: number): string {
+  const [year, month, day] = departureDate.split('-').map(Number);
+  const utc = Date.UTC(year, month - 1, day + days);
+  const dt = new Date(utc);
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(dt.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/** Inclusive civil date range of `length` days starting at `startDate`. */
+export function listCivilDateRange(
+  startDate: string,
+  length: number,
+): string[] {
+  if (length <= 0) {
+    return [];
+  }
+  const dates: string[] = [];
+  for (let offset = 0; offset < length; offset += 1) {
+    dates.push(addCivilDays(startDate, offset));
+  }
+  return dates;
+}
+
+/**
+ * Normalize a PostgreSQL DATE / civil YYYY-MM-DD value to YYYY-MM-DD.
+ *
+ * node-pg often hydrates DATE as a local-midnight `Date`. On Asia/Kolkata
+ * hosts that instant is the previous calendar day in UTC, so
+ * `value.toISOString().slice(0, 10)` shifts THIS_AND_FUTURE bounds backward.
+ * Never convert date-only values through UTC ISO slicing.
+ */
+export function toCivilDateString(value: string | Date): string {
+  if (!(value instanceof Date)) {
+    return String(value).slice(0, 10);
+  }
+
+  const utcMidnight =
+    value.getUTCHours() === 0 &&
+    value.getUTCMinutes() === 0 &&
+    value.getUTCSeconds() === 0 &&
+    value.getUTCMilliseconds() === 0;
+  const localMidnight =
+    value.getHours() === 0 &&
+    value.getMinutes() === 0 &&
+    value.getSeconds() === 0 &&
+    value.getMilliseconds() === 0;
+
+  if (utcMidnight) {
+    return formatCivilYmd(
+      value.getUTCFullYear(),
+      value.getUTCMonth() + 1,
+      value.getUTCDate(),
+    );
+  }
+  if (localMidnight) {
+    return formatCivilYmd(
+      value.getFullYear(),
+      value.getMonth() + 1,
+      value.getDate(),
+    );
+  }
+  return currentCivilClock(value).date;
+}
+
+function formatCivilYmd(year: number, month: number, day: number): string {
+  const m = String(month).padStart(2, '0');
+  const d = String(day).padStart(2, '0');
+  return `${year}-${m}-${d}`;
+}
+
 /** Offset of `timeZone` east of UTC at `date`, in milliseconds. */
 function getTimeZoneOffsetMs(timeZone: string, date: Date): number {
   const dtf = new Intl.DateTimeFormat('en-US', {

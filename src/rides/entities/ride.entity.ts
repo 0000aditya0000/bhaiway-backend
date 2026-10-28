@@ -17,9 +17,11 @@ import { Vehicle } from '../../vehicles/entities/vehicle.entity';
 import {
   RegularSeatsPolicy,
   RideCancellationReason,
+  RideDirection,
   RideStatus,
   RideType,
 } from '../enums/ride.enums';
+import { RideSeries } from './ride-series.entity';
 
 /**
  * Published rides offered by drivers.
@@ -39,6 +41,19 @@ import {
 @Index('UQ_rides_publish_idempotency_key', ['publishIdempotencyKey'], {
   unique: true,
   where: '"publish_idempotency_key" IS NOT NULL',
+})
+@Index('IDX_rides_series_id', ['seriesId'])
+@Index('UQ_rides_series_occurrence_direction', ['seriesId', 'occurrenceDate', 'direction'], {
+  unique: true,
+  where: '"series_id" IS NOT NULL',
+})
+@Index('UQ_rides_commute_driver_slot', ['driverId', 'departureDate', 'departureTime'], {
+  unique: true,
+  where: `"ride_type" = 'COMMUTE' AND "status" NOT IN ('CANCELLED', 'COMPLETED')`,
+})
+@Index('UQ_rides_commute_vehicle_slot', ['vehicleId', 'departureDate', 'departureTime'], {
+  unique: true,
+  where: `"ride_type" = 'COMMUTE' AND "status" NOT IN ('CANCELLED', 'COMPLETED')`,
 })
 @Check(`"total_seats" > 0`)
 @Check(`"available_seats" >= 0`)
@@ -393,6 +408,36 @@ export class Ride {
     nullable: true,
   })
   publishIdempotencyKey!: string | null;
+
+  @ManyToOne(() => RideSeries, {
+    onDelete: 'SET NULL',
+    nullable: true,
+  })
+  @JoinColumn({ name: 'series_id' })
+  series!: RideSeries | null;
+
+  @Column({
+    name: 'series_id',
+    type: 'uuid',
+    nullable: true,
+  })
+  seriesId!: string | null;
+
+  /** Civil occurrence date for series-generated rides. Null for non-series rides. */
+  @Column({
+    name: 'occurrence_date',
+    type: 'date',
+    nullable: true,
+  })
+  occurrenceDate!: string | null;
+
+  @Column({
+    type: 'enum',
+    enum: RideDirection,
+    enumName: 'rides_direction_enum',
+    nullable: true,
+  })
+  direction!: RideDirection | null;
 
   @CreateDateColumn({
     name: 'created_at',

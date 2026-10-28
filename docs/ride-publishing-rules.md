@@ -63,3 +63,58 @@ WHERE ride_type = 'ASSURED'
 `OneActiveAssuredRidePerDriver1786588000000`
 
 Aborts if duplicate active Assured rides already exist (no automatic deletion).
+
+## 5. Daily Office Commute slot uniqueness (read-only production pre-check)
+
+Partial unique indexes from `CommuteRideSeries1786599000000` are **COMMUTE-only**.
+Run these **read-only** checks before applying the unique indexes on production.
+They use the same predicate as each index. Do not migrate production from this workstream.
+
+### Driver slot — `UQ_rides_commute_driver_slot`
+
+Predicate: `ride_type = 'COMMUTE' AND status NOT IN ('CANCELLED', 'COMPLETED')`
+Grouped by: `driver_id, departure_date, departure_time`
+
+```sql
+SELECT
+  driver_id,
+  departure_date,
+  departure_time,
+  COUNT(*) AS duplicate_count,
+  array_agg(id ORDER BY created_at, id) AS ride_ids
+FROM rides
+WHERE ride_type = 'COMMUTE'
+  AND status NOT IN ('CANCELLED', 'COMPLETED')
+GROUP BY driver_id, departure_date, departure_time
+HAVING COUNT(*) > 1;
+```
+
+### Vehicle slot — `UQ_rides_commute_vehicle_slot`
+
+Predicate: `ride_type = 'COMMUTE' AND status NOT IN ('CANCELLED', 'COMPLETED')`
+Grouped by: `vehicle_id, departure_date, departure_time`
+
+```sql
+SELECT
+  vehicle_id,
+  departure_date,
+  departure_time,
+  COUNT(*) AS duplicate_count,
+  array_agg(id ORDER BY created_at, id) AS ride_ids
+FROM rides
+WHERE ride_type = 'COMMUTE'
+  AND status NOT IN ('CANCELLED', 'COMPLETED')
+GROUP BY vehicle_id, departure_date, departure_time
+HAVING COUNT(*) > 1;
+```
+
+Empty result sets are required before `CREATE UNIQUE INDEX` on production.
+
+## 6. Regular versus Commute same-slot race (investigated, not changed)
+
+- `UQ_rides_commute_driver_slot` and `UQ_rides_commute_vehicle_slot` ignore Regular (and Assured) rows.
+- Commute series publish takes `pg_advisory_xact_lock` on `commute-series:{driverId}` then `commute-vehicle:{vehicleId}`, then `assertSlotsAvailable` which **does** look at all non-terminal ride types.
+- Regular `createRegularRide` does **not** take those locks and has **no** driver/vehicle datetime unique index.
+- Therefore a Regular publish can race with a Commute series publish for the same driver or vehicle at the same civil datetime: both inserts can succeed because Regular is outside the unique indexes and outside the commute advisory locks.
+
+**Product decision required before adding a cross-type unique index or Regular advisory locks.** Adding one would reject existing mixed Regular+Commute publishing at the same slot. Do not add that restriction until product confirms the intended rule and existing publish flows are checked.

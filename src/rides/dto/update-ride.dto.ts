@@ -16,7 +16,7 @@ import {
   MinLength,
 } from 'class-validator';
 
-import { RideType } from '../enums/ride.enums';
+import { RideType, SeriesScope } from '../enums/ride.enums';
 
 export class UpdateRideDto {
   @ApiPropertyOptional({
@@ -154,4 +154,15 @@ export class UpdateRideDto {
   @IsString()
   @MaxLength(2000)
   notes?: string | null;
+
+  @ApiPropertyOptional({
+    enum: SeriesScope,
+    enumName: 'SeriesScope',
+    default: SeriesScope.THIS_OCCURRENCE,
+    description:
+      'COMMUTE series only. THIS_OCCURRENCE updates this ride. THIS_AND_FUTURE updates this ride and later same-direction occurrences in the series. Default THIS_OCCURRENCE. Rejected for non-series rides.',
+  })
+  @IsOptional()
+  @IsEnum(SeriesScope)
+  seriesScope?: SeriesScope;
 }

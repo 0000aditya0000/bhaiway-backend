@@ -27,3 +27,31 @@ export enum RideCancellationReason {
   DRIVER_CANCELLED = 'DRIVER_CANCELLED',
   DRIVER_NO_SHOW = 'DRIVER_NO_SHOW',
 }
+
+/** Direction of a series-generated Daily Office Commute occurrence. */
+export enum RideDirection {
+  OUTBOUND = 'OUTBOUND',
+  RETURN = 'RETURN',
+}
+
+export enum RideSeriesStatus {
+  ACTIVE = 'ACTIVE',
+  CANCELLED = 'CANCELLED',
+}
+
+/** ISO-style weekday names. Used when excluding days from a 7-day commute window. */
+export enum Weekday {
+  MONDAY = 'MONDAY',
+  TUESDAY = 'TUESDAY',
+  WEDNESDAY = 'WEDNESDAY',
+  THURSDAY = 'THURSDAY',
+  FRIDAY = 'FRIDAY',
+  SATURDAY = 'SATURDAY',
+  SUNDAY = 'SUNDAY',
+}
+
+/** Scope for commute series update/cancel. Default is THIS_OCCURRENCE. */
+export enum SeriesScope {
+  THIS_OCCURRENCE = 'THIS_OCCURRENCE',
+  THIS_AND_FUTURE = 'THIS_AND_FUTURE',
+}

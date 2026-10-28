@@ -69,6 +69,27 @@ export class AssuredRideLifecycleResponseDto {
     description: 'True when the action was already applied (idempotent retry)',
   })
   alreadyApplied!: boolean;
+
+  @ApiPropertyOptional({
+    isArray: true,
+    description:
+      'THIS_AND_FUTURE commute cancel: ride ids actually cancelled. Omitted for single-ride cancel.',
+  })
+  cancelledRideIds?: string[];
+
+  @ApiPropertyOptional({
+    isArray: true,
+    description:
+      'THIS_AND_FUTURE commute cancel: later occurrences skipped because they have pending or confirmed bookings.',
+  })
+  skippedBookedRideIds?: string[];
+
+  @ApiPropertyOptional({
+    isArray: true,
+    description:
+      'THIS_AND_FUTURE commute cancel: later occurrences skipped as ineligible (completed, already cancelled, or past terminal state).',
+  })
+  skippedIneligibleRideIds?: string[];
 }
 
 export class AssuredBookingLifecycleResponseDto {

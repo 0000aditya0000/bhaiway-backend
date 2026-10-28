@@ -27,3 +27,16 @@ export class ActiveAssuredRideExistsError extends ConflictException {
     });
   }
 }
+
+export class CommuteScheduleConflictError extends ConflictException {
+  constructor(
+    message = 'This driver or vehicle already has a Commute ride at the same departure date and time.',
+  ) {
+    super({
+      statusCode: HttpStatus.CONFLICT,
+      code: 'COMMUTE_SCHEDULE_CONFLICT',
+      message,
+      error: 'Conflict',
+    });
+  }
+}

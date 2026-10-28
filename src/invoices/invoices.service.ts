@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  HttpException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -113,13 +114,30 @@ export class InvoicesService {
     adminUserId: string,
     file: { buffer: Buffer; mimetype: string } | undefined,
   ) {
-    if (!file?.buffer) {
+    if (!file?.buffer?.length) {
       throw new BadRequestException('Logo file is required');
     }
-    const storageKey = await this.storageService.saveLogo(
-      file.buffer,
-      file.mimetype,
-    );
+    let storageKey: string;
+    try {
+      storageKey = await this.storageService.saveLogo(
+        file.buffer,
+        file.mimetype,
+      );
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      const message =
+        error instanceof Error ? error.message : 'Logo upload failed';
+      if (
+        message.includes('must be') ||
+        message.includes('PNG') ||
+        message.includes('1 MB')
+      ) {
+        throw new BadRequestException(message);
+      }
+      throw error;
+    }
     const issuer = await this.configService.setLogoStorageKey(
       adminUserId,
       storageKey,

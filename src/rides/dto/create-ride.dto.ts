@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsBoolean,
   IsDateString,
   IsEnum,
@@ -16,7 +17,7 @@ import {
   Min,
 } from 'class-validator';
 
-import { RideType } from '../enums/ride.enums';
+import { RideType, Weekday } from '../enums/ride.enums';
 
 export class CreateRideDto {
   @ApiProperty({
@@ -165,4 +166,76 @@ export class CreateRideDto {
   @IsString()
   @MaxLength(2000)
   notes?: string | null;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'COMMUTE only. When true, generates independently bookable rides for the publishing date and the next six Asia/Kolkata calendar dates, skipping excludedWeekdays. Ignored/rejected for REGULAR and ASSURED.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  recurring?: boolean;
+
+  @ApiPropertyOptional({
+    enum: Weekday,
+    enumName: 'Weekday',
+    isArray: true,
+    description:
+      'COMMUTE recurring only. Weekdays to skip inside the 7-day window. Every day is included unless listed. Duplicate values are normalized. Rejected if it excludes the publishing date.',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsEnum(Weekday, { each: true })
+  excludeWeekdays?: Weekday[];
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'COMMUTE only. When true, creates a same-calendar-date return ride for every eligible outbound occurrence. Requires returnDepartureTime and returnRouteSelectionToken.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  returnEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Required when returnEnabled is true. Same-day return wall-clock time; must be strictly after outbound departureTime. Overnight returns are not inferred.',
+    example: '18:30',
+  })
+  @IsOptional()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/, {
+    message: 'returnDepartureTime must be HH:mm or HH:mm:ss',
+  })
+  returnDepartureTime?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Required when returnEnabled is true. Token from POST /rides/route-options using reversed origin/destination coordinates. The outbound token is not accepted.',
+  })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  returnRouteSelectionToken?: string;
+
+  @ApiPropertyOptional({
+    maxLength: 255,
+    description:
+      'Optional place-name label for the return origin. Defaults to swapping destination when omitted.',
+  })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  returnSource?: string;
+
+  @ApiPropertyOptional({
+    maxLength: 255,
+    description:
+      'Optional place-name label for the return destination. Defaults to swapping source when omitted.',
+  })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  returnDestination?: string;
 }

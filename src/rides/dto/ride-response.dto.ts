@@ -1,6 +1,45 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { RideStatus, RideType } from '../enums/ride.enums';
+import {
+  RideDirection,
+  RideSeriesStatus,
+  RideStatus,
+  RideType,
+  Weekday,
+} from '../enums/ride.enums';
+
+export class CommuteSeriesSummaryDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiProperty({ enum: RideSeriesStatus, enumName: 'RideSeriesStatus' })
+  status!: RideSeriesStatus;
+
+  @ApiProperty({ example: '2026-10-29' })
+  startDate!: string;
+
+  @ApiProperty({ example: '2026-11-04' })
+  endDate!: string;
+
+  @ApiProperty({ enum: Weekday, enumName: 'Weekday', isArray: true })
+  excludedWeekdays!: Weekday[];
+
+  @ApiProperty()
+  returnEnabled!: boolean;
+
+  @ApiPropertyOptional({ nullable: true, example: '18:30:00' })
+  returnDepartureTime!: string | null;
+
+  @ApiPropertyOptional({ format: 'uuid', nullable: true })
+  originalRideId!: string | null;
+
+  @ApiProperty({
+    type: () => RideResponseDto,
+    isArray: true,
+    description: 'All generated occurrences in this series (outbound and return).',
+  })
+  occurrences!: RideResponseDto[];
+}
 
 export class RideResponseDto {
   @ApiProperty({ format: 'uuid' })
@@ -137,6 +176,40 @@ export class RideResponseDto {
     description: 'Provider duration for the selected driving route, in seconds',
   })
   routeDurationSeconds?: number | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
+    description: 'Commute series id when this ride was generated as an occurrence. Null for non-series rides.',
+  })
+  seriesId?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: '2026-10-29',
+    description: 'Civil occurrence date for series rides. Null for non-series rides.',
+  })
+  occurrenceDate?: string | null;
+
+  @ApiPropertyOptional({
+    enum: RideDirection,
+    enumName: 'RideDirection',
+    nullable: true,
+  })
+  direction?: RideDirection | null;
+
+  @ApiPropertyOptional({
+    description: 'True when this is the original outbound occurrence for the series.',
+  })
+  isOriginalOccurrence?: boolean;
+
+  @ApiPropertyOptional({
+    type: CommuteSeriesSummaryDto,
+    nullable: true,
+    description:
+      'Present on commute series publish/owner responses. Omitted from nested occurrence rows to avoid recursion.',
+  })
+  series?: CommuteSeriesSummaryDto | null;
 
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;
