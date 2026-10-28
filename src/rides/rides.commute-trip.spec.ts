@@ -9,6 +9,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { BookingsModule } from '../bookings/bookings.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import {
@@ -119,8 +120,31 @@ describe('Commute trip lifecycle (integration)', () => {
         const rides = await dataSource.getRepository(Ride).find({
           where: { driverId: ctx.userId },
         });
+        const bookingIds = new Set<string>();
         for (const ride of rides) {
+          const rideBookings = await dataSource.getRepository(Booking).find({
+            where: { rideId: ride.id },
+            select: { id: true },
+          });
+          rideBookings.forEach((row) => bookingIds.add(row.id));
           await dataSource.getRepository(RatingTask).delete({ rideId: ride.id });
+        }
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        passengerBookings.forEach((row) => bookingIds.add(row.id));
+        const ids = [...bookingIds];
+        if (ids.length > 0) {
+          await dataSource
+            .getRepository(RatingTask)
+            .createQueryBuilder()
+            .delete()
+            .where('booking_id IN (:...ids)', { ids })
+            .execute();
+          await deleteChatForBookingIds(dataSource, ids);
+        }
+        for (const ride of rides) {
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
         }
         await dataSource.getRepository(Booking).delete({

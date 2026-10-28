@@ -10,6 +10,7 @@ import { BookingsModule } from '../bookings/bookings.module';
 import { ChatModule } from '../chat/chat.module';
 import { CommuteRewardsModule } from '../commute-rewards/commute-rewards.module';
 import { CouponsModule } from '../coupons/coupons.module';
+import { InvoicesModule } from '../invoices/invoices.module';
 import { NoShowModule } from '../no-show/no-show.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SettingsModule } from '../settings/settings.module';
@@ -52,6 +53,7 @@ import { RouteSelectionService } from './route/route-selection.service';
     TrackingModule,
     ChatModule,
     CouponsModule,
+    InvoicesModule,
     CommuteRewardsModule,
     NotificationsModule,
     RegularCancellationModule,

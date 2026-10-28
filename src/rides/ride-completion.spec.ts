@@ -55,7 +55,10 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
-import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
+import {
+  withAssuredPublishHeaders,
+  withAssuredTestRoute,
+} from './test/assured-ride-test.helpers';
 import { withSelectedRoute } from './test/selected-route-test.helpers';
 import { RidesService } from './rides.service';
 import { startRideAndVerifyAllPickups } from './test/ride-trip-test.helpers';
@@ -322,10 +325,10 @@ describe('Ride completion Phase 3 (integration)', () => {
 
     const ride = await request(app.getHttpServer())
       .post('/rides')
-      .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .set(withAssuredPublishHeaders(driver.login.accessToken))
+      .send(
+        withAssuredTestRoute({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Complete Assured A',
         destination: 'Complete Assured B',
@@ -333,7 +336,8 @@ describe('Ride completion Phase 3 (integration)', () => {
         departureTime: '10:00',
         totalSeats: 4,
         pricePerSeat: 500,
-      })
+        }),
+      )
       .expect(201);
     expect(ride.body.assuredDepositAmount).toBe('100');
 
@@ -520,10 +524,10 @@ describe('Ride completion Phase 3 (integration)', () => {
 
     const ride = await request(app.getHttpServer())
       .post('/rides')
-      .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .set(withAssuredPublishHeaders(driver.login.accessToken))
+      .send(
+        withAssuredTestRoute({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Cancel Hold A',
         destination: 'Cancel Hold B',
@@ -531,7 +535,8 @@ describe('Ride completion Phase 3 (integration)', () => {
         departureTime: '12:00',
         totalSeats: 4,
         pricePerSeat: 500,
-      })
+        }),
+      )
       .expect(201);
 
     const booking = await request(app.getHttpServer())
@@ -575,10 +580,10 @@ describe('Ride completion Phase 3 (integration)', () => {
     const driver = await fundedDriver();
     const ride = await request(app.getHttpServer())
       .post('/rides')
-      .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .set(withAssuredPublishHeaders(driver.login.accessToken))
+      .send(
+        withAssuredTestRoute({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Snapshot A',
         destination: 'Snapshot B',
@@ -586,7 +591,8 @@ describe('Ride completion Phase 3 (integration)', () => {
         departureTime: '13:00',
         totalSeats: 4,
         pricePerSeat: 500,
-      })
+        }),
+      )
       .expect(201);
 
     const settings = moduleRef.get(SettingsService);
@@ -614,10 +620,10 @@ describe('Ride completion Phase 3 (integration)', () => {
     const driver = await fundedDriver();
     const ride = await request(app.getHttpServer())
       .post('/rides')
-      .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .set(withAssuredPublishHeaders(driver.login.accessToken))
+      .send(
+        withAssuredTestRoute({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Rollback Complete A',
         destination: 'Rollback Complete B',
@@ -625,7 +631,8 @@ describe('Ride completion Phase 3 (integration)', () => {
         departureTime: '14:00',
         totalSeats: 2,
         pricePerSeat: 500,
-      })
+        }),
+      )
       .expect(201);
 
     const balanceBefore = await dataSource
@@ -667,10 +674,10 @@ describe('Ride completion Phase 3 (integration)', () => {
     const driver = await fundedDriver();
     const ride = await request(app.getHttpServer())
       .post('/rides')
-      .set('Authorization', `Bearer ${driver.login.accessToken}`)
-      .send({
+      .set(withAssuredPublishHeaders(driver.login.accessToken))
+      .send(
+        withAssuredTestRoute({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
         vehicleId: driver.vehicle.id,
         source: 'Conc Complete A',
         destination: 'Conc Complete B',
@@ -678,7 +685,8 @@ describe('Ride completion Phase 3 (integration)', () => {
         departureTime: '15:00',
         totalSeats: 2,
         pricePerSeat: 500,
-      })
+        }),
+      )
       .expect(201);
 
     await request(app.getHttpServer())

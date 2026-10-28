@@ -93,6 +93,7 @@ import {
 } from '../wallet/entities/wallet-transaction.entity';
 import { Wallet, WalletStatus } from '../wallet/entities/wallet.entity';
 import { WalletService } from '../wallet/wallet.service';
+import { InvoicesService } from '../invoices/invoices.service';
 import { CompleteRideResponseDto } from './dto/complete-ride-response.dto';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { RideHistoryQueryDto } from './dto/ride-history-query.dto';
@@ -185,6 +186,7 @@ export class RidesService {
     private readonly commuteRewardProgressService: CommuteRewardProgressService,
     private readonly regularRideCancellationService: RegularRideCancellationService,
     private readonly noShowClaimsService: NoShowClaimsService,
+    private readonly invoicesService: InvoicesService,
   ) {}
 
   async cancelByDriver(
@@ -2112,6 +2114,16 @@ export class RidesService {
         await this.trackingService.clearRideTracking(rideId, 'complete');
       }
       await this.chatService.safeCloseForRide(rideId);
+
+      try {
+        await this.invoicesService.scheduleForCompletedRide(rideId);
+      } catch (error) {
+        this.logger.warn(
+          `Invoice scheduling failed after ride completion ride=${rideId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
 
       return result;
     } catch (error) {

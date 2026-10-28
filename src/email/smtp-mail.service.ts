@@ -6,11 +6,18 @@ import {
 import { ConfigService } from '@nestjs/config';
 import nodemailer, { Transporter } from 'nodemailer';
 
+export interface SendEmailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+}
+
 export interface SendEmailParams {
   to: string;
   subject: string;
   html: string;
   text: string;
+  attachments?: SendEmailAttachment[];
 }
 
 @Injectable()
@@ -82,6 +89,11 @@ export class SmtpMailService implements OnModuleInit {
       subject: params.subject,
       html: params.html,
       text: params.text,
+      attachments: params.attachments?.map((attachment) => ({
+        filename: attachment.filename,
+        content: attachment.content,
+        contentType: attachment.contentType,
+      })),
     });
   }
 }

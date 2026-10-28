@@ -13,6 +13,7 @@ import { DatabaseModule } from './database/database.module';
 import { CorporateIdentityModule } from './corporate-identity/corporate-identity.module';
 import { EmailVerificationModule } from './email-verification/email-verification.module';
 import { HealthModule } from './health/health.module';
+import { InvoicesModule } from './invoices/invoices.module';
 import { NoShowModule } from './no-show/no-show.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RatingsModule } from './ratings/ratings.module';
@@ -36,6 +37,7 @@ import { WalletModule } from './wallet/wallet.module';
     LoggingModule,
     DatabaseModule,
     HealthModule,
+    InvoicesModule,
     AuthModule,
     AdminModule,
     UsersModule,

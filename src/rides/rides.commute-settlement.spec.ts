@@ -9,6 +9,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { BookingsModule } from '../bookings/bookings.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import {
@@ -128,6 +129,30 @@ describe('Commute completion settlement (integration)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
+        const rides = await dataSource.getRepository(Ride).find({
+          where: { driverId: ctx.userId },
+        });
+        const bookingIds = new Set<string>();
+        for (const ride of rides) {
+          const rideBookings = await dataSource.getRepository(Booking).find({
+            where: { rideId: ride.id },
+            select: { id: true },
+          });
+          rideBookings.forEach((row) => bookingIds.add(row.id));
+        }
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        passengerBookings.forEach((row) => bookingIds.add(row.id));
+        const ids = [...bookingIds];
+        if (ids.length > 0) {
+          await dataSource.query(
+            `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+            [ids],
+          );
+          await deleteChatForBookingIds(dataSource, ids);
+        }
         await dataSource.getRepository(Booking).delete({
           passengerId: ctx.userId,
         });
