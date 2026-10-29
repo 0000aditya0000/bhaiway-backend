@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 
 import { Booking } from '../bookings/entities/booking.entity';
 import {
@@ -115,25 +115,42 @@ export class InvoiceIssuanceService {
     }
 
     const bookings = await qb.getMany();
-    const bookingIds: string[] = [];
+    const bookingIds = bookings.map((booking) => booking.id);
+    if (bookingIds.length === 0) {
+      return [];
+    }
+
+    const existingJobs = await this.jobRepository.find({
+      where: { bookingId: In(bookingIds) },
+      select: { bookingId: true },
+    });
+    const alreadyQueued = new Set(existingJobs.map((job) => job.bookingId));
     for (const booking of bookings) {
-      bookingIds.push(booking.id);
-      await this.enqueueJob(booking.rideId, booking.id);
+      if (!alreadyQueued.has(booking.id)) {
+        await this.enqueueJob(booking.rideId, booking.id);
+      }
     }
     return bookingIds;
   }
 
   private async enqueueJob(rideId: string, bookingId: string): Promise<void> {
+    const existing = await this.jobRepository.findOne({
+      where: { bookingId },
+      select: { id: true },
+    });
+    if (existing) {
+      return;
+    }
+
     try {
-      await this.jobRepository.save(
-        this.jobRepository.create({
-          id: randomUUID(),
-          rideId,
-          bookingId,
-          status: InvoiceJobStatus.PENDING,
-          attemptCount: 0,
-          nextAttemptAt: null,
-        }),
+      await this.jobRepository.query(
+        `
+        INSERT INTO gst_invoice_jobs
+          (id, ride_id, booking_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, 0, NULL, NOW(), NOW())
+        ON CONFLICT (booking_id) DO NOTHING
+        `,
+        [randomUUID(), rideId, bookingId, InvoiceJobStatus.PENDING],
       );
     } catch (error) {
       if (!this.isUniqueViolation(error)) {

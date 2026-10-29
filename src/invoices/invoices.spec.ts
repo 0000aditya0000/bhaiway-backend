@@ -766,6 +766,18 @@ describe('GST tax invoices (integration)', () => {
     expect(list.body.items[0].pdfAvailable).toBe(true);
     expect(list.body.items.length).toBeGreaterThanOrEqual(beforeList.length);
 
+    const secondList = await request(app.getHttpServer())
+      .get('/invoices')
+      .query({ rideId: ride.id })
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(secondList.body.total).toBe(1);
+    expect(
+      await dataSource.getRepository(GstInvoiceJob).count({
+        where: { bookingId: booking.body.id },
+      }),
+    ).toBe(1);
+
     const history = await request(app.getHttpServer())
       .get(`/bookings/history/${booking.body.id}`)
       .set('Authorization', `Bearer ${passenger.login.accessToken}`)
