@@ -80,6 +80,23 @@ export function isEligibleInvoiceRideType(rideType: RideType): boolean {
   return INVOICE_ELIGIBLE_RIDE_TYPES.includes(rideType);
 }
 
+/** True when a GST tax rule was in force at issue time (show tax breakdown). */
+export function invoiceHasGstBreakdown(invoice: {
+  taxConfigId?: string | null;
+  taxConfigSnapshot?: Record<string, unknown> | null;
+}): boolean {
+  if (invoice.taxConfigSnapshot?.fallback === true) {
+    return false;
+  }
+  if (invoice.taxConfigId === INVOICE_UNCONFIGURED_TAX_CONFIG_ID) {
+    return false;
+  }
+  if (invoice.taxConfigSnapshot?.reason === 'NO_ACTIVE_TAX_CONFIG') {
+    return false;
+  }
+  return true;
+}
+
 export function invoiceRideTypeLabel(rideType: RideType): string {
   if (rideType === RideType.COMMUTE) {
     return 'Daily Office Commute';

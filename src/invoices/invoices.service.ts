@@ -1,7 +1,9 @@
 import {
   BadRequestException,
+  ConflictException,
   HttpException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -19,10 +21,13 @@ import { InvoiceConfigService } from './invoice-config.service';
 import { InvoiceIssuanceService } from './invoice-issuance.service';
 import { InvoiceStorageService } from './invoice-storage.service';
 import { InvoiceWorkerService } from './invoice-worker.service';
+import { invoiceHasGstBreakdown } from './invoice.constants';
 import { formatPaiseAsRupees } from './invoice-tax.math';
 
 @Injectable()
 export class InvoicesService {
+  private readonly logger = new Logger(InvoicesService.name);
+
   constructor(
     private readonly issuanceService: InvoiceIssuanceService,
     private readonly workerService: InvoiceWorkerService,
@@ -50,7 +55,15 @@ export class InvoicesService {
       rideId,
       bookingId,
     });
-    await this.workerService.processJobsForBookings(bookingIds);
+    try {
+      await this.workerService.processJobsForBookings(bookingIds);
+    } catch (error) {
+      this.logger.warn(
+        `Invoice list side-effects failed rider=${userId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
 
     const take = Math.min(Math.max(limit, 1), 100);
     const skip = (Math.max(page, 1) - 1) * take;
@@ -275,22 +288,40 @@ export class InvoicesService {
   }
 
   private async readPdf(invoice: GstInvoice) {
-    const withPdf = await this.workerService.ensurePdf(invoice);
-    if (!withPdf.pdfStorageKey) {
-      throw new NotFoundException({
-        statusCode: 404,
+    let buffer: Buffer;
+    try {
+      const ensured = await this.workerService.ensurePdf(invoice);
+      buffer = ensured.buffer;
+    } catch (error) {
+      this.logger.warn(
+        `Invoice PDF render failed invoice=${invoice.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      throw new ConflictException({
+        statusCode: 409,
         code: 'INVOICE_PDF_NOT_READY',
         message: 'Invoice PDF is not available yet',
       });
     }
-    const buffer = await this.storageService.readPdf(withPdf.pdfStorageKey);
+    if (!buffer?.length || buffer.toString('utf8', 0, 4) !== '%PDF') {
+      throw new ConflictException({
+        statusCode: 409,
+        code: 'INVOICE_PDF_NOT_READY',
+        message: 'Invoice PDF is not available yet',
+      });
+    }
     return {
       buffer,
-      filename: this.workerService.pdfFilename(withPdf.invoiceNumber),
+      filename: this.workerService.pdfFilename(invoice.invoiceNumber),
     };
   }
 
   private toRiderDto(invoice: GstInvoice, detailed = false) {
+    const issuedAt =
+      invoice.issuedAt instanceof Date
+        ? invoice.issuedAt.toISOString()
+        : invoice.issuedAt;
     const base = {
       id: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
@@ -299,29 +330,41 @@ export class InvoicesService {
       rideType: invoice.rideType,
       source: invoice.source,
       destination: invoice.destination,
-      issuedAt: invoice.issuedAt,
+      issuedAt,
       invoiceTotal: formatPaiseAsRupees(BigInt(invoice.invoiceTotalPaise)),
       currency: invoice.currency,
       paymentStatus: invoice.paymentStatus,
       emailStatus: invoice.emailStatus,
-      pdfAvailable: Boolean(invoice.pdfStorageKey),
+      pdfAvailable: true,
     };
     if (!detailed) {
       return base;
     }
-    return {
+    const detail = {
       ...base,
       riderName: invoice.riderName,
       driverName: invoice.driverName,
       vehicleRegistrationNumber: invoice.vehicleRegistrationNumber,
       departureAt: invoice.departureAt,
       completedAt: invoice.completedAt,
+      issuerLegalName: invoice.issuerLegalName,
+    };
+    if (!invoiceHasGstBreakdown(invoice)) {
+      return detail;
+    }
+    return {
+      ...detail,
+      ...this.gstBreakdownDto(invoice),
+    };
+  }
+
+  private gstBreakdownDto(invoice: GstInvoice) {
+    return {
       taxableValue: formatPaiseAsRupees(BigInt(invoice.taxableValuePaise)),
       gstRateBasisPoints: invoice.gstRateBasisPoints,
       cgst: formatPaiseAsRupees(BigInt(invoice.cgstPaise)),
       sgst: formatPaiseAsRupees(BigInt(invoice.sgstPaise)),
       igst: formatPaiseAsRupees(BigInt(invoice.igstPaise)),
-      issuerLegalName: invoice.issuerLegalName,
       issuerGstin: invoice.issuerGstin,
       sacCode: invoice.sacCode,
       placeOfSupplyStateCode: invoice.placeOfSupplyStateCode,
@@ -331,6 +374,7 @@ export class InvoicesService {
   private toAdminDto(invoice: GstInvoice, job: GstInvoiceJob | null) {
     return {
       ...this.toRiderDto(invoice, true),
+      ...this.gstBreakdownDto(invoice),
       emailAttemptCount: invoice.emailAttemptCount,
       emailLastAttemptAt: invoice.emailLastAttemptAt,
       emailLastError: invoice.emailLastError,

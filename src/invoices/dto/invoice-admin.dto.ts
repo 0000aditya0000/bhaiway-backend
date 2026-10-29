@@ -292,3 +292,66 @@ export class RiderInvoiceListQueryDto {
   @IsUUID()
   bookingId?: string;
 }
+
+export class RiderInvoiceItemDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiProperty()
+  invoiceNumber!: string;
+
+  @ApiProperty({ format: 'uuid' })
+  rideId!: string;
+
+  @ApiProperty({
+    format: 'uuid',
+    description: 'Completed booking UUID (same as GET /bookings/:id id)',
+  })
+  bookingId!: string;
+
+  @ApiProperty()
+  rideType!: string;
+
+  @ApiProperty()
+  source!: string;
+
+  @ApiProperty()
+  destination!: string;
+
+  @ApiProperty({ format: 'date-time' })
+  issuedAt!: string;
+
+  @ApiProperty({ example: '210.50' })
+  invoiceTotal!: string;
+
+  @ApiProperty({ example: 'INR' })
+  currency!: string;
+
+  @ApiProperty()
+  paymentStatus!: string;
+
+  @ApiProperty()
+  emailStatus!: string;
+
+  @ApiProperty({
+    type: Boolean,
+    example: true,
+    description:
+      'Always true for issued rider invoices. Download with GET /invoices/:id/pdf.',
+  })
+  pdfAvailable!: boolean;
+}
+
+export class RiderInvoiceListResponseDto {
+  @ApiProperty({ type: RiderInvoiceItemDto, isArray: true })
+  items!: RiderInvoiceItemDto[];
+
+  @ApiProperty()
+  page!: number;
+
+  @ApiProperty()
+  limit!: number;
+
+  @ApiProperty()
+  total!: number;
+}

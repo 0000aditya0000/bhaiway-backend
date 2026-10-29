@@ -428,7 +428,7 @@ describe('Past ride history (integration)', () => {
       where: { bookingId: completed.b1.id },
     });
     expect(detail.body.invoice.invoiceId).toBe(issued?.id ?? null);
-    expect(detail.body.invoice.pdfAvailable).toBe(Boolean(issued?.pdfStorageKey));
+    expect(detail.body.invoice.pdfAvailable).toBe(Boolean(issued));
     expect(detail.body.payment.paymentMethod).toBe('PAY_LATER');
     // REGULAR PAY_LATER stays UNPAID until the passenger settles post-ride.
     expect(detail.body.payment.paymentStatus).toBe('UNPAID');

@@ -7,6 +7,7 @@ import {
   InvoicePlaceOfSupplyMode,
   InvoiceTaxPricingMode,
 } from './enums/invoice.enums';
+import { INVOICE_UNCONFIGURED_TAX_CONFIG_ID } from './invoice.constants';
 import { InvoicePdfService } from './invoice-pdf.service';
 
 const PNG_1X1 = Buffer.from(
@@ -14,7 +15,7 @@ const PNG_1X1 = Buffer.from(
   'base64',
 );
 
-function sampleInvoice(): GstInvoice {
+function sampleInvoice(overrides: Partial<GstInvoice> = {}): GstInvoice {
   return {
     id: '11111111-1111-4111-8111-111111111111',
     invoiceNumber: 'BW/2026-27/000001',
@@ -69,14 +70,59 @@ function sampleInvoice(): GstInvoice {
     emailNextAttemptAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
+    ...overrides,
   } as GstInvoice;
 }
 
+function pdfText(pdf: Buffer): string {
+  return pdf.toString('latin1');
+}
+
 describe('InvoicePdfService', () => {
-  it('renders a TAX INVOICE PDF with logo bytes', async () => {
+  it('renders a branded TAX INVOICE PDF with logo bytes', async () => {
     const service = new InvoicePdfService();
     const pdf = await service.render(sampleInvoice(), PNG_1X1);
     expect(pdf.subarray(0, 4).toString()).toBe('%PDF');
     expect(pdf.length).toBeGreaterThan(1000);
+    const text = pdfText(pdf);
+    expect(text).toContain('BhaiWay');
+    expect(text).toContain('Tax Invoice BW/2026-27/000001');
+    expect(text).toMatch(/\/Count 1\b/);
+  });
+
+  it('renders without a logo using the BhaiWay wordmark', async () => {
+    const service = new InvoicePdfService();
+    const pdf = await service.render(sampleInvoice(), null);
+    expect(pdf.subarray(0, 4).toString()).toBe('%PDF');
+    expect(pdf.length).toBeGreaterThan(1000);
+    const text = pdfText(pdf);
+    expect(text).toContain('BhaiWay');
+    expect(text).toMatch(/\/Count 1\b/);
+  });
+
+  it('omits GST rows when no tax rule was configured', async () => {
+    const service = new InvoicePdfService();
+    const pdf = await service.render(
+      sampleInvoice({
+        gstRateBasisPoints: 0,
+        cgstPaise: '0',
+        sgstPaise: '0',
+        igstPaise: '0',
+        totalTaxPaise: '0',
+        invoiceTotalPaise: '100000',
+        taxConfigId: INVOICE_UNCONFIGURED_TAX_CONFIG_ID,
+        taxConfigSnapshot: {
+          fallback: true,
+          reason: 'NO_ACTIVE_TAX_CONFIG',
+          notes: 'Issued without an active GST tax rule. GST was not applied.',
+        },
+      }),
+      null,
+    );
+    const text = pdfText(pdf);
+    expect(pdf.subarray(0, 4).toString()).toBe('%PDF');
+    expect(text).toContain('Invoice BW/2026-27/000001');
+    expect(text).not.toContain('Tax Invoice');
+    expect(text).toMatch(/\/Count 1\b/);
   });
 });

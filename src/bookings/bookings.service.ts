@@ -1741,7 +1741,7 @@ export class BookingsService {
         invoiceId: invoice?.id ?? null,
         invoiceDate: invoice?.issuedAt?.toISOString() ?? null,
         invoiceNumber: invoice?.invoiceNumber ?? null,
-        pdfAvailable: Boolean(invoice?.pdfStorageKey),
+        pdfAvailable: Boolean(invoice),
         paymentReference: booking.walletTransactionId,
       },
       bookedAt: item.bookedAt,

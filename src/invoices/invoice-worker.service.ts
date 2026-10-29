@@ -27,6 +27,7 @@ import {
   INVOICE_MAX_JOB_ATTEMPTS,
   INVOICE_RETRY_BASE_MS,
   INVOICE_WORKER_POLL_MS,
+  invoiceHasGstBreakdown,
 } from './invoice.constants';
 
 @Injectable()
@@ -96,7 +97,15 @@ export class InvoiceWorkerService implements OnModuleInit, OnModuleDestroy {
       take: INVOICE_LIST_PROCESS_LIMIT,
     });
     for (const job of jobs) {
-      await this.processJob(job.id);
+      try {
+        await this.processJob(job.id);
+      } catch (error) {
+        this.logger.warn(
+          `Invoice job processing failed job=${job.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
 
     const pendingMail = await this.invoiceRepository.find({
@@ -108,7 +117,15 @@ export class InvoiceWorkerService implements OnModuleInit, OnModuleDestroy {
       take: INVOICE_LIST_PROCESS_LIMIT,
     });
     for (const invoice of pendingMail) {
-      await this.deliverEmail(invoice.id);
+      try {
+        await this.deliverEmail(invoice.id);
+      } catch (error) {
+        this.logger.warn(
+          `Invoice email processing failed invoice=${invoice.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
   }
 
@@ -203,7 +220,15 @@ export class InvoiceWorkerService implements OnModuleInit, OnModuleDestroy {
 
       try {
         const invoice = await this.issuanceService.issueForJob(job);
-        await this.ensurePdf(invoice);
+        try {
+          await this.ensurePdf(invoice);
+        } catch (pdfError) {
+          this.logger.warn(
+            `Invoice PDF cache skipped job=${job.id}: ${
+              pdfError instanceof Error ? pdfError.message : String(pdfError)
+            }`,
+          );
+        }
         job.invoiceId = invoice.id;
         job.status = InvoiceJobStatus.ISSUED;
         job.lastError = null;
@@ -260,11 +285,14 @@ export class InvoiceWorkerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async ensurePdf(invoice: GstInvoice): Promise<GstInvoice> {
-    if (invoice.pdfStorageKey && invoice.pdfSha256) {
+  async ensurePdf(
+    invoice: GstInvoice,
+  ): Promise<{ invoice: GstInvoice; buffer: Buffer }> {
+    if (invoice.pdfStorageKey) {
       const exists = await this.storageService.pdfExists(invoice.pdfStorageKey);
       if (exists) {
-        return invoice;
+        const buffer = await this.storageService.readPdf(invoice.pdfStorageKey);
+        return { invoice, buffer };
       }
     }
 
@@ -272,11 +300,20 @@ export class InvoiceWorkerService implements OnModuleInit, OnModuleDestroy {
     const logo = await this.storageService.readOptionalFile(
       issuer?.logoStorageKey ?? null,
     );
-    const pdf = await this.pdfService.render(invoice, logo);
-    const stored = await this.storageService.savePdf(invoice.id, pdf);
-    invoice.pdfStorageKey = stored.storageKey;
-    invoice.pdfSha256 = stored.sha256;
-    return this.invoiceRepository.save(invoice);
+    const buffer = await this.pdfService.render(invoice, logo);
+    try {
+      const stored = await this.storageService.savePdf(invoice.id, buffer);
+      invoice.pdfStorageKey = stored.storageKey;
+      invoice.pdfSha256 = stored.sha256;
+      invoice = await this.invoiceRepository.save(invoice);
+    } catch (error) {
+      this.logger.warn(
+        `Invoice PDF disk cache skipped invoice=${invoice.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return { invoice, buffer };
   }
 
   scheduleEmail(invoiceId: string): void {
@@ -338,7 +375,9 @@ export class InvoiceWorkerService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      invoice = await this.ensurePdf(invoice);
+      const ensured = await this.ensurePdf(invoice);
+      invoice = ensured.invoice;
+      const pdf = ensured.buffer;
 
       const user = await this.userRepository.findOne({
         where: { id: invoice.riderUserId },
@@ -352,10 +391,9 @@ export class InvoiceWorkerService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      if (!invoice.pdfStorageKey) {
+      if (!pdf?.length) {
         throw new Error('Invoice PDF is not available');
       }
-      const pdf = await this.storageService.readPdf(invoice.pdfStorageKey);
       const content = buildInvoiceEmailContent({
         invoiceNumber: invoice.invoiceNumber,
         riderName: invoice.riderName,
@@ -364,6 +402,7 @@ export class InvoiceWorkerService implements OnModuleInit, OnModuleDestroy {
         destination: invoice.destination,
         invoiceTotalPaise: BigInt(invoice.invoiceTotalPaise),
         currency: invoice.currency,
+        hasGst: invoiceHasGstBreakdown(invoice),
       });
 
       invoice.emailAttemptCount += 1;

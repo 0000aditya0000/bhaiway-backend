@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Header,
   Param,
   ParseUUIDPipe,
   Query,
@@ -9,6 +10,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiConflictResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
@@ -18,7 +20,10 @@ import {
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
-import { RiderInvoiceListQueryDto } from './dto/invoice-admin.dto';
+import {
+  RiderInvoiceListQueryDto,
+  RiderInvoiceListResponseDto,
+} from './dto/invoice-admin.dto';
 import { InvoicesService } from './invoices.service';
 
 @ApiTags('Invoices')
@@ -33,8 +38,9 @@ export class InvoicesController {
   @ApiOperation({
     summary: 'List tax invoices for the authenticated rider',
     description:
-      'Returns issued GST invoices for the JWT subject only. Optional rideId / bookingId filter the trip. Pending Regular and Daily Office Commute jobs for this rider are processed before the list is returned so Get Invoice can resolve after ride completion.',
+      'Returns issued GST invoices for the JWT subject only. Optional rideId / bookingId filter the trip. Pending Regular and Daily Office Commute jobs for this rider are processed before the list is returned so Get Invoice can resolve after ride completion. Each item includes bookingId (the booking UUID) and pdfAvailable as a boolean.',
   })
+  @ApiOkResponse({ type: RiderInvoiceListResponseDto })
   list(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: RiderInvoiceListQueryDto,
@@ -51,6 +57,10 @@ export class InvoicesController {
   @Get(':id/pdf')
   @ApiOperation({ summary: 'Download the rider tax invoice PDF' })
   @ApiOkResponse({ description: 'PDF binary' })
+  @ApiConflictResponse({
+    description: 'Invoice exists but PDF could not be rendered (INVOICE_PDF_NOT_READY)',
+  })
+  @Header('Content-Type', 'application/pdf')
   async downloadPdf(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,

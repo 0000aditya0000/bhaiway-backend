@@ -1,4 +1,8 @@
-import { detectInvoiceLogoMime } from './invoice.constants';
+import {
+  INVOICE_UNCONFIGURED_TAX_CONFIG_ID,
+  detectInvoiceLogoMime,
+  invoiceHasGstBreakdown,
+} from './invoice.constants';
 
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -26,5 +30,25 @@ describe('detectInvoiceLogoMime', () => {
   it('rejects gif bytes with a gif mime', () => {
     const gif = Buffer.from('GIF89a');
     expect(detectInvoiceLogoMime(gif, 'image/gif')).toBeNull();
+  });
+});
+
+describe('invoiceHasGstBreakdown', () => {
+  it('is false when the invoice was issued without a GST tax rule', () => {
+    expect(
+      invoiceHasGstBreakdown({
+        taxConfigId: INVOICE_UNCONFIGURED_TAX_CONFIG_ID,
+        taxConfigSnapshot: { fallback: true, reason: 'NO_ACTIVE_TAX_CONFIG' },
+      }),
+    ).toBe(false);
+  });
+
+  it('is true when a tax rule snapshot exists', () => {
+    expect(
+      invoiceHasGstBreakdown({
+        taxConfigId: '55555555-5555-4555-8555-555555555555',
+        taxConfigSnapshot: { gstRateBasisPoints: 1800 },
+      }),
+    ).toBe(true);
   });
 });

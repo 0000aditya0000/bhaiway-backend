@@ -71,6 +71,7 @@ import {
 } from './enums/invoice.enums';
 import { invoicePdfFilename } from './invoice-name.util';
 import { InvoiceIssuanceService } from './invoice-issuance.service';
+import { InvoiceStorageService } from './invoice-storage.service';
 import { InvoiceWorkerService } from './invoice-worker.service';
 import { InvoicesModule } from './invoices.module';
 
@@ -453,6 +454,28 @@ describe('GST tax invoices (integration)', () => {
     };
   }
 
+  function expectRiderListItem(
+    item: Record<string, unknown>,
+    bookingId: string,
+    rideId: string,
+  ) {
+    expect(item.bookingId).toBe(bookingId);
+    expect(item.rideId).toBe(rideId);
+    expect(item.bookingId).not.toBe(item.rideId);
+    expect(item.id).toEqual(expect.any(String));
+    expect(item.invoiceNumber).toEqual(expect.any(String));
+    expect(item.rideType).toEqual(expect.any(String));
+    expect(item.source).toEqual(expect.any(String));
+    expect(item.destination).toEqual(expect.any(String));
+    expect(item.issuedAt).toEqual(expect.any(String));
+    expect(item.invoiceTotal).toEqual(expect.any(String));
+    expect(item.currency).toBe('INR');
+    expect(item.paymentStatus).toEqual(expect.any(String));
+    expect(item.emailStatus).toEqual(expect.any(String));
+    expect(item.pdfAvailable).toBe(true);
+    expect(typeof item.pdfAvailable).toBe('boolean');
+  }
+
   async function drainRideInvoices(rideId: string): Promise<void> {
     await new Promise((resolve) => setImmediate(resolve));
     const jobs = await dataSource.getRepository(GstInvoiceJob).find({
@@ -600,9 +623,7 @@ describe('GST tax invoices (integration)', () => {
       .set('Authorization', `Bearer ${passenger.login.accessToken}`)
       .expect(200);
     expect(list.body.total).toBe(1);
-    expect(list.body.items[0].rideId).toBe(ride.id);
-    expect(list.body.items[0].bookingId).toBe(booking.body.id);
-    expect(list.body.items[0].pdfAvailable).toBe(true);
+    expectRiderListItem(list.body.items[0], booking.body.id, ride.id);
 
     const byRide = await request(app.getHttpServer())
       .get('/invoices')
@@ -651,6 +672,8 @@ describe('GST tax invoices (integration)', () => {
       .set('Authorization', `Bearer ${passenger.login.accessToken}`)
       .expect(200);
     expect(pdf.body.toString('utf8', 0, 4)).toBe('%PDF');
+    expect(String(pdf.headers['content-type'])).toContain('application/pdf');
+    expect(String(pdf.body)).not.toContain('"message"');
     expect(String(pdf.headers['content-disposition'])).toContain(
       invoicePdfFilename(invoices[0].invoiceNumber),
     );
@@ -783,6 +806,68 @@ describe('GST tax invoices (integration)', () => {
       .set('Authorization', `Bearer ${passenger.login.accessToken}`)
       .expect(200);
     expect(history.body.invoice.invoiceId).toBe(list.body.items[0].id);
+  });
+
+  it('GET /invoices and /pdf succeed when invoice disk storage is not writable', async () => {
+    const adminUser = await createAuthenticatedUser();
+    const adminToken = await ensureAdmin(adminUser.login.user.id);
+    await seedIssuerAndTax(adminToken);
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger();
+    const ride = await publishRegular(
+      driver.login.accessToken,
+      driver.vehicle.id,
+    );
+    const booking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethod.PAY_LATER,
+      })
+      .expect(201);
+
+    const storage = moduleRef.get(InvoiceStorageService);
+    const saveSpy = jest
+      .spyOn(storage, 'savePdf')
+      .mockRejectedValue(
+        Object.assign(new Error("EACCES: permission denied, mkdir '/var/www/bhaiway-backend/storage'"), {
+          code: 'EACCES',
+        }),
+      );
+
+    try {
+      await startRideAndVerifyAllPickups(
+        app,
+        dataSource,
+        driver.login.accessToken,
+        ride.id,
+        pickupOtpPepper(),
+      );
+      await request(app.getHttpServer())
+        .post(`/rides/${ride.id}/complete`)
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .expect(200);
+
+      const list = await request(app.getHttpServer())
+        .get('/invoices')
+        .query({ page: 1, limit: 100, bookingId: booking.body.id })
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .expect(200);
+      expect(list.body.total).toBe(1);
+      expectRiderListItem(list.body.items[0], booking.body.id, ride.id);
+
+      const pdf = await request(app.getHttpServer())
+        .get(`/invoices/${list.body.items[0].id}/pdf`)
+        .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+        .set('Accept', 'application/pdf')
+        .expect(200);
+      expect(pdf.body.toString('utf8', 0, 4)).toBe('%PDF');
+      expect(String(pdf.headers['content-type'])).toContain('application/pdf');
+    } finally {
+      saveSpy.mockRestore();
+    }
   });
 
   it('Assured, cancelled, and no-show bookings do not generate rider invoices', async () => {
