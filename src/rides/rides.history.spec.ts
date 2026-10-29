@@ -32,6 +32,7 @@ import {
   creditTestWalletPoints,
   TestWalletContext,
 } from '../wallet/test/wallet-test.helpers';
+import { GstInvoice } from '../invoices/entities/invoice.entity';
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
@@ -423,7 +424,11 @@ describe('Past ride history (integration)', () => {
       .set('Authorization', `Bearer ${completed.p1.accessToken}`)
       .expect(200);
 
-    expect(detail.body.invoice.invoiceId).toBeNull();
+    const issued = await dataSource.getRepository(GstInvoice).findOne({
+      where: { bookingId: completed.b1.id },
+    });
+    expect(detail.body.invoice.invoiceId).toBe(issued?.id ?? null);
+    expect(detail.body.invoice.pdfAvailable).toBe(Boolean(issued?.pdfStorageKey));
     expect(detail.body.payment.paymentMethod).toBe('PAY_LATER');
     // REGULAR PAY_LATER stays UNPAID until the passenger settles post-ride.
     expect(detail.body.payment.paymentStatus).toBe('UNPAID');
@@ -529,7 +534,10 @@ describe('Past ride history (integration)', () => {
       .expect(200);
     expect(rider.body.fare.rideFare).toBe('150');
     expect(rider.body.fare.taxes).toBeNull();
-    expect(rider.body.invoice.invoiceId).toBeNull();
+    const issued = await dataSource.getRepository(GstInvoice).findOne({
+      where: { bookingId: completed.b2.id },
+    });
+    expect(rider.body.invoice.invoiceId).toBe(issued?.id ?? null);
     expect(rider.body.trip.destinationLongitude).toBeNull();
   });
 

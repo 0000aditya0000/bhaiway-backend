@@ -9,6 +9,7 @@ import {
   IsISO8601,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   Max,
   MaxLength,
@@ -274,4 +275,20 @@ export class RiderInvoiceListQueryDto {
   @Min(1)
   @Max(100)
   limit?: number = 20;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Limit to invoices for this completed ride',
+  })
+  @IsOptional()
+  @IsUUID()
+  rideId?: string;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Limit to the invoice for this completed booking',
+  })
+  @IsOptional()
+  @IsUUID()
+  bookingId?: string;
 }

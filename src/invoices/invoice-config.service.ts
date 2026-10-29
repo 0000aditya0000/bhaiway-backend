@@ -193,10 +193,10 @@ export class InvoiceConfigService {
     return saved;
   }
 
-  async resolveActiveTaxConfig(
+  async findActiveTaxConfig(
     rideType: RideType,
     at: Date,
-  ): Promise<InvoiceTaxConfig> {
+  ): Promise<InvoiceTaxConfig | null> {
     const matches = await this.taxConfigRepository
       .createQueryBuilder('config')
       .where('config.status = :status', { status: InvoiceTaxConfigStatus.ACTIVE })
@@ -207,9 +207,7 @@ export class InvoiceConfigService {
       .getMany();
 
     if (matches.length === 0) {
-      throw new InvoiceTaxResolutionError(
-        `No active invoice tax configuration for ride type ${rideType}`,
-      );
+      return null;
     }
     if (matches.length > 1) {
       throw new InvoiceTaxResolutionError(
@@ -217,6 +215,19 @@ export class InvoiceConfigService {
       );
     }
     return matches[0];
+  }
+
+  async resolveActiveTaxConfig(
+    rideType: RideType,
+    at: Date,
+  ): Promise<InvoiceTaxConfig> {
+    const match = await this.findActiveTaxConfig(rideType, at);
+    if (!match) {
+      throw new InvoiceTaxResolutionError(
+        `No active invoice tax configuration for ride type ${rideType}`,
+      );
+    }
+    return match;
   }
 
   taxConfigSnapshot(config: InvoiceTaxConfig): Record<string, unknown> {

@@ -9,12 +9,29 @@ import {
   indianFinancialYearLabel,
   InvoiceTaxResolutionError,
   roundPaiseHalfUp,
+  untaxedInvoiceResult,
 } from './invoice-tax.math';
 
 describe('invoice tax math', () => {
   it('rounds GST paise half-up', () => {
     expect(roundPaiseHalfUp(15n, 10n)).toBe(2n);
     expect(roundPaiseHalfUp(14n, 10n)).toBe(1n);
+  });
+
+  it('issues a 0% invoice when no GST tax rule is configured', () => {
+    const result = untaxedInvoiceResult({
+      netFareRupees: 200n,
+      issuerStateCode: '27',
+    });
+    expect(result.gstRateBasisPoints).toBe(0);
+    expect(result.totalTaxPaise).toBe(0n);
+    expect(result.cgstPaise).toBe(0n);
+    expect(result.sgstPaise).toBe(0n);
+    expect(result.igstPaise).toBe(0n);
+    expect(result.taxableValuePaise).toBe(20000n);
+    expect(result.invoiceTotalPaise).toBe(20000n);
+    expect(result.split).toBe(InvoiceGstSplit.CGST_SGST);
+    expect(result.placeOfSupplyStateCode).toBe('27');
   });
 
   it('formats paise as rupees', () => {

@@ -65,11 +65,11 @@ import { InvoiceTaxConfig } from './entities/invoice-tax-config.entity';
 import { GstInvoice } from './entities/invoice.entity';
 import {
   InvoiceEmailStatus,
-  InvoiceJobStatus,
   InvoicePlaceOfSupplyMode,
   InvoiceTaxConfigStatus,
   InvoiceTaxPricingMode,
 } from './enums/invoice.enums';
+import { invoicePdfFilename } from './invoice-name.util';
 import { InvoiceIssuanceService } from './invoice-issuance.service';
 import { InvoiceWorkerService } from './invoice-worker.service';
 import { InvoicesModule } from './invoices.module';
@@ -325,9 +325,7 @@ describe('GST tax invoices (integration)', () => {
     return authService.signAccessToken(userId);
   }
 
-  async function seedIssuerAndTax(adminToken: string) {
-    await dataSource.query(`DELETE FROM invoice_tax_config_audit`);
-    await dataSource.query(`DELETE FROM invoice_tax_configs`);
+  async function seedIssuer(adminToken: string) {
     await request(app.getHttpServer())
       .put('/admin/invoices/issuer')
       .set('Authorization', `Bearer ${adminToken}`)
@@ -352,6 +350,12 @@ describe('GST tax invoices (integration)', () => {
         contentType: 'image/png',
       })
       .expect(201);
+  }
+
+  async function seedIssuerAndTax(adminToken: string) {
+    await dataSource.query(`DELETE FROM invoice_tax_config_audit`);
+    await dataSource.query(`DELETE FROM invoice_tax_configs`);
+    await seedIssuer(adminToken);
 
     await request(app.getHttpServer())
       .post('/admin/invoices/tax-configs')
@@ -427,6 +431,28 @@ describe('GST tax invoices (integration)', () => {
     await drainRideInvoices(rideId);
   }
 
+  function latestInvoiceEmail(riderEmail: string, filename: string) {
+    const mails = sendEmail.mock.calls
+      .map((call) => call[0] as {
+        to?: string;
+        attachments?: Array<{
+          filename: string;
+          content: Buffer;
+          contentType: string;
+        }>;
+      })
+      .filter(
+        (mail) =>
+          mail.to === riderEmail &&
+          mail.attachments?.some((attachment) => attachment.filename === filename),
+      );
+    expect(mails.length).toBeGreaterThan(0);
+    return mails[mails.length - 1] as {
+      to: string;
+      attachments: Array<{ filename: string; content: Buffer; contentType: string }>;
+    };
+  }
+
   async function drainRideInvoices(rideId: string): Promise<void> {
     await new Promise((resolve) => setImmediate(resolve));
     const jobs = await dataSource.getRepository(GstInvoiceJob).find({
@@ -437,11 +463,16 @@ describe('GST tax invoices (integration)', () => {
     }
   }
 
-  it('missing tax configuration does not block Regular completion', async () => {
+  it('missing tax configuration still issues a downloadable 0% invoice and emails the PDF', async () => {
+    const adminUser = await createAuthenticatedUser();
+    const adminToken = await ensureAdmin(adminUser.login.user.id);
     await dataSource.query(`DELETE FROM invoice_tax_config_audit`);
     await dataSource.query(`DELETE FROM invoice_tax_configs`);
+    await seedIssuer(adminToken);
+
     const driver = await fundedDriver();
-    const passenger = await fundedPassenger();
+    const riderEmail = `notax.${randomUUID()}@example.com`;
+    const passenger = await fundedPassenger(riderEmail);
     const ride = await publishRegular(
       driver.login.accessToken,
       driver.vehicle.id,
@@ -465,22 +496,34 @@ describe('GST tax invoices (integration)', () => {
     const invoices = await dataSource.getRepository(GstInvoice).find({
       where: { rideId: ride.id },
     });
-    expect(invoices).toHaveLength(0);
-    const jobs = await dataSource.getRepository(GstInvoiceJob).find({
-      where: { rideId: ride.id },
+    expect(invoices).toHaveLength(1);
+    expect(invoices[0].gstRateBasisPoints).toBe(0);
+    expect(invoices[0].totalTaxPaise).toBe('0');
+    expect(invoices[0].invoiceTotalPaise).toBe('20000');
+    expect(invoices[0].taxConfigSnapshot).toMatchObject({
+      fallback: true,
+      reason: 'NO_ACTIVE_TAX_CONFIG',
     });
-    expect(jobs.length).toBeGreaterThan(0);
-    expect(jobs.some((job) => job.status === InvoiceJobStatus.ISSUED)).toBe(
-      false,
-    );
-    expect(
-      jobs.some(
-        (job) =>
-          job.status === InvoiceJobStatus.FAILED ||
-          job.status === InvoiceJobStatus.PENDING ||
-          job.status === InvoiceJobStatus.PROCESSING,
-      ),
-    ).toBe(true);
+
+    const filename = invoicePdfFilename(invoices[0].invoiceNumber);
+    expect(filename).toBe(`${invoices[0].invoiceNumber.replace(/\//g, '-')}.pdf`);
+
+    const pdf = await request(app.getHttpServer())
+      .get(`/invoices/${invoices[0].id}/pdf`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(pdf.body.toString('utf8', 0, 4)).toBe('%PDF');
+    expect(String(pdf.headers['content-disposition'])).toContain(filename);
+
+    await worker.deliverEmail(invoices[0].id);
+    const mailed = await dataSource
+      .getRepository(GstInvoice)
+      .findOneByOrFail({ id: invoices[0].id });
+    expect(mailed.emailStatus).toBe(InvoiceEmailStatus.SENT);
+    const mail = latestInvoiceEmail(riderEmail, filename);
+    expect(mail.attachments).toHaveLength(1);
+    expect(mail.attachments[0].contentType).toBe('application/pdf');
+    expect(mail.attachments[0].content.toString('utf8', 0, 4)).toBe('%PDF');
   });
 
   it('Outstation completion creates exactly one rider invoice and emails the rider', async () => {
@@ -545,14 +588,53 @@ describe('GST tax invoices (integration)', () => {
       .getRepository(GstInvoice)
       .findOneByOrFail({ id: invoices[0].id });
     expect(mailed.emailStatus).toBe(InvoiceEmailStatus.SENT);
-    expect(sendEmail).toHaveBeenCalled();
-    expect(sendEmail.mock.calls[0][0].to).toBe(riderEmail);
+    const mail = latestInvoiceEmail(
+      riderEmail,
+      invoicePdfFilename(invoices[0].invoiceNumber),
+    );
+    expect(mail.attachments[0].contentType).toBe('application/pdf');
+    expect(mail.attachments[0].content.toString('utf8', 0, 4)).toBe('%PDF');
 
     const list = await request(app.getHttpServer())
       .get('/invoices')
       .set('Authorization', `Bearer ${passenger.login.accessToken}`)
       .expect(200);
     expect(list.body.total).toBe(1);
+    expect(list.body.items[0].rideId).toBe(ride.id);
+    expect(list.body.items[0].bookingId).toBe(booking.body.id);
+    expect(list.body.items[0].pdfAvailable).toBe(true);
+
+    const byRide = await request(app.getHttpServer())
+      .get('/invoices')
+      .query({ rideId: ride.id })
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(byRide.body.total).toBe(1);
+    expect(byRide.body.items[0].id).toBe(invoices[0].id);
+
+    const byBooking = await request(app.getHttpServer())
+      .get('/invoices')
+      .query({ bookingId: booking.body.id })
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(byBooking.body.total).toBe(1);
+
+    const otherByRide = await request(app.getHttpServer())
+      .get('/invoices')
+      .query({ rideId: ride.id })
+      .set('Authorization', `Bearer ${other.login.accessToken}`)
+      .expect(200);
+    expect(otherByRide.body.items).toEqual([]);
+    expect(otherByRide.body.total).toBe(0);
+
+    const history = await request(app.getHttpServer())
+      .get(`/bookings/history/${booking.body.id}`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(history.body.invoice.invoiceId).toBe(invoices[0].id);
+    expect(history.body.invoice.invoiceNumber).toBe(invoices[0].invoiceNumber);
+    expect(history.body.invoice.pdfAvailable).toBe(true);
+    expect(history.body.invoice.invoiceDate).toEqual(expect.any(String));
 
     await request(app.getHttpServer())
       .get(`/invoices/${invoices[0].id}`)
@@ -569,6 +651,9 @@ describe('GST tax invoices (integration)', () => {
       .set('Authorization', `Bearer ${passenger.login.accessToken}`)
       .expect(200);
     expect(pdf.body.toString('utf8', 0, 4)).toBe('%PDF');
+    expect(String(pdf.headers['content-disposition'])).toContain(
+      invoicePdfFilename(invoices[0].invoiceNumber),
+    );
 
     const originalRate = invoices[0].gstRateBasisPoints;
     const configs = await dataSource.getRepository(InvoiceTaxConfig).find();
@@ -634,6 +719,58 @@ describe('GST tax invoices (integration)', () => {
     expect(invoices).toHaveLength(1);
     expect(invoices[0].rideType).toBe(RideType.COMMUTE);
     expect(invoices[0].bookingId).toBe(booking.body.id);
+  });
+
+  it('GET /invoices issues a pending Regular invoice for the rider', async () => {
+    const adminUser = await createAuthenticatedUser();
+    const adminToken = await ensureAdmin(adminUser.login.user.id);
+    await seedIssuerAndTax(adminToken);
+    const driver = await fundedDriver();
+    const passenger = await fundedPassenger();
+    const ride = await publishRegular(
+      driver.login.accessToken,
+      driver.vehicle.id,
+    );
+    const booking = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethod.PAY_LATER,
+      })
+      .expect(201);
+
+    await startRideAndVerifyAllPickups(
+      app,
+      dataSource,
+      driver.login.accessToken,
+      ride.id,
+      pickupOtpPepper(),
+    );
+    await request(app.getHttpServer())
+      .post(`/rides/${ride.id}/complete`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+
+    const beforeList = await dataSource.getRepository(GstInvoice).find({
+      where: { rideId: ride.id },
+    });
+    const list = await request(app.getHttpServer())
+      .get('/invoices')
+      .query({ rideId: ride.id })
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(list.body.total).toBe(1);
+    expect(list.body.items[0].bookingId).toBe(booking.body.id);
+    expect(list.body.items[0].pdfAvailable).toBe(true);
+    expect(list.body.items.length).toBeGreaterThanOrEqual(beforeList.length);
+
+    const history = await request(app.getHttpServer())
+      .get(`/bookings/history/${booking.body.id}`)
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .expect(200);
+    expect(history.body.invoice.invoiceId).toBe(list.body.items[0].id);
   });
 
   it('Assured, cancelled, and no-show bookings do not generate rider invoices', async () => {

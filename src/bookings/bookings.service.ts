@@ -110,6 +110,7 @@ import { CommuteBookingCancellationResponseDto } from './dto/commute-cancellatio
 import { CommuteBookingDriverActionResponseDto } from './dto/commute-booking-action-response.dto';
 import { PayLaterPaymentResponseDto } from './dto/regular-pay-later-payment-response.dto';
 import { VerifyPickupResponseDto } from './dto/verify-pickup-response.dto';
+import { GstInvoice } from '../invoices/entities/invoice.entity';
 import { Booking } from './entities/booking.entity';
 import {
   BookingFarePayment,
@@ -160,6 +161,8 @@ export class BookingsService {
     private readonly userCouponRepository: Repository<UserCoupon>,
     @InjectRepository(Vehicle)
     private readonly vehicleRepository: Repository<Vehicle>,
+    @InjectRepository(GstInvoice)
+    private readonly invoiceRepository: Repository<GstInvoice>,
     private readonly verificationService: VerificationService,
     private readonly walletService: WalletService,
     private readonly settingsService: SettingsService,
@@ -1714,6 +1717,16 @@ export class BookingsService {
       throw new NotFoundException('Booking not found');
     }
 
+    const invoice = await this.invoiceRepository.findOne({
+      where: { bookingId: booking.id, riderUserId: passengerId },
+      select: {
+        id: true,
+        issuedAt: true,
+        invoiceNumber: true,
+        pdfStorageKey: true,
+      },
+    });
+
     return {
       trip: item.trip,
       driver: item.driver,
@@ -1725,8 +1738,10 @@ export class BookingsService {
         transactionId: booking.walletTransactionId,
       },
       invoice: {
-        invoiceId: null,
-        invoiceDate: null,
+        invoiceId: invoice?.id ?? null,
+        invoiceDate: invoice?.issuedAt?.toISOString() ?? null,
+        invoiceNumber: invoice?.invoiceNumber ?? null,
+        pdfAvailable: Boolean(invoice?.pdfStorageKey),
         paymentReference: booking.walletTransactionId,
       },
       bookedAt: item.bookedAt,

@@ -30,7 +30,11 @@ export class InvoicesController {
   constructor(private readonly invoicesService: InvoicesService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List tax invoices for the authenticated rider' })
+  @ApiOperation({
+    summary: 'List tax invoices for the authenticated rider',
+    description:
+      'Returns issued GST invoices for the JWT subject only. Optional rideId / bookingId filter the trip. Pending Regular and Daily Office Commute jobs for this rider are processed before the list is returned so Get Invoice can resolve after ride completion.',
+  })
   list(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: RiderInvoiceListQueryDto,
@@ -39,6 +43,8 @@ export class InvoicesController {
       user.userId,
       query.page,
       query.limit,
+      query.rideId,
+      query.bookingId,
     );
   }
 

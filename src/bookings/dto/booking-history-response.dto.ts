@@ -209,17 +209,30 @@ export class BookingHistoryPaymentDto {
 
 export class BookingHistoryInvoiceDto {
   @ApiPropertyOptional({
+    format: 'uuid',
     nullable: true,
-    description: 'No invoice system exists — always null',
+    description:
+      'GST invoice id when issued for this completed booking. Null while generation is pending, failed, or ineligible (Assured / cancelled). Download via GET /invoices/:id/pdf.',
   })
   invoiceId!: string | null;
 
   @ApiPropertyOptional({
     format: 'date-time',
     nullable: true,
-    description: 'No invoice system exists — always null',
+    description: 'Invoice issuedAt when invoiceId is present',
   })
   invoiceDate!: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Issued invoice number when invoiceId is present',
+  })
+  invoiceNumber?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'True when the PDF is stored and GET /invoices/:id/pdf will succeed',
+  })
+  pdfAvailable?: boolean;
 
   @ApiPropertyOptional({
     nullable: true,

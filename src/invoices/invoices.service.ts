@@ -39,11 +39,34 @@ export class InvoicesService {
     this.workerService.scheduleProcess();
   }
 
-  async listForRider(userId: string, page = 1, limit = 20) {
+  async listForRider(
+    userId: string,
+    page = 1,
+    limit = 20,
+    rideId?: string,
+    bookingId?: string,
+  ) {
+    const bookingIds = await this.issuanceService.ensureJobsForRider(userId, {
+      rideId,
+      bookingId,
+    });
+    await this.workerService.processJobsForBookings(bookingIds);
+
     const take = Math.min(Math.max(limit, 1), 100);
     const skip = (Math.max(page, 1) - 1) * take;
+    const where: {
+      riderUserId: string;
+      rideId?: string;
+      bookingId?: string;
+    } = { riderUserId: userId };
+    if (rideId) {
+      where.rideId = rideId;
+    }
+    if (bookingId) {
+      where.bookingId = bookingId;
+    }
     const [items, total] = await this.invoiceRepository.findAndCount({
-      where: { riderUserId: userId },
+      where,
       order: { issuedAt: 'DESC' },
       skip,
       take,

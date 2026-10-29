@@ -33,6 +33,15 @@ export function formatIssuerAddress(input: {
   return lines.join('\n');
 }
 
+/** Filesystem-safe PDF name from the invoice number (slashes cannot appear in filenames). */
+export function invoicePdfFilename(invoiceNumber: string): string {
+  const stem = invoiceNumber
+    .trim()
+    .replace(/[/\\]+/g, '-')
+    .replace(/[^A-Za-z0-9._-]/g, '');
+  return `${stem || 'invoice'}.pdf`;
+}
+
 export function rideDepartureAt(ride: {
   departureDate?: string | null;
   departureTime?: string | null;

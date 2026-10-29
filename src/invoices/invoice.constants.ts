@@ -21,6 +21,9 @@ export const INVOICE_MAX_EMAIL_ATTEMPTS = 5;
 export const INVOICE_MAX_JOB_ATTEMPTS = 8;
 export const INVOICE_RETRY_BASE_MS = 5_000;
 export const INVOICE_WORKER_POLL_MS = 15_000;
+/** Pending jobs processed synchronously when a rider lists invoices. */
+export const INVOICE_LIST_PROCESS_LIMIT = 8;
+export const INVOICE_RIDER_ENSURE_LIMIT = 50;
 export const INVOICE_PREFIX_MAX = 16;
 export const GSTIN_PATTERN =
   /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
@@ -30,6 +33,13 @@ export const SAC_PATTERN = /^[0-9]{4,6}$/;
 /** Singleton issuer-settings row. */
 export const INVOICE_ISSUER_SETTINGS_ID =
   '00000000-0000-4000-8000-000000000021';
+/** Stored on gst_invoices.tax_config_id when no active GST tax rule exists. */
+export const INVOICE_UNCONFIGURED_TAX_CONFIG_ID =
+  '00000000-0000-4000-8000-000000000022';
+export const INVOICE_FALLBACK_SAC = '996411';
+export const INVOICE_FALLBACK_SERVICE_CATEGORY = 'Passenger transportation';
+export const INVOICE_FALLBACK_TAX_NOTES =
+  'Issued without an active GST tax rule. GST was not applied. Amount equals the completed booking fare.';
 
 export const INVOICE_STORAGE_SUBDIR = 'invoices';
 export const INVOICE_LOGO_MAX_BYTES = 1_048_576;

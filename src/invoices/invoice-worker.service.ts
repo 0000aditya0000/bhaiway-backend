@@ -5,7 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, LessThanOrEqual, Repository } from 'typeorm';
+import { In, IsNull, LessThanOrEqual, Repository } from 'typeorm';
 
 import { AdminAlertService } from '../admin/admin-alert.service';
 import { AdminAlertSeverity } from '../admin/entities/admin-alert.entity';
@@ -16,11 +16,13 @@ import { GstInvoice } from './entities/invoice.entity';
 import { InvoiceEmailStatus, InvoiceJobStatus } from './enums/invoice.enums';
 import { InvoiceConfigService } from './invoice-config.service';
 import { buildInvoiceEmailContent } from './invoice-email.templates';
+import { invoicePdfFilename } from './invoice-name.util';
 import { InvoiceIssuanceService } from './invoice-issuance.service';
 import { InvoicePdfService } from './invoice-pdf.service';
 import { InvoiceStorageService } from './invoice-storage.service';
 import { InvoiceTaxResolutionError } from './invoice-tax.math';
 import {
+  INVOICE_LIST_PROCESS_LIMIT,
   INVOICE_MAX_EMAIL_ATTEMPTS,
   INVOICE_MAX_JOB_ATTEMPTS,
   INVOICE_RETRY_BASE_MS,
@@ -75,6 +77,39 @@ export class InvoiceWorkerService implements OnModuleInit, OnModuleDestroy {
     setImmediate(() => {
       void this.processDue();
     });
+  }
+
+  async processJobsForBookings(bookingIds: string[]): Promise<void> {
+    if (bookingIds.length === 0) {
+      return;
+    }
+    const jobs = await this.jobRepository.find({
+      where: {
+        bookingId: In(bookingIds),
+        status: In([
+          InvoiceJobStatus.PENDING,
+          InvoiceJobStatus.PROCESSING,
+          InvoiceJobStatus.FAILED,
+        ]),
+      },
+      order: { createdAt: 'ASC' },
+      take: INVOICE_LIST_PROCESS_LIMIT,
+    });
+    for (const job of jobs) {
+      await this.processJob(job.id);
+    }
+
+    const pendingMail = await this.invoiceRepository.find({
+      where: {
+        bookingId: In(bookingIds),
+        emailStatus: In([InvoiceEmailStatus.PENDING, InvoiceEmailStatus.FAILED]),
+      },
+      order: { createdAt: 'ASC' },
+      take: INVOICE_LIST_PROCESS_LIMIT,
+    });
+    for (const invoice of pendingMail) {
+      await this.deliverEmail(invoice.id);
+    }
   }
 
   async processDue(limit = 20): Promise<void> {
@@ -380,7 +415,7 @@ export class InvoiceWorkerService implements OnModuleInit, OnModuleDestroy {
   }
 
   pdfFilename(invoiceNumber: string): string {
-    return `BhaiWay-Tax-Invoice-${invoiceNumber.replace(/[/\\]/g, '-')}.pdf`;
+    return invoicePdfFilename(invoiceNumber);
   }
 
   private isForeignKeyViolation(error: unknown): boolean {

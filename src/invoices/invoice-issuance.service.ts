@@ -19,11 +19,19 @@ import {
   InvoiceEmailStatus,
   InvoiceJobStatus,
   InvoicePaymentStatus,
+  InvoicePlaceOfSupplyMode,
+  InvoiceTaxPricingMode,
 } from './enums/invoice.enums';
 import { InvoiceConfigService } from './invoice-config.service';
 import {
   INVOICE_CURRENCY,
+  INVOICE_ELIGIBLE_RIDE_TYPES,
+  INVOICE_FALLBACK_SAC,
+  INVOICE_FALLBACK_SERVICE_CATEGORY,
+  INVOICE_FALLBACK_TAX_NOTES,
   INVOICE_NUMBER_PAD,
+  INVOICE_RIDER_ENSURE_LIMIT,
+  INVOICE_UNCONFIGURED_TAX_CONFIG_ID,
   isEligibleInvoiceRideType,
 } from './invoice.constants';
 import {
@@ -36,6 +44,7 @@ import {
   indianFinancialYearLabel,
   InvoiceTaxResolutionError,
   rupeesToPaise,
+  untaxedInvoiceResult,
 } from './invoice-tax.math';
 
 @Injectable()
@@ -67,25 +76,72 @@ export class InvoiceIssuanceService {
     });
 
     for (const booking of bookings) {
-      try {
-        await this.jobRepository.save(
-          this.jobRepository.create({
-            id: randomUUID(),
-            rideId: ride.id,
-            bookingId: booking.id,
-            status: InvoiceJobStatus.PENDING,
-            attemptCount: 0,
-            nextAttemptAt: null,
-          }),
+      await this.enqueueJob(ride.id, booking.id);
+    }
+  }
+
+  /**
+   * Enqueue missing invoice jobs for this rider's completed eligible bookings.
+   * Used when the app polls GET /invoices so a completed Regular/Commute trip
+   * can finish issuance without waiting for the 15s worker poll.
+   */
+  async ensureJobsForRider(
+    riderUserId: string,
+    filters?: { rideId?: string; bookingId?: string },
+  ): Promise<string[]> {
+    const qb = this.dataSource
+      .getRepository(Booking)
+      .createQueryBuilder('booking')
+      .innerJoin(Ride, 'ride', 'ride.id = booking.ride_id')
+      .where('booking.passenger_id = :riderUserId', { riderUserId })
+      .andWhere('booking.status = :bookingStatus', {
+        bookingStatus: BookingStatus.COMPLETED,
+      })
+      .andWhere('ride.status = :rideStatus', {
+        rideStatus: RideStatus.COMPLETED,
+      })
+      .andWhere('ride.ride_type IN (:...rideTypes)', {
+        rideTypes: [...INVOICE_ELIGIBLE_RIDE_TYPES],
+      })
+      .orderBy('booking.updated_at', 'DESC')
+      .addOrderBy('booking.id', 'DESC')
+      .take(INVOICE_RIDER_ENSURE_LIMIT);
+
+    if (filters?.rideId) {
+      qb.andWhere('booking.ride_id = :rideId', { rideId: filters.rideId });
+    }
+    if (filters?.bookingId) {
+      qb.andWhere('booking.id = :bookingId', { bookingId: filters.bookingId });
+    }
+
+    const bookings = await qb.getMany();
+    const bookingIds: string[] = [];
+    for (const booking of bookings) {
+      bookingIds.push(booking.id);
+      await this.enqueueJob(booking.rideId, booking.id);
+    }
+    return bookingIds;
+  }
+
+  private async enqueueJob(rideId: string, bookingId: string): Promise<void> {
+    try {
+      await this.jobRepository.save(
+        this.jobRepository.create({
+          id: randomUUID(),
+          rideId,
+          bookingId,
+          status: InvoiceJobStatus.PENDING,
+          attemptCount: 0,
+          nextAttemptAt: null,
+        }),
+      );
+    } catch (error) {
+      if (!this.isUniqueViolation(error)) {
+        this.logger.warn(
+          `Invoice job enqueue failed booking=${bookingId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         );
-      } catch (error) {
-        if (!this.isUniqueViolation(error)) {
-          this.logger.warn(
-            `Invoice job enqueue failed booking=${booking.id}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
       }
     }
   }
@@ -129,7 +185,7 @@ export class InvoiceIssuanceService {
 
       const issuer = await this.invoiceConfigService.requireIssuer();
       const issuedAt = new Date();
-      const taxConfig = await this.invoiceConfigService.resolveActiveTaxConfig(
+      const taxConfig = await this.invoiceConfigService.findActiveTaxConfig(
         ride.rideType,
         issuedAt,
       );
@@ -150,16 +206,38 @@ export class InvoiceIssuanceService {
       const netFareRupees = BigInt(booking.totalAmount);
       const discountRupees = BigInt(booking.couponDiscountAmount ?? '0');
       const grossFareRupees = netFareRupees + discountRupees;
-      const tax = calculateInvoiceTax({
-        netFareRupees,
-        grossFareRupees,
-        discountRupees,
-        gstRateBasisPoints: taxConfig.gstRateBasisPoints,
-        pricingMode: taxConfig.pricingMode,
-        placeOfSupplyMode: taxConfig.placeOfSupplyMode,
-        issuerStateCode: issuer.stateCode,
-        recipientStateCode: null,
-      });
+      const tax = taxConfig
+        ? calculateInvoiceTax({
+            netFareRupees,
+            grossFareRupees,
+            discountRupees,
+            gstRateBasisPoints: taxConfig.gstRateBasisPoints,
+            pricingMode: taxConfig.pricingMode,
+            placeOfSupplyMode: taxConfig.placeOfSupplyMode,
+            issuerStateCode: issuer.stateCode,
+            recipientStateCode: null,
+          })
+        : untaxedInvoiceResult({
+            netFareRupees,
+            issuerStateCode: issuer.stateCode,
+          });
+      const taxSnapshot = taxConfig
+        ? {
+            ...this.invoiceConfigService.taxConfigSnapshot(taxConfig),
+            issuerFooterNotes: issuer.footerNotes,
+          }
+        : {
+            id: INVOICE_UNCONFIGURED_TAX_CONFIG_ID,
+            fallback: true,
+            reason: 'NO_ACTIVE_TAX_CONFIG',
+            gstRateBasisPoints: 0,
+            pricingMode: InvoiceTaxPricingMode.TAX_EXCLUSIVE,
+            placeOfSupplyMode: InvoicePlaceOfSupplyMode.ISSUER_STATE,
+            sacCode: INVOICE_FALLBACK_SAC,
+            serviceCategory: INVOICE_FALLBACK_SERVICE_CATEGORY,
+            notes: INVOICE_FALLBACK_TAX_NOTES,
+            issuerFooterNotes: issuer.footerNotes,
+          };
 
       const invoiceNumber = await this.nextInvoiceNumber(
         manager,
@@ -206,15 +284,14 @@ export class InvoiceIssuanceService {
         issuerAddress: formatIssuerAddress(issuer),
         issuerState: issuer.state,
         issuerStateCode: issuer.stateCode,
-        sacCode: taxConfig.sacCode,
-        serviceCategory: taxConfig.serviceCategory,
-        placeOfSupplyMode: taxConfig.placeOfSupplyMode,
+        sacCode: taxConfig?.sacCode ?? INVOICE_FALLBACK_SAC,
+        serviceCategory:
+          taxConfig?.serviceCategory ?? INVOICE_FALLBACK_SERVICE_CATEGORY,
+        placeOfSupplyMode:
+          taxConfig?.placeOfSupplyMode ?? InvoicePlaceOfSupplyMode.ISSUER_STATE,
         placeOfSupplyStateCode: tax.placeOfSupplyStateCode,
-        taxConfigId: taxConfig.id,
-        taxConfigSnapshot: {
-          ...this.invoiceConfigService.taxConfigSnapshot(taxConfig),
-          issuerFooterNotes: issuer.footerNotes,
-        },
+        taxConfigId: taxConfig?.id ?? INVOICE_UNCONFIGURED_TAX_CONFIG_ID,
+        taxConfigSnapshot: taxSnapshot,
         currency: INVOICE_CURRENCY,
         emailStatus: InvoiceEmailStatus.PENDING,
         emailAttemptCount: 0,

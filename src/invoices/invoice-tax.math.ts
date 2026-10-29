@@ -134,6 +134,35 @@ export function resolveGstSplit(params: {
   };
 }
 
+/** 0% GST invoice used when no active tax rule is configured. Fare is unchanged. */
+export function untaxedInvoiceResult(params: {
+  netFareRupees: bigint;
+  issuerStateCode: string;
+}): InvoiceTaxResult {
+  if (params.netFareRupees < 0n) {
+    throw new InvoiceTaxResolutionError('Fare amounts cannot be negative');
+  }
+  const issuer = params.issuerStateCode.trim();
+  if (!issuer) {
+    throw new InvoiceTaxResolutionError(
+      'Issuer state code is required to determine GST split',
+    );
+  }
+  const taxableValuePaise = rupeesToPaise(params.netFareRupees);
+  return {
+    taxableValuePaise,
+    gstRateBasisPoints: 0,
+    cgstPaise: 0n,
+    sgstPaise: 0n,
+    igstPaise: 0n,
+    totalTaxPaise: 0n,
+    invoiceTotalPaise: taxableValuePaise,
+    split: InvoiceGstSplit.CGST_SGST,
+    placeOfSupplyStateCode: issuer,
+    pricingMode: InvoiceTaxPricingMode.TAX_EXCLUSIVE,
+  };
+}
+
 export function calculateInvoiceTax(input: InvoiceTaxInput): InvoiceTaxResult {
   if (input.netFareRupees < 0n || input.grossFareRupees < 0n) {
     throw new InvoiceTaxResolutionError('Fare amounts cannot be negative');

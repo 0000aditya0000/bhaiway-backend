@@ -94,9 +94,11 @@ export class InvoicePdfService {
 
     doc.moveDown(1);
     doc.fontSize(8).fillColor('#555');
-    doc.text(
-      'This tax invoice is issued by the BhaiWay registered entity for the eligible completed ride. Tax treatment follows the configuration in force at issue time.',
-    );
+    const fallbackNotes =
+      invoice.taxConfigSnapshot?.fallback === true
+        ? 'This tax invoice is issued by the BhaiWay registered entity for the eligible completed ride. No active GST tax rule was configured at issue time, so GST was not applied.'
+        : 'This tax invoice is issued by the BhaiWay registered entity for the eligible completed ride. Tax treatment follows the configuration in force at issue time.';
+    doc.text(fallbackNotes);
     if (invoice.gstSplit === InvoiceGstSplit.CGST_SGST) {
       doc.text('GST split: CGST and SGST/UTGST (intra-state supply as configured).');
     } else {

@@ -22,6 +22,7 @@ import { WalletTransaction } from '../wallet/entities/wallet-transaction.entity'
 import { CommuteCancellationService } from './commute-cancellation.service';
 import { BookingsController } from './bookings.controller';
 import { BookingsService } from './bookings.service';
+import { GstInvoice } from '../invoices/entities/invoice.entity';
 import { Booking } from './entities/booking.entity';
 
 @Module({
@@ -36,6 +37,7 @@ import { Booking } from './entities/booking.entity';
       UserCoupon,
       Vehicle,
       WalletTransaction,
+      GstInvoice,
     ]),
     AuthModule,
     VerificationModule,

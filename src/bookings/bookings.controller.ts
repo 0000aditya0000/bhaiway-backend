@@ -344,7 +344,7 @@ export class BookingsController {
   @ApiOperation({
     summary: 'Paginated past bookings for the authenticated passenger',
     description:
-      'Returns COMPLETED and CANCELLED bookings owned by the JWT subject only. Active PENDING/CONFIRMED bookings are excluded. Fare/driver/vehicle come from real database records; unavailable invoice/coords fields are null.',
+      'Returns COMPLETED and CANCELLED bookings owned by the JWT subject only. Active PENDING/CONFIRMED bookings are excluded. Fare/driver/vehicle come from real database records. Invoice IDs appear on GET /bookings/history/:id once a GST invoice is issued.',
   })
   @ApiOkResponse({ type: BookingHistoryPageDto })
   @ApiBadRequestResponse({ description: 'Invalid query parameters' })
@@ -359,7 +359,7 @@ export class BookingsController {
   @ApiOperation({
     summary: 'Past booking detail for the booking owner',
     description:
-      'Includes driver, vehicle, fare breakdown, and payment fields from real data. Invoice IDs are null until an invoice system exists.',
+      'Includes driver, vehicle, fare breakdown, and payment fields from real data. invoice.invoiceId is the GST invoice when issued for this booking; otherwise null. Download with GET /invoices/:id/pdf.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: BookingHistoryDetailDto })
