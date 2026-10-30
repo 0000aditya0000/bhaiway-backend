@@ -5,6 +5,22 @@ export function rideTrackingKey(rideId: string): string {
   return `ride:tracking:${rideId}`;
 }
 
+/** Redis key for a ride participant location published during an active SOS. */
+export function rideParticipantTrackingKey(
+  rideId: string,
+  userId: string,
+): string {
+  return `ride:tracking:${rideId}:user:${userId}`;
+}
+
+export function trackingUserRoom(userId: string): string {
+  return `user:${userId}`;
+}
+
+export function adminSafetyRoom(): string {
+  return 'admin:safety';
+}
+
 /** Socket.IO room for a Regular ride's live tracking subscribers. */
 export function rideTrackingRoom(rideId: string): string {
   return `ride:${rideId}`;

@@ -39,6 +39,14 @@ export const ADMIN_PERMISSION_INVOICES_MANAGE = 'ADMIN_INVOICES_MANAGE';
 export const ADMIN_PERMISSION_RIDES_VIEW = 'ADMIN_RIDES_VIEW';
 /** Cancel rides as BhaiWay operations (admin cancellation). */
 export const ADMIN_PERMISSION_RIDES_MANAGE = 'ADMIN_RIDES_MANAGE';
+/** View SOS queue, detail, locations, and live monitoring. */
+export const ADMIN_PERMISSION_SOS_VIEW = 'ADMIN_SOS_VIEW';
+/** Acknowledge, respond, resolve, false-alarm, and note SOS records. */
+export const ADMIN_PERMISSION_SOS_MANAGE = 'ADMIN_SOS_MANAGE';
+/** View safety incidents. */
+export const ADMIN_PERMISSION_INCIDENTS_VIEW = 'ADMIN_INCIDENTS_VIEW';
+/** Assign, escalate, resolve, and note safety incidents. */
+export const ADMIN_PERMISSION_INCIDENTS_MANAGE = 'ADMIN_INCIDENTS_MANAGE';
 
 /** Reserved backing user for the bootstrap dashboard admin (not the platform wallet user). */
 export const ADMIN_BOOTSTRAP_USER_ID = '00000000-0000-4000-8000-000000000099';

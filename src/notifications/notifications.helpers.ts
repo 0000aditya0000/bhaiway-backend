@@ -68,6 +68,21 @@ export function adminRideCancelledKey(
   return `admin-ops-cancel:${rideId}:${recipientUserId}`;
 }
 
+export function sosDriverAlertKey(sosId: string): string {
+  return `sos-driver-alert:${sosId}`;
+}
+
+export function sosPassengerAlertKey(sosId: string, userId: string): string {
+  return `sos-passenger-alert:${sosId}:${userId}`;
+}
+
+export function sosAdditionalTriggerKey(
+  sosId: string,
+  triggerId: string,
+): string {
+  return `sos-additional-trigger:${sosId}:${triggerId}`;
+}
+
 export function noShowClaimResolvedKey(
   claimId: string,
   recipientUserId: string,
@@ -130,4 +145,7 @@ export const NOTIFICATION_TYPE_LABEL: Record<NotificationType, string> = {
   [NotificationType.NO_SHOW_CLAIM_REJECTED]: 'NO_SHOW_CLAIM_REJECTED',
   [NotificationType.NO_SHOW_CLAIM_TIMEOUT]: 'NO_SHOW_CLAIM_TIMEOUT',
   [NotificationType.ADMIN_RIDE_CANCELLED]: 'ADMIN_RIDE_CANCELLED',
+  [NotificationType.SOS_DRIVER_ALERT]: 'SOS_DRIVER_ALERT',
+  [NotificationType.SOS_PASSENGER_ALERT]: 'SOS_PASSENGER_ALERT',
+  [NotificationType.SOS_ADDITIONAL_TRIGGER]: 'SOS_ADDITIONAL_TRIGGER',
 };

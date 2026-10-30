@@ -19,8 +19,13 @@ import {
   RideTrackingEndedEventDto,
 } from './dto/ride-tracking-response.dto';
 import { UpdateDriverLocationDto } from './dto/update-driver-location.dto';
-import { rideTrackingRoom } from './tracking.constants';
 import {
+  adminSafetyRoom,
+  rideTrackingRoom,
+  trackingUserRoom,
+} from './tracking.constants';
+import {
+  SOS_SERVER_EVENTS,
   TRACKING_SERVER_EVENTS,
   TRACKING_SOCKET_EVENTS,
   TRACKING_SOCKET_NAMESPACE,
@@ -29,6 +34,18 @@ import { TrackingService } from './tracking.service';
 
 interface TrackingJoinPayload {
   rideId?: string;
+}
+
+interface TrackingSocketData {
+  userId?: string;
+}
+
+function socketUserId(client: Socket): string | undefined {
+  return (client.data as TrackingSocketData | undefined)?.userId;
+}
+
+function setSocketUserId(client: Socket, userId: string): void {
+  (client.data as TrackingSocketData).userId = userId;
 }
 
 interface DriverLocationSocketPayload extends UpdateDriverLocationDto {
@@ -79,7 +96,11 @@ export class TrackingGateway
         return;
       }
 
-      client.data.userId = payload.sub;
+      setSocketUserId(client, payload.sub);
+      await client.join(trackingUserRoom(payload.sub));
+      if (await this.trackingService.canJoinAdminSafetyRoom(payload.sub)) {
+        await client.join(adminSafetyRoom());
+      }
       this.logger.log(
         `[Tracking][socket] connected socket=${client.id} user=${payload.sub}`,
       );
@@ -96,7 +117,7 @@ export class TrackingGateway
 
   handleDisconnect(client: Socket): void {
     this.logger.log(
-      `[Tracking][socket] disconnected socket=${client.id} user=${client.data?.userId ?? 'unknown'}`,
+      `[Tracking][socket] disconnected socket=${client.id} user=${socketUserId(client) ?? 'unknown'}`,
     );
   }
 
@@ -105,7 +126,7 @@ export class TrackingGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: TrackingJoinPayload,
   ) {
-    const userId = client.data?.userId as string | undefined;
+    const userId = socketUserId(client);
     if (!userId) {
       return { ok: false, error: 'Unauthorized' };
     }
@@ -145,6 +166,20 @@ export class TrackingGateway
     }
   }
 
+  @SubscribeMessage(TRACKING_SOCKET_EVENTS.ADMIN_SAFETY_JOIN)
+  async handleAdminSafetyJoin(@ConnectedSocket() client: Socket) {
+    const userId = socketUserId(client);
+    if (!userId) {
+      return { ok: false, error: 'Unauthorized' };
+    }
+    const allowed = await this.trackingService.canJoinAdminSafetyRoom(userId);
+    if (!allowed) {
+      return { ok: false, error: 'Forbidden' };
+    }
+    await client.join(adminSafetyRoom());
+    return { ok: true, room: adminSafetyRoom() };
+  }
+
   @SubscribeMessage(TRACKING_SOCKET_EVENTS.LEAVE)
   async handleLeave(
     @ConnectedSocket() client: Socket,
@@ -163,7 +198,7 @@ export class TrackingGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: DriverLocationSocketPayload,
   ) {
-    const userId = client.data?.userId as string | undefined;
+    const userId = socketUserId(client);
     if (!userId) {
       return { ok: false, error: 'Unauthorized' };
     }
@@ -239,10 +274,52 @@ export class TrackingGateway
 
     try {
       const sockets = await this.server.in(room).fetchSockets();
-      await Promise.all(sockets.map((socket) => socket.leave(room)));
+      for (const socket of sockets) {
+        socket.leave(room);
+      }
     } catch {
       // Best-effort room cleanup after end.
     }
+  }
+
+  emitToUser(
+    userId: string,
+    event: string,
+    payload: Record<string, unknown>,
+  ): void {
+    if (!this.server) {
+      return;
+    }
+    this.server.to(trackingUserRoom(userId)).emit(event, payload);
+  }
+
+  emitToRide(
+    rideId: string,
+    event: string,
+    payload: Record<string, unknown>,
+  ): void {
+    if (!this.server) {
+      return;
+    }
+    this.server.to(rideTrackingRoom(rideId)).emit(event, payload);
+  }
+
+  emitToAdminSafety(event: string, payload: Record<string, unknown>): void {
+    if (!this.server) {
+      return;
+    }
+    this.server.to(adminSafetyRoom()).emit(event, payload);
+  }
+
+  emitSosDriverAlert(driverId: string, payload: Record<string, unknown>): void {
+    this.emitToUser(driverId, SOS_SERVER_EVENTS.DRIVER_ALERT, payload);
+  }
+
+  emitSosPassengerAlert(
+    userId: string,
+    payload: Record<string, unknown>,
+  ): void {
+    this.emitToUser(userId, SOS_SERVER_EVENTS.PASSENGER_ALERT, payload);
   }
 
   /** Broadcast operational ride cancellation while sockets are still in the room. */
@@ -258,7 +335,8 @@ export class TrackingGateway
   }
 
   private extractToken(client: Socket): string | null {
-    const authToken = client.handshake?.auth?.token;
+    const auth = client.handshake?.auth as { token?: unknown } | undefined;
+    const authToken = auth?.token;
     if (typeof authToken === 'string' && authToken.trim()) {
       return authToken.trim().replace(/^Bearer\s+/i, '');
     }

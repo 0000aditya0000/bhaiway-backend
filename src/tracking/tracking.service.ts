@@ -15,6 +15,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import Redis from 'ioredis';
 import { In, Repository } from 'typeorm';
 
+import {
+  ADMIN_PERMISSION_INCIDENTS_VIEW,
+  ADMIN_PERMISSION_SOS_VIEW,
+} from '../admin/admin.constants';
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingStatus } from '../bookings/enums/booking.enums';
 import { Ride } from '../rides/entities/ride.entity';
@@ -35,6 +39,7 @@ import {
   RIDE_TRACKING_OUT_OF_ORDER_GRACE_MS,
   RIDE_TRACKING_STALE_AFTER_MS,
   RIDE_TRACKING_TTL_SECONDS,
+  rideParticipantTrackingKey,
   rideTrackingKey,
 } from './tracking.constants';
 import { TrackingGateway } from './tracking.gateway';
@@ -48,6 +53,15 @@ interface StoredRideLocation {
   updatedAt: string;
   heading?: number;
   speed?: number;
+  accuracy?: number;
+}
+
+export interface ParticipantLocationSnapshot {
+  latitude: number;
+  longitude: number;
+  timestamp: string;
+  updatedAt: string;
+  accuracy?: number;
 }
 
 export type RideTrackingResponseWithMeta = RideTrackingResponseDto & {
@@ -71,6 +85,30 @@ export class TrackingService implements OnModuleDestroy {
     @Inject(forwardRef(() => TrackingGateway))
     private readonly trackingGateway?: TrackingGateway,
   ) {}
+
+  async canJoinAdminSafetyRoom(userId: string): Promise<boolean> {
+    try {
+      const raw: unknown = await this.rideRepository.manager.query(
+        `SELECT permissions FROM admin_users WHERE user_id = $1 AND is_active = true LIMIT 1`,
+        [userId],
+      );
+      const rows: unknown[] = Array.isArray(raw) ? raw : [];
+      const first = rows[0];
+      const permissions =
+        first && typeof first === 'object' && 'permissions' in first
+          ? (first as { permissions?: unknown }).permissions
+          : [];
+      const list = Array.isArray(permissions)
+        ? permissions.filter((item): item is string => typeof item === 'string')
+        : [];
+      return (
+        list.includes(ADMIN_PERMISSION_SOS_VIEW) ||
+        list.includes(ADMIN_PERMISSION_INCIDENTS_VIEW)
+      );
+    } catch {
+      return false;
+    }
+  }
 
   async onModuleDestroy(): Promise<void> {
     try {
@@ -385,6 +423,101 @@ export class TrackingService implements OnModuleDestroy {
         'Live tracking temporarily unavailable',
       );
     }
+  }
+
+  async getDriverLocationSnapshot(
+    rideId: string,
+  ): Promise<ParticipantLocationSnapshot | null> {
+    try {
+      const stored = await this.readStoredLocation(rideId);
+      if (!stored) {
+        return null;
+      }
+      return {
+        latitude: stored.latitude,
+        longitude: stored.longitude,
+        timestamp: stored.timestamp,
+        updatedAt: stored.updatedAt,
+        accuracy: stored.accuracy,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async setParticipantLocation(
+    rideId: string,
+    userId: string,
+    location: {
+      latitude: number;
+      longitude: number;
+      accuracy?: number;
+      timestamp?: string;
+    },
+  ): Promise<ParticipantLocationSnapshot> {
+    this.assertValidCoordinates(location.latitude, location.longitude);
+    const now = new Date();
+    const payload: ParticipantLocationSnapshot = {
+      latitude: location.latitude,
+      longitude: location.longitude,
+      timestamp: location.timestamp ?? now.toISOString(),
+      updatedAt: now.toISOString(),
+      accuracy: location.accuracy,
+    };
+    const key = rideParticipantTrackingKey(rideId, userId);
+    await this.ensureRedisReady('passenger', 'SET');
+    await this.redis.set(
+      key,
+      JSON.stringify(payload),
+      'EX',
+      RIDE_TRACKING_TTL_SECONDS,
+    );
+    return payload;
+  }
+
+  async getParticipantLocation(
+    rideId: string,
+    userId: string,
+  ): Promise<ParticipantLocationSnapshot | null> {
+    try {
+      await this.ensureRedisReady('passenger', 'GET');
+      const raw = await this.redis.get(
+        rideParticipantTrackingKey(rideId, userId),
+      );
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw) as ParticipantLocationSnapshot;
+      if (
+        typeof parsed.latitude !== 'number' ||
+        typeof parsed.longitude !== 'number'
+      ) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  classifyLocationFreshness(
+    updatedAt: string | null | undefined,
+  ): 'AVAILABLE' | 'STALE' | 'MISSING' {
+    if (!updatedAt) {
+      return 'MISSING';
+    }
+    const ms = Date.parse(updatedAt);
+    if (!Number.isFinite(ms)) {
+      return 'MISSING';
+    }
+    const age = Date.now() - ms;
+    if (age > RIDE_TRACKING_TTL_SECONDS * 1000) {
+      return 'MISSING';
+    }
+    if (age > RIDE_TRACKING_STALE_AFTER_MS) {
+      return 'STALE';
+    }
+    return 'AVAILABLE';
   }
 
   /**
