@@ -46,7 +46,7 @@ export class VehiclesController {
   @ApiOperation({
     summary: 'Create a vehicle',
     description:
-      'Creates a vehicle for the authenticated user. userId and verification fields are never client-controlled. First vehicle is auto-activated.',
+      'Creates a vehicle for the authenticated user without starting RC verification. userId and verification fields are never client-controlled. First vehicle is auto-activated.',
   })
   @ApiCreatedResponse({ type: VehicleResponseDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
@@ -105,7 +105,8 @@ export class VehiclesController {
   @Delete(':id')
   @ApiOperation({
     summary: 'Soft-delete a vehicle (owner only)',
-    description: 'Marks the vehicle deleted for future ride history preservation.',
+    description:
+      'Marks the vehicle deleted for future ride history preservation.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: VehicleResponseDto })
@@ -138,15 +139,21 @@ export class VehiclesController {
   @ApiOperation({
     summary: 'Verify vehicle RC via Cashfree',
     description:
-      'Initiates server-side Cashfree RC verification for an owned vehicle. ' +
-      'Returns 200 on VALID RC and marks vehicle verified; returns 422 if RC is INVALID.',
+      'Initiates server-side Cashfree RC verification for one owned vehicle. ' +
+      'Creation never starts RC verification. Returns 200 when all mandatory checks pass; ' +
+      'returns 422 with field-level checks when they fail.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: VehicleRcResponseDto })
   @ApiBadRequestResponse({
     description: 'Invalid vehicle number format or request data',
   })
-  @ApiNotFoundResponse({ description: 'Vehicle not found' })
+  @ApiNotFoundResponse({
+    description: 'Vehicle not found or not owned by the authenticated user',
+  })
+  @ApiConflictResponse({
+    description: 'RC verification is already in progress for this vehicle',
+  })
   verifyRc(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,

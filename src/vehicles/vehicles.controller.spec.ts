@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/require-await */
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -14,6 +15,9 @@ import {
   VerificationStatus,
   VerificationType,
 } from '../verification/enums/verification.enums';
+import { CashfreeVehicleRcService } from '../verification/cashfree/cashfree-vehicle-rc.service';
+import { VehicleRcVerification } from '../verification/entities/vehicle-rc-verification.entity';
+import { PublicVehicleRcStatus } from '../verification/enums/vehicle-rc-verification.enums';
 import { VerificationModule } from '../verification/verification.module';
 import { VerificationService } from '../verification/verification.service';
 import { markVerificationVerified } from '../verification/test/verification-test.helpers';
@@ -35,6 +39,7 @@ describe('VehiclesController (integration)', () => {
   let dataSource: DataSource;
   let authService: AuthService;
   let verificationService: VerificationService;
+  let cashfreeRcService: CashfreeVehicleRcService;
   const tracked: TestWalletContext[] = [];
 
   beforeAll(async () => {
@@ -80,12 +85,17 @@ describe('VehiclesController (integration)', () => {
     dataSource = moduleRef.get(DataSource);
     authService = moduleRef.get(AuthService);
     verificationService = moduleRef.get(VerificationService);
+    cashfreeRcService = moduleRef.get(CashfreeVehicleRcService);
   });
 
   afterEach(async () => {
+    jest.restoreAllMocks();
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
+        await dataSource
+          .getRepository(VehicleRcVerification)
+          .delete({ userId: ctx.userId });
         await dataSource.getRepository(Vehicle).delete({ userId: ctx.userId });
         await dataSource.getRepository(UserVerification).delete({
           userId: ctx.userId,
@@ -135,9 +145,7 @@ describe('VehiclesController (integration)', () => {
     return `${prefix}AB${suffix}`;
   }
 
-  async function createVehiclePayload(
-    overrides: Record<string, unknown> = {},
-  ) {
+  async function createVehiclePayload(overrides: Record<string, unknown> = {}) {
     return {
       vehicleType: VehicleType.CAR,
       make: 'Honda',
@@ -194,6 +202,31 @@ describe('VehiclesController (integration)', () => {
     expect(response.body.id).toBeTruthy();
     expect(response.body.documentUrl).toBeUndefined();
     expect(response.body.userId).toBeUndefined();
+    expect(response.body.rcVerificationStatus).toBe(
+      PublicVehicleRcStatus.NOT_VERIFIED,
+    );
+    expect(response.body.lastVerifiedAt).toBeNull();
+  });
+
+  it('creating a vehicle does not call the RC provider', async () => {
+    const login = await createAuthenticatedUser();
+    const verifySpy = jest.spyOn(cashfreeRcService, 'verifyVehicleRc');
+
+    const response = await request(app.getHttpServer())
+      .post('/vehicles')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send(await createVehiclePayload())
+      .expect(201);
+
+    expect(verifySpy).not.toHaveBeenCalled();
+    expect(response.body.rcVerificationStatus).toBe(
+      PublicVehicleRcStatus.NOT_VERIFIED,
+    );
+
+    const rcRows = await dataSource.getRepository(VehicleRcVerification).find({
+      where: { vehicleId: response.body.id },
+    });
+    expect(rcRows).toHaveLength(0);
   });
 
   it('vehicle belongs to authenticated user', async () => {
@@ -286,6 +319,9 @@ describe('VehiclesController (integration)', () => {
 
     expect(list.body).toHaveLength(1);
     expect(list.body[0].id).toBe(createdA.body.id);
+    expect(list.body[0].rcVerificationStatus).toBe(
+      PublicVehicleRcStatus.NOT_VERIFIED,
+    );
   });
 
   it('GET /vehicles/:id returns own vehicle', async () => {
@@ -488,8 +524,9 @@ describe('VehiclesController (integration)', () => {
     expect(row!.isActive).toBe(false);
   });
 
-  it('stub bootstrap on vehicle create associates vehicle verification with the vehicle', async () => {
+  it('vehicle create does not re-point stub vehicle verification onto the new vehicle', async () => {
     const login = await createAuthenticatedUser();
+    const verifySpy = jest.spyOn(cashfreeRcService, 'verifyVehicleRc');
 
     await request(app.getHttpServer())
       .post('/verification/identity')
@@ -503,6 +540,11 @@ describe('VehiclesController (integration)', () => {
       .send(await createVehiclePayload())
       .expect(201);
 
+    expect(verifySpy).not.toHaveBeenCalled();
+    expect(created.body.rcVerificationStatus).toBe(
+      PublicVehicleRcStatus.NOT_VERIFIED,
+    );
+
     const record = await dataSource.getRepository(UserVerification).findOneBy({
       userId: login.user.id,
       verificationType: VerificationType.VEHICLE,
@@ -511,7 +553,7 @@ describe('VehiclesController (integration)', () => {
 
     expect(record).toBeTruthy();
     expect(record!.status).toBe(VerificationStatus.VERIFIED);
-    expect(record!.documentReference).toBe(created.body.id);
+    expect(record!.documentReference).not.toBe(created.body.id);
   });
 
   it('vehicle verification remains controlled by UserVerification', async () => {
@@ -530,7 +572,9 @@ describe('VehiclesController (integration)', () => {
       .expect(201);
 
     expect(created.body.isVerified).toBeUndefined();
-    expect(created.body.verificationStatus).toBeUndefined();
+    expect(created.body.rcVerificationStatus).toBe(
+      PublicVehicleRcStatus.NOT_VERIFIED,
+    );
 
     const me = await verificationService.getMyVerifications(login.user.id);
     expect(me.vehicle.status).toBe(VerificationStatus.VERIFIED);

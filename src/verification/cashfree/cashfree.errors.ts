@@ -80,14 +80,28 @@ export class VehicleRcInvalidError extends UnprocessableEntityException {
   constructor(
     message = 'Vehicle RC verification failed',
     code = 'VEHICLE_RC_INVALID',
-    details?: Record<string, any>,
+    details?: Record<string, unknown>,
   ) {
     super({
       statusCode: 422,
       code,
       message,
       error: 'Unprocessable Entity',
+      ...(details ?? {}),
       ...(details ? { details } : {}),
+    });
+  }
+}
+
+export class VehicleRcInProgressError extends ConflictException {
+  constructor(
+    message = 'RC verification is already in progress for this vehicle',
+  ) {
+    super({
+      statusCode: 409,
+      code: 'VEHICLE_RC_IN_PROGRESS',
+      message,
+      error: 'Conflict',
     });
   }
 }

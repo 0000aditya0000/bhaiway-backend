@@ -6,33 +6,40 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, Repository } from 'typeorm';
+import { DataSource, In, IsNull, Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
 
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { CashfreeVehicleRcService } from '../verification/cashfree/cashfree-vehicle-rc.service';
 import {
-  VehicleRcForbiddenError,
+  CashfreeApiError,
+  CashfreeRateLimitError,
+  VehicleRcInProgressError,
   VehicleRcInvalidError,
 } from '../verification/cashfree/cashfree.errors';
 import { UserIdentityVerification } from '../verification/entities/user-identity-verification.entity';
-import { UserVerification } from '../verification/entities/user-verification.entity';
 import { VehicleRcVerification } from '../verification/entities/vehicle-rc-verification.entity';
 import { IdentityVerificationStatus } from '../verification/enums/identity-verification.enums';
 import {
+  PublicVehicleRcStatus,
   VehicleOwnerMatchStatus,
   VehicleRcVerificationStatus,
 } from '../verification/enums/vehicle-rc-verification.enums';
-import {
-  VerificationStatus,
-  VerificationType,
-} from '../verification/enums/verification.enums';
+import { VerificationType } from '../verification/enums/verification.enums';
 import { VerificationService } from '../verification/verification.service';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 import { VehicleRcResponseDto } from './dto/vehicle-rc-response.dto';
 import { VerifyVehicleRcDto } from './dto/verify-vehicle-rc.dto';
 import { Vehicle } from './entities/vehicle.entity';
+import {
+  evaluateVehicleRcChecks,
+  normalizeRegistrationNumber,
+  RC_ERROR_CODES,
+  RC_VERIFICATION_IN_FLIGHT_MS,
+  toPublicVehicleRcStatus,
+  type RcEvaluationResult,
+} from './vehicle-rc-matching';
 
 export interface VehicleResponse {
   id: string;
@@ -45,6 +52,9 @@ export interface VehicleResponse {
   color: string | null;
   seatingCapacity: number;
   isActive: boolean;
+  rcVerificationStatus: PublicVehicleRcStatus;
+  lastVerifiedAt: string | null;
+  insuranceValidUntil: string | null;
 }
 
 const MATERIAL_IDENTITY_FIELDS = [
@@ -72,7 +82,10 @@ export class VehiclesService {
     private readonly cashfreeVehicleRcService: CashfreeVehicleRcService,
   ) {}
 
-  async create(userId: string, dto: CreateVehicleDto): Promise<VehicleResponse> {
+  async create(
+    userId: string,
+    dto: CreateVehicleDto,
+  ): Promise<VehicleResponse> {
     const registrationNumber = this.normalizeRegistrationNumber(
       dto.registrationNumber,
     );
@@ -99,10 +112,6 @@ export class VehiclesService {
       });
 
       const saved = await this.vehicleRepository.save(vehicle);
-      await this.verificationService.associateStubVehicleVerification(
-        userId,
-        saved.id,
-      );
       return this.toResponse(saved);
     } catch (error) {
       this.rethrowDuplicateRegistration(error);
@@ -115,12 +124,18 @@ export class VehiclesService {
       where: { userId, deletedAt: IsNull() },
       order: { createdAt: 'DESC' },
     });
-    return vehicles.map((vehicle) => this.toResponse(vehicle));
+    const latestByVehicle = await this.loadLatestRcByVehicleIds(
+      vehicles.map((vehicle) => vehicle.id),
+    );
+    return vehicles.map((vehicle) =>
+      this.toResponse(vehicle, latestByVehicle.get(vehicle.id)),
+    );
   }
 
   async findOne(userId: string, vehicleId: string): Promise<VehicleResponse> {
     const vehicle = await this.requireOwnedVehicle(userId, vehicleId);
-    return this.toResponse(vehicle);
+    const latest = await this.findLatestRc(vehicle.id);
+    return this.toResponse(vehicle, latest);
   }
 
   async update(
@@ -185,7 +200,8 @@ export class VehiclesService {
         );
       }
 
-      return this.toResponse(saved);
+      const latest = await this.findLatestRc(saved.id);
+      return this.toResponse(saved, latest);
     } catch (error) {
       this.rethrowDuplicateRegistration(error);
       throw error;
@@ -194,10 +210,11 @@ export class VehiclesService {
 
   async remove(userId: string, vehicleId: string): Promise<VehicleResponse> {
     const vehicle = await this.requireOwnedVehicle(userId, vehicleId);
+    const latest = await this.findLatestRc(vehicle.id);
     vehicle.isActive = false;
     await this.vehicleRepository.save(vehicle);
     await this.vehicleRepository.softDelete({ id: vehicle.id });
-    return this.toResponse(vehicle);
+    return this.toResponse(vehicle, latest);
   }
 
   async setActiveVehicle(
@@ -221,12 +238,18 @@ export class VehiclesService {
 
       vehicle.isActive = true;
       const saved = await repo.save(vehicle);
-      return this.toResponse(saved);
+      const latest = await manager
+        .getRepository(VehicleRcVerification)
+        .findOne({
+          where: { vehicleId: saved.id },
+          order: { createdAt: 'DESC' },
+        });
+      return this.toResponse(saved, latest);
     });
   }
 
   normalizeRegistrationNumber(value: string): string {
-    return value.trim().toUpperCase().replace(/\s+/g, '');
+    return normalizeRegistrationNumber(value);
   }
 
   private async requireOwnedVehicle(
@@ -263,7 +286,10 @@ export class VehiclesService {
     return false;
   }
 
-  private toResponse(vehicle: Vehicle): VehicleResponse {
+  private toResponse(
+    vehicle: Vehicle,
+    rc?: VehicleRcVerification | null,
+  ): VehicleResponse {
     return {
       id: vehicle.id,
       vehicleType: vehicle.vehicleType,
@@ -275,7 +301,49 @@ export class VehiclesService {
       color: vehicle.color,
       seatingCapacity: vehicle.seatingCapacity,
       isActive: vehicle.isActive,
+      rcVerificationStatus: toPublicVehicleRcStatus(rc?.status),
+      lastVerifiedAt: this.toLastVerifiedAt(rc),
+      insuranceValidUntil: rc?.insuranceValidUntil ?? null,
     };
+  }
+
+  private toLastVerifiedAt(rc?: VehicleRcVerification | null): string | null {
+    if (!rc) {
+      return null;
+    }
+    if (rc.status === VehicleRcVerificationStatus.PENDING) {
+      return null;
+    }
+    return (rc.verifiedAt ?? rc.createdAt).toISOString();
+  }
+
+  private async findLatestRc(
+    vehicleId: string,
+  ): Promise<VehicleRcVerification | null> {
+    return this.vehicleRcRepository.findOne({
+      where: { vehicleId },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  private async loadLatestRcByVehicleIds(
+    vehicleIds: string[],
+  ): Promise<Map<string, VehicleRcVerification>> {
+    const latest = new Map<string, VehicleRcVerification>();
+    if (vehicleIds.length === 0) {
+      return latest;
+    }
+
+    const records = await this.vehicleRcRepository.find({
+      where: { vehicleId: In(vehicleIds) },
+      order: { createdAt: 'DESC' },
+    });
+    for (const record of records) {
+      if (!latest.has(record.vehicleId)) {
+        latest.set(record.vehicleId, record);
+      }
+    }
+    return latest;
   }
 
   private rethrowDuplicateRegistration(error: unknown): void {
@@ -296,60 +364,22 @@ export class VehiclesService {
     vehicleId: string,
     dto?: VerifyVehicleRcDto,
   ): Promise<VehicleRcResponseDto> {
-    // 1. Authorization: check vehicle exists and is owned by userId
-    const vehicle = await this.vehicleRepository.findOne({
-      where: { id: vehicleId, deletedAt: IsNull() },
-    });
-    if (!vehicle) {
-      throw new NotFoundException('Vehicle not found');
-    }
-    if (vehicle.userId !== userId) {
-      throw new VehicleRcForbiddenError(
-        'You do not have permission to verify this vehicle',
+    const attempt = await this.beginVerificationAttempt(userId, vehicleId, dto);
+
+    if (attempt.existingValid) {
+      return this.toVerifyResponse(
+        attempt.vehicle,
+        attempt.existingValid,
+        null,
+        true,
       );
     }
 
-    // 2. Determine and normalize registration number
-    const targetReg = dto?.vehicleNumber || vehicle.registrationNumber;
-    const normRequested = this.normalizeRegistrationNumber(targetReg);
-    if (!normRequested || normRequested.length < 4) {
-      throw new BadRequestException('A valid vehicle registration number is required');
-    }
+    const pending = attempt.pending;
+    const vehicle = attempt.vehicle;
+    const normRequested = vehicle.registrationNumber;
+    const verificationId = pending.verificationId;
 
-    // 3. Idempotency check:
-    // If the vehicle is already verified with status VALID for this exact registration number,
-    // return the existing verification result without calling Cashfree again.
-    const existingValid = await this.vehicleRcRepository.findOne({
-      where: {
-        vehicleId,
-        requestedVehicleNumber: normRequested,
-        status: VehicleRcVerificationStatus.VALID,
-      },
-      order: { createdAt: 'DESC' },
-    });
-
-    if (existingValid) {
-      return {
-        success: true,
-        verification: {
-          vehicleId,
-          status: 'VERIFIED',
-          vehicleNumber:
-            existingValid.verifiedVehicleNumber ||
-            existingValid.requestedVehicleNumber,
-          verifiedAt: (
-            existingValid.verifiedAt ?? existingValid.createdAt
-          ).toISOString(),
-          verificationId: existingValid.verificationId,
-          ownerMatchStatus: existingValid.ownerMatchStatus,
-        },
-      };
-    }
-
-    // 4. Generate unique server-side verification ID (<= 50 chars)
-    const verificationId = this.generateRcVerificationId(vehicleId);
-
-    // 5. Call Cashfree Vehicle RC API
     let cfResponse;
     try {
       cfResponse = await this.cashfreeVehicleRcService.verifyVehicleRc({
@@ -357,179 +387,328 @@ export class VehiclesService {
         vehicleNumber: normRequested,
       });
     } catch (error) {
-      // Audit log failed attempt in vehicle_rc_verifications
-      try {
-        const failureRecord = this.vehicleRcRepository.create({
-          vehicleId,
-          userId,
-          provider: 'CASHFREE',
-          verificationId,
-          requestedVehicleNumber: normRequested,
-          status: VehicleRcVerificationStatus.FAILED,
-          failureCode:
-            error instanceof HttpException
-              ? (error.getResponse() as any)?.code || error.name
-              : 'UPSTREAM_ERROR',
-          failureReason: (error as Error).message,
-        });
-        await this.vehicleRcRepository.save(failureRecord);
-      } catch {
-        // preserve primary error
-      }
+      await this.markAttemptFailed(pending.id, vehicle.id, error);
       throw error;
     }
 
-    // 6. Check registration number match
-    const returnedRaw = cfResponse.regNo || cfResponse.vehicleNumber || '';
-    const normReturned = returnedRaw
-      ? this.normalizeRegistrationNumber(returnedRaw)
-      : '';
-    const regMatches = !normReturned || normReturned === normRequested;
-
-    // 7. Check owner information (without modifying UserProfile)
+    const evaluation = evaluateVehicleRcChecks(vehicle, cfResponse);
     const ownerMatchStatus = await this.evaluateOwnerMatch(
       userId,
       cfResponse.owner,
     );
 
-    // 8. Determine final verification status
-    const isSuccessful = cfResponse.status === 'VALID' && regMatches;
-
-    if (!isSuccessful) {
-      const failureCode = !regMatches
-        ? 'VEHICLE_NUMBER_MISMATCH'
-        : cfResponse.failureCode || 'VEHICLE_RC_INVALID';
-      const failureReason = !regMatches
-        ? `Returned registration number (${normReturned}) does not match requested (${normRequested})`
-        : cfResponse.failureReason || 'Vehicle RC verification failed';
-
-      const invalidRecord = this.vehicleRcRepository.create({
-        vehicleId,
-        userId,
-        provider: 'CASHFREE',
-        verificationId,
-        referenceId: cfResponse.referenceId ?? null,
-        requestedVehicleNumber: normRequested,
-        verifiedVehicleNumber: normReturned || null,
-        status: VehicleRcVerificationStatus.INVALID,
-        rcStatus: cfResponse.rcStatus ?? null,
-        failureCode,
-        failureReason,
-        ownerMatchStatus: VehicleOwnerMatchStatus.NOT_CHECKED,
-        rawResponse: cfResponse.sanitizedRawResponse ?? null,
+    if (!evaluation.passed) {
+      await this.persistCompletedAttempt({
+        attemptId: pending.id,
+        vehicleId: vehicle.id,
+        cfResponse,
+        evaluation,
+        ownerMatchStatus,
       });
-      await this.vehicleRcRepository.save(invalidRecord);
 
-      throw new VehicleRcInvalidError(failureReason, failureCode, {
-        verificationId,
-        vehicleNumber: normRequested,
-        failureCode,
-        failureReason,
-      });
+      throw new VehicleRcInvalidError(
+        evaluation.primaryMessage,
+        evaluation.primaryCode,
+        {
+          vehicleId: vehicle.id,
+          verificationStatus: evaluation.verificationStatus,
+          checks: evaluation.checks,
+          errors: evaluation.errors,
+          verificationId,
+          vehicleNumber: normRequested,
+          failureCode: evaluation.primaryCode,
+          failureReason: evaluation.primaryMessage,
+        },
+      );
     }
 
-    // 9. Save VALID verification and update vehicle & user_verification within transaction
     return this.dataSource.transaction(async (manager) => {
       const rcRepo = manager.getRepository(VehicleRcVerification);
       const vehRepo = manager.getRepository(Vehicle);
-      const userVerifRepo = manager.getRepository(UserVerification);
-
       const verifiedAt = new Date();
-      const validRecord = rcRepo.create({
-        vehicleId,
-        userId,
-        provider: 'CASHFREE',
-        verificationId,
-        referenceId: cfResponse.referenceId ?? null,
-        requestedVehicleNumber: normRequested,
-        verifiedVehicleNumber: normReturned || normRequested,
-        status: VehicleRcVerificationStatus.VALID,
-        rcStatus: cfResponse.rcStatus ?? null,
-        ownerName: cfResponse.owner ?? null,
-        ownerCount: cfResponse.ownerCount ?? null,
-        vehicleClass: cfResponse.class ?? null,
-        manufacturerName: cfResponse.vehicleManufacturerName ?? null,
-        model: cfResponse.model ?? null,
-        vehicleColor: cfResponse.vehicleColor ?? null,
-        fuelType: cfResponse.type ?? null,
-        bodyType: cfResponse.bodyType ?? null,
-        vehicleCategory: cfResponse.vehicleCategory ?? null,
-        chassis: cfResponse.chassis ?? null,
-        engine: cfResponse.engine ?? null,
-        registrationDate: cfResponse.regDate ?? null,
-        manufacturingMonthYear:
-          cfResponse.vehicleManufacturingMonthYear ?? null,
-        rcExpiryDate: cfResponse.rcExpiryDate ?? null,
-        insuranceCompany: cfResponse.vehicleInsuranceCompanyName ?? null,
-        insuranceValidUntil: cfResponse.vehicleInsuranceUpto ?? null,
-        financer: cfResponse.rcFinancer ?? null,
-        isCommercial: cfResponse.isCommercial ?? null,
-        seatCapacity: cfResponse.seatCapacity ?? null,
-        puccNumber: cfResponse.puccNumber ?? null,
-        puccValidUntil: cfResponse.puccUpto ?? null,
-        blacklistStatus: cfResponse.blacklistStatus ?? null,
-        ownerMatchStatus,
-        rawResponse: cfResponse.sanitizedRawResponse ?? null,
-        verifiedAt,
-      });
-      const savedRecord = await rcRepo.save(validRecord);
+      const returnedRaw = cfResponse.regNo || cfResponse.vehicleNumber || '';
+      const normReturned = returnedRaw
+        ? this.normalizeRegistrationNumber(returnedRaw)
+        : normRequested;
+
+      await rcRepo.update(
+        { id: pending.id, vehicleId: vehicle.id },
+        {
+          referenceId: cfResponse.referenceId ?? null,
+          verifiedVehicleNumber: normReturned,
+          status: VehicleRcVerificationStatus.VALID,
+          rcStatus: cfResponse.rcStatus ?? null,
+          ownerName: cfResponse.owner ?? null,
+          ownerCount: cfResponse.ownerCount ?? null,
+          vehicleClass: cfResponse.class ?? null,
+          manufacturerName: cfResponse.vehicleManufacturerName ?? null,
+          model: cfResponse.model ?? null,
+          vehicleColor: cfResponse.vehicleColor ?? null,
+          fuelType: cfResponse.type ?? null,
+          bodyType: cfResponse.bodyType ?? null,
+          vehicleCategory: cfResponse.vehicleCategory ?? null,
+          chassis: cfResponse.chassis ?? null,
+          engine: cfResponse.engine ?? null,
+          registrationDate: cfResponse.regDate ?? null,
+          manufacturingMonthYear:
+            cfResponse.vehicleManufacturingMonthYear ?? null,
+          rcExpiryDate: cfResponse.rcExpiryDate ?? null,
+          insuranceCompany: cfResponse.vehicleInsuranceCompanyName ?? null,
+          insuranceValidUntil: cfResponse.vehicleInsuranceUpto ?? null,
+          financer: cfResponse.rcFinancer ?? null,
+          isCommercial: cfResponse.isCommercial ?? null,
+          seatCapacity: cfResponse.seatCapacity ?? null,
+          puccNumber: cfResponse.puccNumber ?? null,
+          puccValidUntil: cfResponse.puccUpto ?? null,
+          blacklistStatus: cfResponse.blacklistStatus ?? null,
+          ownerMatchStatus,
+          failureCode: null,
+          failureReason: null,
+          rawResponse: cfResponse.sanitizedRawResponse ?? null,
+          verifiedAt,
+        },
+      );
 
       vehicle.documentType = 'RC';
       vehicle.documentReference = verificationId;
       await vehRepo.save(vehicle);
 
-      let currentVerif = await userVerifRepo.findOne({
-        where: {
-          userId,
-          verificationType: VerificationType.VEHICLE,
-          isCurrent: true,
-        },
-      });
-      if (!currentVerif) {
-        currentVerif = userVerifRepo.create({
-          userId,
-          verificationType: VerificationType.VEHICLE,
-          status: VerificationStatus.VERIFIED,
-          provider: 'CASHFREE',
-          providerReference: verificationId,
-          documentType: 'RC',
-          documentReference: vehicleId,
-          isCurrent: true,
-          submittedAt: verifiedAt,
-          verifiedAt,
-        });
-      } else {
-        currentVerif.status = VerificationStatus.VERIFIED;
-        currentVerif.provider = 'CASHFREE';
-        currentVerif.providerReference = verificationId;
-        currentVerif.documentType = 'RC';
-        currentVerif.documentReference = vehicleId;
-        currentVerif.verifiedAt = verifiedAt;
-        currentVerif.rejectedAt = null;
-        currentVerif.rejectionReason = null;
-      }
-      await userVerifRepo.save(currentVerif);
+      const savedRecord = await rcRepo.findOneByOrFail({ id: pending.id });
+      return this.toVerifyResponse(vehicle, savedRecord, evaluation, true);
+    });
+  }
 
-      return {
-        success: true,
-        verification: {
-          vehicleId,
-          status: 'VERIFIED',
-          vehicleNumber:
-            savedRecord.verifiedVehicleNumber ||
-            savedRecord.requestedVehicleNumber,
-          verifiedAt: verifiedAt.toISOString(),
-          verificationId: savedRecord.verificationId,
-          ownerMatchStatus: savedRecord.ownerMatchStatus,
+  private async beginVerificationAttempt(
+    userId: string,
+    vehicleId: string,
+    dto?: VerifyVehicleRcDto,
+  ): Promise<{
+    vehicle: Vehicle;
+    existingValid: VehicleRcVerification | null;
+    pending: VehicleRcVerification;
+  }> {
+    return this.dataSource.transaction(async (manager) => {
+      const vehRepo = manager.getRepository(Vehicle);
+      const rcRepo = manager.getRepository(VehicleRcVerification);
+
+      const vehicle = await vehRepo
+        .createQueryBuilder('v')
+        .setLock('pessimistic_write')
+        .where('v.id = :id', { id: vehicleId })
+        .andWhere('v.user_id = :userId', { userId })
+        .andWhere('v.deleted_at IS NULL')
+        .getOne();
+
+      if (!vehicle) {
+        throw new NotFoundException('Vehicle not found');
+      }
+
+      if (dto?.vehicleNumber) {
+        const fromDto = this.normalizeRegistrationNumber(dto.vehicleNumber);
+        if (fromDto !== vehicle.registrationNumber) {
+          throw new BadRequestException(
+            'vehicleNumber must match the saved registration number',
+          );
+        }
+      }
+
+      const recentPending = await rcRepo.findOne({
+        where: {
+          vehicleId: vehicle.id,
+          status: VehicleRcVerificationStatus.PENDING,
         },
+        order: { createdAt: 'DESC' },
+      });
+      if (
+        recentPending &&
+        Date.now() - recentPending.createdAt.getTime() <
+          RC_VERIFICATION_IN_FLIGHT_MS
+      ) {
+        throw new VehicleRcInProgressError();
+      }
+
+      const existingValid = await rcRepo.findOne({
+        where: {
+          vehicleId: vehicle.id,
+          requestedVehicleNumber: vehicle.registrationNumber,
+          status: VehicleRcVerificationStatus.VALID,
+        },
+        order: { createdAt: 'DESC' },
+      });
+      if (existingValid) {
+        return {
+          vehicle,
+          existingValid,
+          pending: existingValid,
+        };
+      }
+
+      const pending = rcRepo.create({
+        vehicleId: vehicle.id,
+        userId,
+        provider: 'CASHFREE',
+        verificationId: this.generateRcVerificationId(vehicle.id),
+        requestedVehicleNumber: vehicle.registrationNumber,
+        status: VehicleRcVerificationStatus.PENDING,
+        ownerMatchStatus: VehicleOwnerMatchStatus.NOT_CHECKED,
+      });
+      const savedPending = await rcRepo.save(pending);
+      return {
+        vehicle,
+        existingValid: null,
+        pending: savedPending,
       };
     });
+  }
+
+  private async persistCompletedAttempt(params: {
+    attemptId: string;
+    vehicleId: string;
+    cfResponse: Awaited<
+      ReturnType<CashfreeVehicleRcService['verifyVehicleRc']>
+    >;
+    evaluation: RcEvaluationResult;
+    ownerMatchStatus: VehicleOwnerMatchStatus;
+  }): Promise<void> {
+    const returnedRaw =
+      params.cfResponse.regNo || params.cfResponse.vehicleNumber || '';
+    const normReturned = returnedRaw
+      ? this.normalizeRegistrationNumber(returnedRaw)
+      : null;
+
+    await this.vehicleRcRepository.update(
+      { id: params.attemptId, vehicleId: params.vehicleId },
+      {
+        referenceId: params.cfResponse.referenceId ?? null,
+        verifiedVehicleNumber: normReturned,
+        status: params.evaluation.persistenceStatus,
+        rcStatus: params.cfResponse.rcStatus ?? null,
+        ownerName: params.cfResponse.owner ?? null,
+        ownerCount: params.cfResponse.ownerCount ?? null,
+        vehicleClass: params.cfResponse.class ?? null,
+        manufacturerName: params.cfResponse.vehicleManufacturerName ?? null,
+        model: params.cfResponse.model ?? null,
+        vehicleColor: params.cfResponse.vehicleColor ?? null,
+        fuelType: params.cfResponse.type ?? null,
+        bodyType: params.cfResponse.bodyType ?? null,
+        vehicleCategory: params.cfResponse.vehicleCategory ?? null,
+        chassis: params.cfResponse.chassis ?? null,
+        engine: params.cfResponse.engine ?? null,
+        registrationDate: params.cfResponse.regDate ?? null,
+        manufacturingMonthYear:
+          params.cfResponse.vehicleManufacturingMonthYear ?? null,
+        rcExpiryDate: params.cfResponse.rcExpiryDate ?? null,
+        insuranceCompany: params.cfResponse.vehicleInsuranceCompanyName ?? null,
+        insuranceValidUntil: params.cfResponse.vehicleInsuranceUpto ?? null,
+        financer: params.cfResponse.rcFinancer ?? null,
+        isCommercial: params.cfResponse.isCommercial ?? null,
+        seatCapacity: params.cfResponse.seatCapacity ?? null,
+        puccNumber: params.cfResponse.puccNumber ?? null,
+        puccValidUntil: params.cfResponse.puccUpto ?? null,
+        blacklistStatus: params.cfResponse.blacklistStatus ?? null,
+        ownerMatchStatus: params.ownerMatchStatus,
+        failureCode: params.evaluation.primaryCode,
+        failureReason: params.evaluation.primaryMessage,
+        rawResponse: params.cfResponse.sanitizedRawResponse ?? null,
+      },
+    );
+  }
+
+  private async markAttemptFailed(
+    attemptId: string,
+    vehicleId: string,
+    error: unknown,
+  ): Promise<void> {
+    const providerUnavailable =
+      error instanceof CashfreeApiError ||
+      error instanceof CashfreeRateLimitError;
+    const failureCode = providerUnavailable
+      ? RC_ERROR_CODES.RC_PROVIDER_UNAVAILABLE
+      : this.extractErrorCode(error);
+
+    try {
+      await this.vehicleRcRepository.update(
+        { id: attemptId, vehicleId },
+        {
+          status: VehicleRcVerificationStatus.FAILED,
+          failureCode,
+          failureReason:
+            error instanceof Error
+              ? error.message
+              : 'RC verification provider error',
+        },
+      );
+    } catch {
+      // Preserve the original provider error.
+    }
+  }
+
+  private extractErrorCode(error: unknown): string {
+    if (error instanceof HttpException) {
+      const response = error.getResponse();
+      if (
+        typeof response === 'object' &&
+        response !== null &&
+        'code' in response &&
+        typeof (response as { code?: unknown }).code === 'string'
+      ) {
+        return (response as { code: string }).code;
+      }
+      return error.name;
+    }
+    return 'UPSTREAM_ERROR';
+  }
+
+  private toVerifyResponse(
+    vehicle: Vehicle,
+    record: VehicleRcVerification,
+    evaluation: RcEvaluationResult | null,
+    success: boolean,
+  ): VehicleRcResponseDto {
+    const emptyCheck = {
+      status: 'NOT_AVAILABLE' as const,
+      userValue: null,
+      rcValue: null,
+    };
+    const checks = evaluation?.checks ?? {
+      registrationNumber: {
+        status: 'MATCHED' as const,
+        userValue: vehicle.registrationNumber,
+        rcValue: record.verifiedVehicleNumber,
+      },
+      vehicleName: emptyCheck,
+      make: emptyCheck,
+      model: emptyCheck,
+      colour: emptyCheck,
+      vehicleType: emptyCheck,
+      insurance: emptyCheck,
+      vehicleStatus: emptyCheck,
+    };
+
+    return {
+      success,
+      vehicleId: vehicle.id,
+      verificationStatus: success ? 'VERIFIED' : 'FAILED',
+      checks,
+      errors: evaluation?.errors ?? [],
+      verification: {
+        vehicleId: vehicle.id,
+        status: success ? 'VERIFIED' : 'FAILED',
+        vehicleNumber:
+          record.verifiedVehicleNumber || record.requestedVehicleNumber,
+        verifiedAt: (record.verifiedAt ?? record.createdAt).toISOString(),
+        verificationId: record.verificationId,
+        ownerMatchStatus: record.ownerMatchStatus,
+      },
+    };
   }
 
   generateRcVerificationId(vehicleId: string): string {
     const cleanId = vehicleId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
     const timeBase = Date.now().toString(36);
-    const randPart = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
+    const randPart = randomUUID()
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(0, 8);
     const id = `rc_${cleanId}_${timeBase}_${randPart}`;
     return id.slice(0, 50);
   }
@@ -566,8 +745,14 @@ export class VehiclesService {
       return VehicleOwnerMatchStatus.NOT_CHECKED;
     }
 
-    const normRcOwner = rcOwner.toLowerCase().replace(/[^a-z0-9]/g, ' ').trim();
-    const normUser = userName.toLowerCase().replace(/[^a-z0-9]/g, ' ').trim();
+    const normRcOwner = rcOwner
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, ' ')
+      .trim();
+    const normUser = userName
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, ' ')
+      .trim();
 
     if (normRcOwner === normUser) {
       return VehicleOwnerMatchStatus.MATCHED;

@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+import { PublicVehicleRcStatus } from '../../verification/enums/vehicle-rc-verification.enums';
 import { VehicleType } from '../enums/vehicle-type.enum';
 
 export class VehicleResponseDto {
@@ -31,8 +32,29 @@ export class VehicleResponseDto {
   seatingCapacity!: number;
 
   @ApiProperty({
-    description: 'Preferred/active vehicle flag (changed only via activate endpoint)',
+    description:
+      'Preferred/active vehicle flag (changed only via activate endpoint)',
     example: true,
   })
   isActive!: boolean;
+
+  @ApiProperty({
+    enum: PublicVehicleRcStatus,
+    enumName: 'PublicVehicleRcStatus',
+    example: PublicVehicleRcStatus.NOT_VERIFIED,
+  })
+  rcVerificationStatus!: PublicVehicleRcStatus;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: '2026-09-18T01:30:00.000Z',
+  })
+  lastVerifiedAt!: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: '2027-03-31',
+    description: 'Insurance valid-until date from the latest RC verification',
+  })
+  insuranceValidUntil!: string | null;
 }

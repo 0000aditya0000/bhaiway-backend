@@ -14,6 +14,8 @@ import { User } from '../users/entities/user.entity';
 import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { SubmitVerificationDto } from './dto/submit-verification.dto';
 import { UserVerification } from './entities/user-verification.entity';
+import { VehicleRcVerification } from './entities/vehicle-rc-verification.entity';
+import { VehicleRcVerificationStatus } from './enums/vehicle-rc-verification.enums';
 import {
   VerificationStatus,
   VerificationType,
@@ -50,6 +52,8 @@ export class VerificationService {
     private readonly verificationRepository: Repository<UserVerification>,
     @InjectRepository(Vehicle)
     private readonly vehicleRepository: Repository<Vehicle>,
+    @InjectRepository(VehicleRcVerification)
+    private readonly vehicleRcRepository: Repository<VehicleRcVerification>,
     @InjectRepository(UserProfile)
     private readonly userProfileRepository: Repository<UserProfile>,
     @Inject(VERIFICATION_PROVIDER)
@@ -122,14 +126,15 @@ export class VerificationService {
     userId: string,
     dto: SubmitVerificationDto,
   ): Promise<VerificationStatusView> {
-    const providerResult =
-      await this.verificationProvider.submitDrivingLicense({
+    const providerResult = await this.verificationProvider.submitDrivingLicense(
+      {
         userId,
         verificationType: VerificationType.DRIVING_LICENSE,
         documentUrl: dto.documentUrl ?? null,
         documentType: dto.documentType ?? null,
         documentReference: dto.documentReference ?? null,
-      });
+      },
+    );
 
     return this.submitVerification(
       userId,
@@ -171,10 +176,7 @@ export class VerificationService {
   ): Promise<RideEligibilityResult> {
     await this.requireUser(userId);
 
-    const required = [
-      VerificationType.IDENTITY,
-      VerificationType.VEHICLE,
-    ];
+    const required = [VerificationType.IDENTITY, VerificationType.VEHICLE];
 
     const missing: VerificationType[] = [];
     for (const type of required) {
@@ -189,6 +191,25 @@ export class VerificationService {
         where: { id: vehicleId, userId, deletedAt: IsNull() },
       });
       vehicleEligible = Boolean(vehicle?.isActive);
+
+      if (vehicle) {
+        const latestRc = await this.vehicleRcRepository.findOne({
+          where: { vehicleId: vehicle.id },
+          order: { createdAt: 'DESC' },
+        });
+        if (latestRc) {
+          if (latestRc.status === VehicleRcVerificationStatus.VALID) {
+            const vehicleMissingIndex = missing.indexOf(
+              VerificationType.VEHICLE,
+            );
+            if (vehicleMissingIndex >= 0) {
+              missing.splice(vehicleMissingIndex, 1);
+            }
+          } else if (!missing.includes(VerificationType.VEHICLE)) {
+            missing.push(VerificationType.VEHICLE);
+          }
+        }
+      }
     }
 
     const allowed =
@@ -310,39 +331,6 @@ export class VerificationService {
     }
   }
 
-  /**
-   * Staging stub only — links an existing vehicle verification to the user's
-   * vehicle without bypassing VerificationService submit rules.
-   */
-  async associateStubVehicleVerification(
-    userId: string,
-    vehicleId: string,
-  ): Promise<void> {
-    if (!(this.verificationProvider instanceof StubVerificationProvider)) {
-      return;
-    }
-
-    const current = await this.verificationRepository.findOne({
-      where: {
-        userId,
-        verificationType: VerificationType.VEHICLE,
-        isCurrent: true,
-      },
-    });
-
-    if (!current) {
-      return;
-    }
-
-    if (
-      current.status === VerificationStatus.VERIFIED &&
-      current.documentReference !== vehicleId
-    ) {
-      current.documentReference = vehicleId;
-      await this.verificationRepository.save(current);
-    }
-  }
-
   private async needsStubBootstrap(
     userId: string,
     verificationType: VerificationType,
@@ -425,7 +413,7 @@ export class VerificationService {
     rawGender: string | null | undefined,
   ): Promise<void> {
     const gender = mapVerifiedGenderToEnum(
-      typeof rawGender === 'string' ? rawGender : rawGender ?? null,
+      typeof rawGender === 'string' ? rawGender : (rawGender ?? null),
     );
     if (!gender) {
       throw new BadRequestException(

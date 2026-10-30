@@ -1,15 +1,14 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/require-await */
 import {
   BadRequestException,
   ConflictException,
-  HttpException,
-  HttpStatus,
   INestApplication,
   ValidationPipe,
 } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { DataSource, IsNull } from 'typeorm';
+import { DataSource } from 'typeorm';
 import request from 'supertest';
 
 import { AuthModule } from '../auth/auth.module';
@@ -21,15 +20,16 @@ import { CashfreeConfigService } from '../verification/cashfree/cashfree.config'
 import {
   CashfreeApiError,
   CashfreeRateLimitError,
-  VehicleRcForbiddenError,
-  VehicleRcInvalidError,
 } from '../verification/cashfree/cashfree.errors';
-import { CashfreeVehicleRcService } from '../verification/cashfree/cashfree-vehicle-rc.service';
+import {
+  CashfreeVehicleRcApiResponse,
+  CashfreeVehicleRcService,
+} from '../verification/cashfree/cashfree-vehicle-rc.service';
 import { UserIdentityVerification } from '../verification/entities/user-identity-verification.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import { VehicleRcVerification } from '../verification/entities/vehicle-rc-verification.entity';
-import { IdentityVerificationStatus } from '../verification/enums/identity-verification.enums';
 import {
+  PublicVehicleRcStatus,
   VehicleOwnerMatchStatus,
   VehicleRcVerificationStatus,
 } from '../verification/enums/vehicle-rc-verification.enums';
@@ -194,6 +194,7 @@ describe('Cashfree Vehicle RC Verification', () => {
   async function createTestVehicle(
     userId: string,
     registrationNumber = uniqueRegistration(),
+    overrides: Partial<Vehicle> = {},
   ) {
     const repo = dataSource.getRepository(Vehicle);
     const vehicle = repo.create({
@@ -207,8 +208,27 @@ describe('Cashfree Vehicle RC Verification', () => {
       color: 'White',
       seatingCapacity: 5,
       isActive: true,
+      ...overrides,
     });
     return repo.save(vehicle);
+  }
+
+  function matchingCashfreeRc(
+    registrationNumber: string,
+    overrides: Partial<CashfreeVehicleRcApiResponse> = {},
+  ): CashfreeVehicleRcApiResponse {
+    return {
+      verificationId: `rc_${registrationNumber}`,
+      status: 'VALID',
+      regNo: registrationNumber,
+      vehicleManufacturerName: 'Hyundai',
+      model: 'i20',
+      vehicleColor: 'White',
+      class: 'Motor Car (LMV)',
+      rcStatus: 'ACTIVE',
+      vehicleInsuranceUpto: '2099-12-31',
+      ...overrides,
+    };
   }
 
   // =========================================================================
@@ -228,9 +248,9 @@ describe('Cashfree Vehicle RC Verification', () => {
     });
 
     it('1. Normalizes vehicle registration number correctly', () => {
-      expect(cashfreeRcService.normalizeVehicleNumber(' dl 01 - ab 1234 ')).toBe(
-        'DL01AB1234',
-      );
+      expect(
+        cashfreeRcService.normalizeVehicleNumber(' dl 01 - ab 1234 '),
+      ).toBe('DL01AB1234');
       expect(cashfreeRcService.normalizeVehicleNumber('up-14-bc-9999')).toBe(
         'UP14BC9999',
       );
@@ -492,7 +512,9 @@ describe('Cashfree Vehicle RC Verification', () => {
         timeoutMs: 5000,
       });
 
-      jest.spyOn(global, 'fetch').mockRejectedValueOnce(new Error('Network drop'));
+      jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValueOnce(new Error('Network drop'));
 
       try {
         await cashfreeRcService.verifyVehicleRc({
@@ -511,26 +533,21 @@ describe('Cashfree Vehicle RC Verification', () => {
   // 2. VehiclesService & Controller Integration Tests (POST /vehicles/:id/verify-rc)
   // =========================================================================
   describe('POST /vehicles/:id/verify-rc', () => {
-    it('14. Valid RC verification returns 200, updates vehicle & user_verifications to VERIFIED', async () => {
+    it('14. Valid RC verification returns 200 and updates only that vehicle RC record', async () => {
       const login = await createAuthenticatedUser('Ramesh Kumar');
       const vehicle = await createTestVehicle(login.user.id, 'DL01AB1234');
 
-      jest.spyOn(cashfreeRcService, 'verifyVehicleRc').mockResolvedValueOnce({
-        verificationId: 'rc_valid_test_1',
-        referenceId: 'ref_12345',
-        status: 'VALID',
-        regNo: 'DL01AB1234',
-        class: 'Motor Car (LMV)',
-        chassis: '***1234',
-        engine: '***5678',
-        vehicleManufacturerName: 'Hyundai',
-        model: 'i20',
-        vehicleColor: 'White',
-        owner: 'Ramesh Kumar',
-        rcStatus: 'ACTIVE',
-        seatCapacity: 5,
-        isCommercial: false,
-      });
+      jest.spyOn(cashfreeRcService, 'verifyVehicleRc').mockResolvedValueOnce(
+        matchingCashfreeRc('DL01AB1234', {
+          verificationId: 'rc_valid_test_1',
+          referenceId: 'ref_12345',
+          chassis: '***1234',
+          engine: '***5678',
+          owner: 'Ramesh Kumar',
+          seatCapacity: 5,
+          isCommercial: false,
+        }),
+      );
 
       const res = await request(app.getHttpServer())
         .post(`/vehicles/${vehicle.id}/verify-rc`)
@@ -539,11 +556,16 @@ describe('Cashfree Vehicle RC Verification', () => {
         .expect(200);
 
       expect(res.body.success).toBe(true);
+      expect(res.body.vehicleId).toBe(vehicle.id);
+      expect(res.body.verificationStatus).toBe('VERIFIED');
       expect(res.body.verification.status).toBe('VERIFIED');
       expect(res.body.verification.vehicleNumber).toBe('DL01AB1234');
       expect(res.body.verification.ownerMatchStatus).toBe(
         VehicleOwnerMatchStatus.MATCHED,
       );
+      expect(res.body.checks.registrationNumber.status).toBe('MATCHED');
+      expect(res.body.checks.vehicleName.status).toBe('MATCHED');
+      expect(res.body.errors).toEqual([]);
 
       // Verify Vehicle table updated
       const updatedVehicle = await dataSource
@@ -552,17 +574,16 @@ describe('Cashfree Vehicle RC Verification', () => {
       expect(updatedVehicle.documentType).toBe('RC');
       expect(updatedVehicle.documentReference).toBeDefined();
 
-      // Verify UserVerification table updated
       const userVerif = await dataSource
         .getRepository(UserVerification)
-        .findOneByOrFail({
-          userId: login.user.id,
-          verificationType: VerificationType.VEHICLE,
-          isCurrent: true,
+        .findOne({
+          where: {
+            userId: login.user.id,
+            verificationType: VerificationType.VEHICLE,
+            isCurrent: true,
+          },
         });
-      expect(userVerif.status).toBe(VerificationStatus.VERIFIED);
-      expect(userVerif.provider).toBe('CASHFREE');
-      expect(userVerif.documentType).toBe('RC');
+      expect(userVerif).toBeNull();
 
       // Verify immutable vehicle_rc_verifications row created
       const rcRecord = await dataSource
@@ -651,11 +672,7 @@ describe('Cashfree Vehicle RC Verification', () => {
 
       const verifySpy = jest
         .spyOn(cashfreeRcService, 'verifyVehicleRc')
-        .mockResolvedValueOnce({
-          verificationId: 'rc_fallback_1',
-          status: 'VALID',
-          regNo: 'HR26DK8888',
-        });
+        .mockResolvedValueOnce(matchingCashfreeRc('HR26DK8888'));
 
       const res = await request(app.getHttpServer())
         .post(`/vehicles/${vehicle.id}/verify-rc`)
@@ -694,11 +711,7 @@ describe('Cashfree Vehicle RC Verification', () => {
 
       const verifySpy = jest
         .spyOn(cashfreeRcService, 'verifyVehicleRc')
-        .mockResolvedValueOnce({
-          verificationId: 'rc_idempotent_1',
-          status: 'VALID',
-          regNo: 'MH02CL5555',
-        });
+        .mockResolvedValueOnce(matchingCashfreeRc('MH02CL5555'));
 
       // First call
       await request(app.getHttpServer())
@@ -731,12 +744,10 @@ describe('Cashfree Vehicle RC Verification', () => {
           verificationId: 'rc_first_fail',
           status: 'INVALID',
           regNo: 'DL01REVERIF1',
+          failureCode: 'VEHICLE_RC_INVALID',
+          failureReason: 'RC details not found in registry',
         })
-        .mockResolvedValueOnce({
-          verificationId: 'rc_second_success',
-          status: 'VALID',
-          regNo: 'DL01REVERIF1',
-        });
+        .mockResolvedValueOnce(matchingCashfreeRc('DL01REVERIF1'));
 
       // First call: returns INVALID
       await request(app.getHttpServer())
@@ -756,18 +767,19 @@ describe('Cashfree Vehicle RC Verification', () => {
       expect(res.body.verification.status).toBe('VERIFIED');
     });
 
-    it('21. Authorization: User A cannot verify User B vehicle (403 Forbidden)', async () => {
+    it('21. Authorization: User A cannot verify User B vehicle (404)', async () => {
       const userA = await createAuthenticatedUser('User A');
       const userB = await createAuthenticatedUser('User B');
       const vehicleB = await createTestVehicle(userB.user.id, 'UP16CD1234');
+      const verifySpy = jest.spyOn(cashfreeRcService, 'verifyVehicleRc');
 
-      const res = await request(app.getHttpServer())
+      await request(app.getHttpServer())
         .post(`/vehicles/${vehicleB.id}/verify-rc`)
         .set('Authorization', `Bearer ${userA.accessToken}`)
         .send({ vehicleNumber: 'UP16CD1234' })
-        .expect(403);
+        .expect(404);
 
-      expect(res.body.code).toBe('VEHICLE_ACCESS_DENIED');
+      expect(verifySpy).not.toHaveBeenCalled();
     });
 
     it('22. Unauthenticated request rejected with 401', async () => {
@@ -795,12 +807,12 @@ describe('Cashfree Vehicle RC Verification', () => {
       const vehicle = await createTestVehicle(login.user.id, 'KA01AB4321');
 
       // Cashfree returns different owner name
-      jest.spyOn(cashfreeRcService, 'verifyVehicleRc').mockResolvedValueOnce({
-        verificationId: 'rc_owner_diff',
-        status: 'VALID',
-        regNo: 'KA01AB4321',
-        owner: 'Suresh Patel',
-      });
+      jest.spyOn(cashfreeRcService, 'verifyVehicleRc').mockResolvedValueOnce(
+        matchingCashfreeRc('KA01AB4321', {
+          verificationId: 'rc_owner_diff',
+          owner: 'Suresh Patel',
+        }),
+      );
 
       const res = await request(app.getHttpServer())
         .post(`/vehicles/${vehicle.id}/verify-rc`)
@@ -846,11 +858,11 @@ describe('Cashfree Vehicle RC Verification', () => {
       expect(eligibility.missing).toEqual([VerificationType.VEHICLE]);
 
       // Perform RC verification
-      jest.spyOn(cashfreeRcService, 'verifyVehicleRc').mockResolvedValueOnce({
-        verificationId: 'rc_publish_success',
-        status: 'VALID',
-        regNo: 'DL01PUBSH1',
-      });
+      jest.spyOn(cashfreeRcService, 'verifyVehicleRc').mockResolvedValueOnce(
+        matchingCashfreeRc('DL01PUBSH1', {
+          verificationId: 'rc_publish_success',
+        }),
+      );
 
       await request(app.getHttpServer())
         .post(`/vehicles/${vehicle.id}/verify-rc`)
@@ -865,6 +877,316 @@ describe('Cashfree Vehicle RC Verification', () => {
       );
       expect(eligibility.allowed).toBe(true);
       expect(eligibility.missing).toEqual([]);
+    });
+
+    it('26. Verifying vehicle A does not change vehicles B or C', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicleA = await createTestVehicle(
+        login.user.id,
+        uniqueRegistration('UP16'),
+      );
+      const vehicleB = await createTestVehicle(
+        login.user.id,
+        uniqueRegistration('DL8C'),
+        {
+          isActive: false,
+          make: 'Honda',
+          model: 'City',
+        },
+      );
+      const vehicleC = await createTestVehicle(
+        login.user.id,
+        uniqueRegistration('HR26'),
+        {
+          isActive: false,
+          make: 'Maruti',
+          model: 'Swift',
+        },
+      );
+
+      const verifySpy = jest
+        .spyOn(cashfreeRcService, 'verifyVehicleRc')
+        .mockResolvedValueOnce(matchingCashfreeRc(vehicleA.registrationNumber));
+
+      await request(app.getHttpServer())
+        .post(`/vehicles/${vehicleA.id}/verify-rc`)
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send({})
+        .expect(200);
+
+      expect(verifySpy).toHaveBeenCalledTimes(1);
+      expect(verifySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          vehicleNumber: vehicleA.registrationNumber,
+        }),
+      );
+
+      const rcRepo = dataSource.getRepository(VehicleRcVerification);
+      const aRecord = await rcRepo.findOne({
+        where: { vehicleId: vehicleA.id },
+        order: { createdAt: 'DESC' },
+      });
+      const bRecords = await rcRepo.find({ where: { vehicleId: vehicleB.id } });
+      const cRecords = await rcRepo.find({ where: { vehicleId: vehicleC.id } });
+
+      expect(aRecord?.status).toBe(VehicleRcVerificationStatus.VALID);
+      expect(bRecords).toHaveLength(0);
+      expect(cRecords).toHaveLength(0);
+
+      const list = await request(app.getHttpServer())
+        .get('/vehicles')
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .expect(200);
+
+      const byId = new Map(
+        list.body.map((row: { id: string }) => [row.id, row]),
+      );
+      expect(byId.get(vehicleA.id)).toMatchObject({
+        rcVerificationStatus: PublicVehicleRcStatus.VERIFIED,
+        registrationNumber: vehicleA.registrationNumber,
+      });
+      expect(byId.get(vehicleB.id)).toMatchObject({
+        rcVerificationStatus: PublicVehicleRcStatus.NOT_VERIFIED,
+      });
+      expect(byId.get(vehicleC.id)).toMatchObject({
+        rcVerificationStatus: PublicVehicleRcStatus.NOT_VERIFIED,
+      });
+    });
+
+    it('27. Vehicle name/model mismatch returns field-level error', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createTestVehicle(login.user.id, 'UP16NM9991');
+
+      jest.spyOn(cashfreeRcService, 'verifyVehicleRc').mockResolvedValueOnce(
+        matchingCashfreeRc('UP16NM9991', {
+          model: 'Grand i10',
+        }),
+      );
+
+      const res = await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/verify-rc`)
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send({})
+        .expect(422);
+
+      expect(res.body.code).toBe('VEHICLE_DETAILS_MISMATCH');
+      expect(res.body.checks.model.status).toBe('MISMATCHED');
+      expect(res.body.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: 'VEHICLE_DETAILS_MISMATCH',
+            field: 'model',
+          }),
+        ]),
+      );
+
+      const rcRecord = await dataSource
+        .getRepository(VehicleRcVerification)
+        .findOneByOrFail({ vehicleId: vehicle.id });
+      expect(rcRecord.status).toBe(VehicleRcVerificationStatus.INVALID);
+    });
+
+    it('28. Colour mismatch is reported when the provider returns a colour', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createTestVehicle(login.user.id, 'UP16CL9992');
+
+      jest
+        .spyOn(cashfreeRcService, 'verifyVehicleRc')
+        .mockResolvedValueOnce(
+          matchingCashfreeRc('UP16CL9992', { vehicleColor: 'Black' }),
+        );
+
+      const res = await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/verify-rc`)
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send({})
+        .expect(422);
+
+      expect(res.body.checks.colour.status).toBe('MISMATCHED');
+      expect(res.body.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: 'VEHICLE_DETAILS_MISMATCH',
+            field: 'colour',
+          }),
+        ]),
+      );
+    });
+
+    it('29. Expired insurance returns INSURANCE_EXPIRED', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createTestVehicle(login.user.id, 'UP16IN9993');
+
+      jest.spyOn(cashfreeRcService, 'verifyVehicleRc').mockResolvedValueOnce(
+        matchingCashfreeRc('UP16IN9993', {
+          vehicleInsuranceUpto: '2020-01-01',
+        }),
+      );
+
+      const res = await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/verify-rc`)
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send({})
+        .expect(422);
+
+      expect(res.body.code).toBe('INSURANCE_EXPIRED');
+      expect(res.body.checks.insurance.status).toBe('MISMATCHED');
+    });
+
+    it('30. Invalid vehicle registration status returns VEHICLE_STATUS_INVALID', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createTestVehicle(login.user.id, 'UP16ST9994');
+
+      jest
+        .spyOn(cashfreeRcService, 'verifyVehicleRc')
+        .mockResolvedValueOnce(
+          matchingCashfreeRc('UP16ST9994', { rcStatus: 'EXPIRED' }),
+        );
+
+      const res = await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/verify-rc`)
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send({})
+        .expect(422);
+
+      expect(res.body.code).toBe('VEHICLE_STATUS_INVALID');
+    });
+
+    it('31. Missing provider fields fail safely without marking verified', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createTestVehicle(login.user.id, 'UP16MS9995');
+
+      jest.spyOn(cashfreeRcService, 'verifyVehicleRc').mockResolvedValueOnce({
+        verificationId: 'rc_missing_fields',
+        status: 'VALID',
+        regNo: 'UP16MS9995',
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/verify-rc`)
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send({})
+        .expect(422);
+
+      expect(res.body.checks.vehicleName.status).toBe('NOT_AVAILABLE');
+      expect(res.body.checks.insurance.status).toBe('NOT_AVAILABLE');
+      expect(
+        res.body.verificationStatus ?? res.body.details?.verificationStatus,
+      ).toBe('FAILED');
+
+      const rcRecord = await dataSource
+        .getRepository(VehicleRcVerification)
+        .findOneByOrFail({ vehicleId: vehicle.id });
+      expect(rcRecord.status).toBe(VehicleRcVerificationStatus.INVALID);
+    });
+
+    it('32. Provider timeout marks the attempt FAILED, not VERIFIED', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createTestVehicle(login.user.id, 'UP16TO9996');
+
+      jest
+        .spyOn(cashfreeRcService, 'verifyVehicleRc')
+        .mockRejectedValueOnce(
+          new CashfreeApiError(
+            'Failed to communicate with Cashfree Vehicle RC service',
+          ),
+        );
+
+      await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/verify-rc`)
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send({})
+        .expect(502);
+
+      const rcRecord = await dataSource
+        .getRepository(VehicleRcVerification)
+        .findOneByOrFail({ vehicleId: vehicle.id });
+      expect(rcRecord.status).toBe(VehicleRcVerificationStatus.FAILED);
+      expect(rcRecord.failureCode).toBe('RC_PROVIDER_UNAVAILABLE');
+    });
+
+    it('33. Duplicate in-flight verification does not start a second provider call', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicle = await createTestVehicle(login.user.id, 'UP16DP9997');
+      const rcRepo = dataSource.getRepository(VehicleRcVerification);
+      await rcRepo.save(
+        rcRepo.create({
+          vehicleId: vehicle.id,
+          userId: login.user.id,
+          provider: 'CASHFREE',
+          verificationId: `rc_pending_${Date.now()}`,
+          requestedVehicleNumber: vehicle.registrationNumber,
+          status: VehicleRcVerificationStatus.PENDING,
+        }),
+      );
+
+      const verifySpy = jest.spyOn(cashfreeRcService, 'verifyVehicleRc');
+
+      const res = await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/verify-rc`)
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send({})
+        .expect(409);
+
+      expect(res.body.code).toBe('VEHICLE_RC_IN_PROGRESS');
+      expect(verifySpy).not.toHaveBeenCalled();
+    });
+
+    it('34. Two different vehicles can be verified independently', async () => {
+      const login = await createAuthenticatedUser();
+      const vehicleA = await createTestVehicle(
+        login.user.id,
+        uniqueRegistration('MH12'),
+      );
+      const vehicleB = await createTestVehicle(
+        login.user.id,
+        uniqueRegistration('KA03'),
+        {
+          isActive: false,
+          make: 'Honda',
+          model: 'City',
+          color: 'White',
+        },
+      );
+
+      const verifySpy = jest
+        .spyOn(cashfreeRcService, 'verifyVehicleRc')
+        .mockResolvedValueOnce(matchingCashfreeRc(vehicleA.registrationNumber))
+        .mockResolvedValueOnce(
+          matchingCashfreeRc(vehicleB.registrationNumber, {
+            vehicleManufacturerName: 'Honda',
+            model: 'City',
+          }),
+        );
+
+      await request(app.getHttpServer())
+        .post(`/vehicles/${vehicleA.id}/verify-rc`)
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send({})
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post(`/vehicles/${vehicleB.id}/verify-rc`)
+        .set('Authorization', `Bearer ${login.accessToken}`)
+        .send({})
+        .expect(200);
+
+      expect(verifySpy).toHaveBeenCalledTimes(2);
+
+      const rcRepo = dataSource.getRepository(VehicleRcVerification);
+      const aRecord = await rcRepo.findOneOrFail({
+        where: { vehicleId: vehicleA.id },
+        order: { createdAt: 'DESC' },
+      });
+      const bRecord = await rcRepo.findOneOrFail({
+        where: { vehicleId: vehicleB.id },
+        order: { createdAt: 'DESC' },
+      });
+      expect(aRecord.status).toBe(VehicleRcVerificationStatus.VALID);
+      expect(bRecord.status).toBe(VehicleRcVerificationStatus.VALID);
+      expect(aRecord.id).not.toBe(bRecord.id);
+      expect(aRecord.requestedVehicleNumber).toBe(vehicleA.registrationNumber);
+      expect(bRecord.requestedVehicleNumber).toBe(vehicleB.registrationNumber);
     });
   });
 });
