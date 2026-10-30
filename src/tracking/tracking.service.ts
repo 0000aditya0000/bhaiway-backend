@@ -337,6 +337,22 @@ export class TrackingService implements OnModuleDestroy {
     }
   }
 
+  broadcastRideCancelled(event: {
+    rideId: string;
+    finalStatus: string;
+    reason: string;
+    inProgress: boolean;
+    bookingIds?: string[];
+  }): void {
+    try {
+      this.trackingGateway?.broadcastRideCancelled(event);
+    } catch (error) {
+      this.logger.warn(
+        `[Tracking] cancelled broadcast failed ride=${event.rideId} err=${safeRedisErrorMessage(error)}`,
+      );
+    }
+  }
+
   /**
    * Single atomic SET with EX TTL (one round-trip). Avoids separate EXPIRE.
    */
@@ -379,9 +395,7 @@ export class TrackingService implements OnModuleDestroy {
    * POST /tracking/rides/:id/location (or the tracking socket).
    * Keys expire after RIDE_TRACKING_TTL_SECONDS (120s).
    */
-  async getStoredLocationsForRides(
-    rideIds: string[],
-  ): Promise<{
+  async getStoredLocationsForRides(rideIds: string[]): Promise<{
     locations: Map<
       string,
       {
@@ -622,10 +636,7 @@ export class TrackingService implements OnModuleDestroy {
     }
   }
 
-  private assertOptionalMotionFields(
-    heading?: number,
-    speed?: number,
-  ): void {
+  private assertOptionalMotionFields(heading?: number, speed?: number): void {
     if (heading !== undefined) {
       if (!Number.isFinite(heading) || heading < 0 || heading > 360) {
         throw new BadRequestException('Invalid heading');
@@ -651,8 +662,6 @@ function haversineMeters(
   const dLon = toRad(lon2 - lon1);
   const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) *
-      Math.cos(toRad(lat2)) *
-      Math.sin(dLon / 2) ** 2;
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return 2 * earthRadiusM * Math.asin(Math.sqrt(a));
 }

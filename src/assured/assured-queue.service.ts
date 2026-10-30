@@ -4,11 +4,7 @@ import {
   Injectable,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import {
-  EntityManager,
-  QueryFailedError,
-  Repository,
-} from 'typeorm';
+import { EntityManager, QueryFailedError, Repository } from 'typeorm';
 
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
@@ -213,8 +209,7 @@ export class AssuredQueueService {
     manager: EntityManager,
     params: AdvanceQueueParams,
   ): Promise<AdvanceQueueResult> {
-    const isForce =
-      params.reason === AssuredQueueAdvanceReason.FORCE_PUBLISH;
+    const isForce = params.reason === AssuredQueueAdvanceReason.FORCE_PUBLISH;
     if (isForce && !params.idempotencyKey?.trim()) {
       throw new BadRequestException(
         'FORCE_PUBLISH requires an explicit idempotency key',
@@ -252,10 +247,7 @@ export class AssuredQueueService {
     // FULL may promote while the source ride is FULL (seats=0). All other reasons
     // (including DRIVER_CANCELLED / DRIVER_NO_SHOW / FORCE_PUBLISH) must not
     // promote when a bookable ACTIVE already exists.
-    if (
-      activeBookable &&
-      params.reason !== AssuredQueueAdvanceReason.FULL
-    ) {
+    if (activeBookable && params.reason !== AssuredQueueAdvanceReason.FULL) {
       if (!isForce) {
         await this.recordQueueEvent(manager, {
           queueKey: auditKey,
@@ -487,10 +479,7 @@ export class AssuredQueueService {
       .where('ride.assured_queue_id = :queueId', { queueId })
       .andWhere('ride.ride_type = :rideType', { rideType: RideType.ASSURED })
       .andWhere('ride.status IN (:...statuses)', {
-        statuses: [
-          RideStatus.ASSURANCE_PENDING,
-          RideStatus.ASSURANCE_ACTIVE,
-        ],
+        statuses: [RideStatus.ASSURANCE_PENDING, RideStatus.ASSURANCE_ACTIVE],
       })
       .orderBy('ride.created_at', 'ASC')
       .addOrderBy('ride.id', 'ASC')
@@ -538,6 +527,7 @@ export class AssuredQueueService {
         return AssuredQueueEventType.FORCE_PUBLISHED;
       case AssuredQueueAdvanceReason.DRIVER_CANCELLED:
       case AssuredQueueAdvanceReason.DRIVER_NO_SHOW:
+      case AssuredQueueAdvanceReason.ADMIN_CANCELLED:
         return AssuredQueueEventType.CANCELLED_PROMOTION;
       default:
         return AssuredQueueEventType.PROMOTED;

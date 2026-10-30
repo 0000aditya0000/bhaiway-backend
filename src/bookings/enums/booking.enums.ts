@@ -43,6 +43,8 @@ export enum BookingCancellationReason {
   DRIVER_REJECTED = 'DRIVER_REJECTED',
   /** Commute ride became full; remaining PENDING requests auto-cancelled with full refund. */
   COMMUTE_RIDE_FULL = 'COMMUTE_RIDE_FULL',
+  /** BhaiWay operations cancelled the ride. */
+  ADMIN_CANCELLED = 'ADMIN_CANCELLED',
 }
 
 /**

@@ -3,6 +3,7 @@ export enum AssuredQueueAdvanceReason {
   DRIVER_CANCELLED = 'DRIVER_CANCELLED',
   DRIVER_NO_SHOW = 'DRIVER_NO_SHOW',
   FORCE_PUBLISH = 'FORCE_PUBLISH',
+  ADMIN_CANCELLED = 'ADMIN_CANCELLED',
 }
 
 export enum AssuredQueueEventType {

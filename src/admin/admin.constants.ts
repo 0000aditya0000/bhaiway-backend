@@ -35,6 +35,10 @@ export const ADMIN_PERMISSION_DRIVERS_VIEW = 'ADMIN_DRIVERS_VIEW';
 export const ADMIN_PERMISSION_INVOICES_VIEW = 'ADMIN_INVOICES_VIEW';
 /** Manage GST issuer/tax configuration and retry invoice email. */
 export const ADMIN_PERMISSION_INVOICES_MANAGE = 'ADMIN_INVOICES_MANAGE';
+/** View the admin rides directory and ride operational detail. */
+export const ADMIN_PERMISSION_RIDES_VIEW = 'ADMIN_RIDES_VIEW';
+/** Cancel rides as BhaiWay operations (admin cancellation). */
+export const ADMIN_PERMISSION_RIDES_MANAGE = 'ADMIN_RIDES_MANAGE';
 
 /** Reserved backing user for the bootstrap dashboard admin (not the platform wallet user). */
 export const ADMIN_BOOTSTRAP_USER_ID = '00000000-0000-4000-8000-000000000099';

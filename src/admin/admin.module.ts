@@ -31,6 +31,7 @@ import { AdminActivityEvent } from './entities/admin-activity-event.entity';
 import { AdminAlert } from './entities/admin-alert.entity';
 import { AdminUser } from './entities/admin-user.entity';
 import { AdminPermissionGuard } from './guards/admin-permission.guard';
+import { AdminRidesModule } from './rides/admin-rides.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { AdminPermissionGuard } from './guards/admin-permission.guard';
     TrackingModule,
     WalletModule,
     RatingsModule,
+    AdminRidesModule,
     TypeOrmModule.forFeature([
       AdminUser,
       AdminAlert,

@@ -26,6 +26,7 @@ export enum RegularSeatsPolicy {
 export enum RideCancellationReason {
   DRIVER_CANCELLED = 'DRIVER_CANCELLED',
   DRIVER_NO_SHOW = 'DRIVER_NO_SHOW',
+  ADMIN_CANCELLED = 'ADMIN_CANCELLED',
 }
 
 /** Direction of a series-generated Daily Office Commute occurrence. */

@@ -9,6 +9,7 @@ export const TRACKING_SOCKET_EVENTS = {
 export const TRACKING_SERVER_EVENTS = {
   LOCATION_UPDATED: 'ride:location:updated',
   TRACKING_ENDED: 'ride:tracking:ended',
+  RIDE_CANCELLED: 'ride:cancelled',
   ERROR: 'tracking:error',
 } as const;
 

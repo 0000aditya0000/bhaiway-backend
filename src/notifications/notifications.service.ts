@@ -33,6 +33,7 @@ import {
 import { NotificationEmailService } from './notification-email.service';
 import { NotificationsDispatcher } from './notifications.dispatcher';
 import {
+  adminRideCancelledKey,
   assuredPublishedKey,
   bookingCancelledKey,
   bookingConfirmedKey,
@@ -596,6 +597,33 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  async safeNotifyAdminRideCancelled(params: {
+    rideId: string;
+    recipientUserId: string;
+    role: 'driver' | 'passenger';
+    body: string;
+    inProgress: boolean;
+    bookingId?: string;
+  }): Promise<void> {
+    await this.safeEnqueue({
+      recipientUserId: params.recipientUserId,
+      type: NotificationType.ADMIN_RIDE_CANCELLED,
+      title: 'Ride cancelled by BhaiWay Operations',
+      body: params.body,
+      data: {
+        type: NotificationType.ADMIN_RIDE_CANCELLED,
+        rideId: params.rideId,
+        role: params.role,
+        inProgress: params.inProgress,
+        bookingId: params.bookingId ?? null,
+      },
+      idempotencyKey: adminRideCancelledKey(
+        params.rideId,
+        params.recipientUserId,
+      ),
+    });
+  }
+
   async safeNotifyNoShowClaimOpened(params: {
     claimId: string;
     rideId: string;
@@ -607,7 +635,9 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     await this.safeEnqueue({
       recipientUserId: params.recipientUserId,
       type: NotificationType.NO_SHOW_CLAIM_OPENED,
-      title: isDriverClaim ? 'Driver no-show reported' : 'Passenger no-show reported',
+      title: isDriverClaim
+        ? 'Driver no-show reported'
+        : 'Passenger no-show reported',
       body: isDriverClaim
         ? 'A passenger reported that you did not arrive. Approve or reject within 15 minutes.'
         : 'The driver reported that you did not arrive. Approve or reject within 15 minutes.',
@@ -618,7 +648,10 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
         bookingId: params.bookingId,
         kind: params.kind,
       },
-      idempotencyKey: noShowClaimOpenedKey(params.claimId, params.recipientUserId),
+      idempotencyKey: noShowClaimOpenedKey(
+        params.claimId,
+        params.recipientUserId,
+      ),
     });
   }
 

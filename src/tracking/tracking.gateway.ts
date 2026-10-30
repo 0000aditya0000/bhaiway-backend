@@ -7,18 +7,14 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import {
-  forwardRef,
-  HttpException,
-  Inject,
-  Logger,
-} from '@nestjs/common';
+import { forwardRef, HttpException, Inject, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 
 import { isPlatformUserId } from '../wallet/platform-wallet.constants';
 import {
+  RideCancelledEventDto,
   RideLocationUpdatedEventDto,
   RideTrackingEndedEventDto,
 } from './dto/ride-tracking-response.dto';
@@ -62,7 +58,9 @@ export class TrackingGateway
     try {
       const token = this.extractToken(client);
       if (!token) {
-        this.logger.warn('[Tracking][socket] connection rejected: missing token');
+        this.logger.warn(
+          '[Tracking][socket] connection rejected: missing token',
+        );
         client.disconnect(true);
         return;
       }
@@ -245,6 +243,18 @@ export class TrackingGateway
     } catch {
       // Best-effort room cleanup after end.
     }
+  }
+
+  /** Broadcast operational ride cancellation while sockets are still in the room. */
+  broadcastRideCancelled(event: RideCancelledEventDto): void {
+    if (!this.server) {
+      return;
+    }
+    const room = rideTrackingRoom(event.rideId);
+    this.server.to(room).emit(TRACKING_SERVER_EVENTS.RIDE_CANCELLED, event);
+    this.logger.log(
+      `[Tracking][tracking] cancelled broadcast ride=${event.rideId}`,
+    );
   }
 
   private extractToken(client: Socket): string | null {

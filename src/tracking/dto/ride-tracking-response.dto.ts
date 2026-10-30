@@ -83,3 +83,21 @@ export class RideTrackingEndedEventDto {
   })
   reason?: string;
 }
+
+/** Payload broadcast on `ride:cancelled` after an operational cancellation. */
+export class RideCancelledEventDto {
+  @ApiProperty({ format: 'uuid' })
+  rideId!: string;
+
+  @ApiProperty()
+  finalStatus!: string;
+
+  @ApiProperty()
+  reason!: string;
+
+  @ApiProperty()
+  inProgress!: boolean;
+
+  @ApiPropertyOptional({ isArray: true, type: String })
+  bookingIds?: string[];
+}
