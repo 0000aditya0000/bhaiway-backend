@@ -341,15 +341,15 @@ export class RidesService {
 
     await this.trackingService.clearRideTracking(rideId, 'cancel');
     await this.chatService.safeCloseForRide(rideId);
-    if (!result.alreadyApplied) {
-      for (const booking of result.cancelledBookings ?? []) {
-        await this.notificationsService.safeNotifyBookingCancelled({
-          bookingId: booking.bookingId,
-          rideId,
-          recipientUserId: booking.passengerId,
-          bookingMode: 'REGULAR',
-        });
-      }
+    for (const booking of result.cancelledBookings ?? []) {
+      await this.notificationsService.safeNotifyBookingCancelled({
+        bookingId: booking.bookingId,
+        rideId,
+        recipientUserId: booking.passengerId,
+        bookingMode: 'REGULAR',
+        cancelledBy: 'driver',
+        cancellationReason: 'RIDE_CANCELLED',
+      });
     }
     const { cancelledBookings: _c, ...response } = result;
     return response;
@@ -422,6 +422,9 @@ export class RidesService {
                 },
               );
             selectedResponse = selectedCancel.response;
+            for (const item of selectedCancel.cancelledForNotify) {
+              notify.push({ ...item, rideId: target.id });
+            }
           }
           continue;
         }
@@ -506,6 +509,8 @@ export class RidesService {
         bookingId: item.bookingId,
         rideId: item.rideId,
         recipientUserId: item.passengerId,
+        cancelledBy: 'driver',
+        cancellationReason: 'RIDE_CANCELLED',
       });
     }
     return outcome.response;

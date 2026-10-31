@@ -8,12 +8,20 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { EntityManager, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, QueryFailedError, Repository } from 'typeorm';
 
+import { Ride } from '../rides/entities/ride.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { isPlatformUserId } from '../wallet/platform-wallet.constants';
 import {
+  buildCancellationBody,
+  cancellationDataFields,
+  type CancellationActor,
+  type RideCancellationSnapshot,
+} from './cancellation-notification.content';
+import {
   MarkAllNotificationsReadDto,
+  NotificationEmailDeliveryDto,
   NotificationItemDto,
   NotificationListQueryDto,
   NotificationPageDto,
@@ -24,6 +32,7 @@ import {
   RegisterNotificationDeviceDto,
 } from './dto/register-device.dto';
 import { NotificationDevice } from './entities/notification-device.entity';
+import { NotificationEmailDelivery } from './entities/notification-email-delivery.entity';
 import { Notification } from './entities/notification.entity';
 import {
   NotificationProviderName,
@@ -63,10 +72,13 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly dispatcher: NotificationsDispatcher,
     private readonly notificationEmailService: NotificationEmailService,
+    private readonly dataSource: DataSource,
     @InjectRepository(Notification)
     private readonly notificationRepository: Repository<Notification>,
     @InjectRepository(NotificationDevice)
     private readonly deviceRepository: Repository<NotificationDevice>,
+    @InjectRepository(NotificationEmailDelivery)
+    private readonly emailDeliveryRepository: Repository<NotificationEmailDelivery>,
     @InjectRepository(UserProfile)
     private readonly profileRepository: Repository<UserProfile>,
   ) {}
@@ -346,20 +358,36 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     rideId: string;
     recipientUserId: string;
     bookingMode?: 'REGULAR' | 'ASSURED';
+    cancelledBy?: CancellationActor;
+    cancellationReason?: string | null;
   }): Promise<void> {
     const isAssured = params.bookingMode === 'ASSURED';
+    const snapshot = await this.loadRideSnapshot(params.rideId);
+    const fallback = isAssured
+      ? 'Your Assured ride booking has been cancelled.'
+      : 'Your ride booking has been cancelled.';
     await this.safeEnqueue({
       recipientUserId: params.recipientUserId,
       type: NotificationType.BOOKING_CANCELLED,
       title: 'Ride cancelled',
-      body: isAssured
-        ? 'Your Assured ride booking has been cancelled.'
-        : 'Your ride booking has been cancelled.',
+      body: buildCancellationBody({
+        fallback,
+        actor: params.cancelledBy,
+        snapshot,
+        cancellationReason: params.cancellationReason,
+        bookingId: params.bookingId,
+        rideId: params.rideId,
+      }),
       data: {
         type: NotificationType.BOOKING_CANCELLED,
         bookingId: params.bookingId,
         rideId: params.rideId,
         ...(isAssured ? { bookingMode: 'ASSURED' } : {}),
+        ...cancellationDataFields({
+          snapshot,
+          cancelledBy: params.cancelledBy,
+          cancellationReason: params.cancellationReason,
+        }),
       },
       idempotencyKey: bookingCancelledKey(
         params.bookingId,
@@ -410,16 +438,31 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     bookingId: string;
     rideId: string;
     recipientUserId: string;
+    cancelledBy?: CancellationActor;
+    cancellationReason?: string | null;
   }): Promise<void> {
+    const snapshot = await this.loadRideSnapshot(params.rideId);
     await this.safeEnqueue({
       recipientUserId: params.recipientUserId,
       type: NotificationType.COMMUTE_BOOKING_CANCELLED,
       title: 'Commute ride cancelled',
-      body: 'Your office commute ride has been cancelled.',
+      body: buildCancellationBody({
+        fallback: 'Your office commute ride has been cancelled.',
+        actor: params.cancelledBy,
+        snapshot,
+        cancellationReason: params.cancellationReason,
+        bookingId: params.bookingId,
+        rideId: params.rideId,
+      }),
       data: {
         type: NotificationType.COMMUTE_BOOKING_CANCELLED,
         bookingId: params.bookingId,
         rideId: params.rideId,
+        ...cancellationDataFields({
+          snapshot,
+          cancelledBy: params.cancelledBy,
+          cancellationReason: params.cancellationReason,
+        }),
       },
       idempotencyKey: commuteCancelledKey(
         params.bookingId,
@@ -604,18 +647,32 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     body: string;
     inProgress: boolean;
     bookingId?: string;
+    cancellationReason?: string | null;
   }): Promise<void> {
+    const snapshot = await this.loadRideSnapshot(params.rideId);
     await this.safeEnqueue({
       recipientUserId: params.recipientUserId,
       type: NotificationType.ADMIN_RIDE_CANCELLED,
       title: 'Ride cancelled by BhaiWay Operations',
-      body: params.body,
+      body: buildCancellationBody({
+        fallback: params.body,
+        actor: 'admin',
+        snapshot,
+        cancellationReason: params.cancellationReason ?? 'ADMIN_CANCELLED',
+        bookingId: params.bookingId,
+        rideId: params.rideId,
+      }),
       data: {
         type: NotificationType.ADMIN_RIDE_CANCELLED,
         rideId: params.rideId,
         role: params.role,
         inProgress: params.inProgress,
         bookingId: params.bookingId ?? null,
+        ...cancellationDataFields({
+          snapshot,
+          cancelledBy: 'admin',
+          cancellationReason: params.cancellationReason ?? 'ADMIN_CANCELLED',
+        }),
       },
       idempotencyKey: adminRideCancelledKey(
         params.rideId,
@@ -755,8 +812,13 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     }
 
     const [rows, total] = await qb.getManyAndCount();
+    const emailByNotificationId = await this.loadEmailDeliveries(
+      rows.map((row) => row.id),
+    );
     return {
-      items: rows.map((row) => this.toInboxItem(row)),
+      items: rows.map((row) =>
+        this.toInboxItem(row, emailByNotificationId.get(row.id) ?? null),
+      ),
       page,
       limit,
       total,
@@ -796,7 +858,10 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       await this.notificationRepository.save(row);
     }
 
-    return this.toInboxItem(row);
+    const email = await this.emailDeliveryRepository.findOne({
+      where: { notificationId: row.id },
+    });
+    return this.toInboxItem(row, email);
   }
 
   async markAllAsReadForUser(
@@ -818,13 +883,29 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     await this.dispatcher.dispatch(notificationId);
   }
 
+  async flushEmail(notificationId: string): Promise<void> {
+    await this.notificationEmailService.ensureDeliveryQueued(notificationId);
+    await this.notificationEmailService.deliver(notificationId);
+  }
+
   async findByIdempotencyKey(
     idempotencyKey: string,
   ): Promise<Notification | null> {
     return this.notificationRepository.findOne({ where: { idempotencyKey } });
   }
 
-  private toInboxItem(row: Notification): NotificationItemDto {
+  async findEmailDelivery(
+    notificationId: string,
+  ): Promise<NotificationEmailDelivery | null> {
+    return this.emailDeliveryRepository.findOne({
+      where: { notificationId },
+    });
+  }
+
+  private toInboxItem(
+    row: Notification,
+    email: NotificationEmailDelivery | null = null,
+  ): NotificationItemDto {
     return {
       id: row.id,
       title: row.title,
@@ -834,7 +915,69 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       isRead: row.readAt != null,
       createdAt: row.createdAt.toISOString(),
       readAt: row.readAt ? row.readAt.toISOString() : null,
+      emailDelivery: email ? this.toEmailDeliveryDto(email) : null,
     };
+  }
+
+  private toEmailDeliveryDto(
+    row: NotificationEmailDelivery,
+  ): NotificationEmailDeliveryDto {
+    return {
+      status: row.status,
+      skipReason: row.skipReason,
+      failureReason: row.failureReason,
+      attemptCount: row.attemptCount,
+      sentAt: row.sentAt ? row.sentAt.toISOString() : null,
+    };
+  }
+
+  private async loadEmailDeliveries(
+    notificationIds: string[],
+  ): Promise<Map<string, NotificationEmailDelivery>> {
+    const map = new Map<string, NotificationEmailDelivery>();
+    if (notificationIds.length === 0) {
+      return map;
+    }
+    const rows = await this.emailDeliveryRepository.find({
+      where: { notificationId: In(notificationIds) },
+    });
+    for (const row of rows) {
+      map.set(row.notificationId, row);
+    }
+    return map;
+  }
+
+  private async loadRideSnapshot(
+    rideId: string,
+  ): Promise<RideCancellationSnapshot | null> {
+    try {
+      const ride = await this.dataSource.getRepository(Ride).findOne({
+        where: { id: rideId },
+        select: {
+          id: true,
+          source: true,
+          destination: true,
+          departureDate: true,
+          departureTime: true,
+        },
+      });
+      if (!ride) {
+        return null;
+      }
+      return {
+        source: ride.source,
+        destination: ride.destination,
+        departureDate: ride.departureDate,
+        departureTime: ride.departureTime,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Ride snapshot load failed ride=${rideId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
   }
 
   private async resolveDisplayName(userId: string): Promise<string> {

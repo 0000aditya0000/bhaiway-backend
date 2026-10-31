@@ -77,25 +77,29 @@ export class RegularRideCancellationService {
 
     if (ride.status === RideStatus.CANCELLED) {
       if (ride.cancellationReason === params.rideCancellationReason) {
-        const cancelledBookingCount = await manager.getRepository(Booking).count({
+        const cancelled = await manager.getRepository(Booking).find({
           where: {
             rideId: ride.id,
             status: BookingStatus.CANCELLED,
             cancellationReason: params.bookingCancellationReason,
           },
+          select: { id: true, passengerId: true },
         });
         return {
           rideId: ride.id,
           status: ride.status,
           cancellationReason: ride.cancellationReason,
-          cancelledBookingCount,
+          cancelledBookingCount: cancelled.length,
           driverDepositForfeited: null,
           riderCompensationTotal: '0',
           platformForfeiture: '0',
           fareRefundedTotal: '0',
           couponsIssuedCount: 0,
           alreadyApplied: true,
-          cancelledBookings: [],
+          cancelledBookings: cancelled.map((booking) => ({
+            bookingId: booking.id,
+            passengerId: booking.passengerId,
+          })),
         };
       }
       throw new ConflictException(

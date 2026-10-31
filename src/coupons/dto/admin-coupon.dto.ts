@@ -18,6 +18,7 @@ import {
 } from 'class-validator';
 
 import {
+  CouponApplicableTo,
   CouponAudience,
   CouponBenefitType,
   CouponChargeScope,
@@ -82,6 +83,16 @@ export class CreateCouponAdminDto {
   @IsEnum(CouponAudience)
   audience!: CouponAudience;
 
+  @ApiPropertyOptional({
+    enum: CouponApplicableTo,
+    default: CouponApplicableTo.ALL,
+    description:
+      'Who may redeem this coupon: ALL, DRIVERS_ONLY, or RIDERS_ONLY. Defaults to ALL.',
+  })
+  @IsOptional()
+  @IsEnum(CouponApplicableTo)
+  applicableTo?: CouponApplicableTo;
+
   @ApiProperty()
   @IsDateString()
   startsAt!: string;
@@ -140,6 +151,17 @@ export class UpdateCouponStatusDto {
   @ApiProperty()
   @IsBoolean()
   isActive!: boolean;
+}
+
+export class UpdateCouponAdminDto {
+  @ApiPropertyOptional({
+    enum: CouponApplicableTo,
+    description:
+      'When omitted, the existing applicableTo value is preserved.',
+  })
+  @IsOptional()
+  @IsEnum(CouponApplicableTo)
+  applicableTo?: CouponApplicableTo;
 }
 
 export class AdminCouponListQueryDto {

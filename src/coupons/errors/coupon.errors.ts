@@ -75,6 +75,32 @@ export class CouponIneligibleError extends UnprocessableEntityException {
   }
 }
 
+export class CouponDriversOnlyError extends UnprocessableEntityException {
+  constructor(message = 'This coupon is available only for drivers.') {
+    super(
+      body(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        'COUPON_DRIVERS_ONLY',
+        message,
+        'Unprocessable Entity',
+      ),
+    );
+  }
+}
+
+export class CouponRidersOnlyError extends UnprocessableEntityException {
+  constructor(message = 'This coupon is available only for riders.') {
+    super(
+      body(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        'COUPON_RIDERS_ONLY',
+        message,
+        'Unprocessable Entity',
+      ),
+    );
+  }
+}
+
 export class CouponExhaustedError extends ConflictException {
   constructor(message = 'This coupon has reached its redemption limit.') {
     super(body(HttpStatus.CONFLICT, 'COUPON_EXHAUSTED', message, 'Conflict'));

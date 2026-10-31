@@ -1,10 +1,12 @@
 import { CouponInvalidConfigError } from './errors/coupon.errors';
 import {
+  CouponApplicableTo,
   CouponAudience,
   CouponBenefitType,
   CouponChargeScope,
   CouponRideTypeScope,
   normalizeCouponCode,
+  resolveCouponApplicableTo,
 } from './enums/coupon.enums';
 
 export interface ParsedCouponConfig {
@@ -19,6 +21,7 @@ export interface ParsedCouponConfig {
   rideTypeScope: CouponRideTypeScope;
   chargeScope: CouponChargeScope;
   audience: CouponAudience;
+  applicableTo: CouponApplicableTo;
   startsAt: Date;
   expiresAt: Date;
   totalRedemptionLimit: number | null;
@@ -49,6 +52,7 @@ export function validateAndParseCouponConfig(input: {
   rideTypeScope: CouponRideTypeScope;
   chargeScope: CouponChargeScope;
   audience: CouponAudience;
+  applicableTo?: CouponApplicableTo | string | null;
   startsAt: string;
   expiresAt: string;
   totalRedemptionLimit?: number | null;
@@ -149,6 +153,20 @@ export function validateAndParseCouponConfig(input: {
     throw new CouponInvalidConfigError('rideTypeScope is required.');
   }
 
+  let applicableTo = CouponApplicableTo.ALL;
+  if (input.applicableTo != null && input.applicableTo !== '') {
+    if (
+      input.applicableTo !== CouponApplicableTo.ALL &&
+      input.applicableTo !== CouponApplicableTo.DRIVERS_ONLY &&
+      input.applicableTo !== CouponApplicableTo.RIDERS_ONLY
+    ) {
+      throw new CouponInvalidConfigError(
+        'Invalid applicableTo. Use ALL, DRIVERS_ONLY, or RIDERS_ONLY.',
+      );
+    }
+    applicableTo = input.applicableTo;
+  }
+
   return {
     code: codeNormalized,
     codeNormalized,
@@ -161,6 +179,7 @@ export function validateAndParseCouponConfig(input: {
     rideTypeScope: input.rideTypeScope,
     chargeScope: input.chargeScope,
     audience: input.audience,
+    applicableTo,
     startsAt,
     expiresAt,
     totalRedemptionLimit: input.totalRedemptionLimit ?? null,
@@ -181,6 +200,7 @@ export function couponConfigSnapshot(coupon: {
   rideTypeScope: string;
   chargeScope: string;
   audience: string;
+  applicableTo?: string | null;
   startsAt: Date;
   expiresAt: Date;
   totalRedemptionLimit: number | null;
@@ -198,6 +218,7 @@ export function couponConfigSnapshot(coupon: {
     rideTypeScope: coupon.rideTypeScope,
     chargeScope: coupon.chargeScope,
     audience: coupon.audience,
+    applicableTo: resolveCouponApplicableTo(coupon.applicableTo),
     startsAt: coupon.startsAt.toISOString(),
     expiresAt: coupon.expiresAt.toISOString(),
     totalRedemptionLimit: coupon.totalRedemptionLimit,

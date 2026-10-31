@@ -907,14 +907,16 @@ describe('Admin ride management (integration)', () => {
         type: NotificationType.ADMIN_RIDE_CANCELLED,
       },
     });
-    expect(passengerNote?.body).toBe(ADMIN_OPS_PASSENGER_CANCEL_BODY);
+    expect(passengerNote?.body).toContain(ADMIN_OPS_PASSENGER_CANCEL_BODY);
+    expect(passengerNote?.body).toContain(`Ride ID: ${ride.id}`);
     const driverNote = await dataSource.getRepository(Notification).findOne({
       where: {
         recipientUserId: login.user.id,
         type: NotificationType.ADMIN_RIDE_CANCELLED,
       },
     });
-    expect(driverNote?.body).toBe(ADMIN_OPS_DRIVER_CANCEL_BODY);
+    expect(driverNote?.body).toContain(ADMIN_OPS_DRIVER_CANCEL_BODY);
+    expect(driverNote?.body).toContain(`Ride ID: ${ride.id}`);
 
     const audit = await dataSource
       .getRepository(AdminRideCancellation)
@@ -956,7 +958,7 @@ describe('Admin ride management (integration)', () => {
 
   it('serializes concurrent admin cancellations without duplicate refunds', async () => {
     const admin = await createAdmin([ADMIN_PERMISSION_RIDES_MANAGE]);
-    const { ride } = await publishableDriver();
+    const { login, ride } = await publishableDriver();
     const passenger = await fundedPassenger(1000n);
     await bookRide(
       passenger.login.accessToken,
@@ -982,6 +984,22 @@ describe('Admin ride management (integration)', () => {
         where: {
           userId: passenger.login.user.id,
           transactionType: WalletTransactionType.REFUND,
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: login.user.id,
+          type: NotificationType.ADMIN_RIDE_CANCELLED,
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: passenger.login.user.id,
+          type: NotificationType.ADMIN_RIDE_CANCELLED,
         },
       }),
     ).toBe(1);

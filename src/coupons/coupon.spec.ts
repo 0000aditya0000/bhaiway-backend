@@ -36,18 +36,23 @@ import { CouponIssuanceRule } from './entities/coupon-issuance-rule.entity';
 import { CouponRedemption } from './entities/coupon-redemption.entity';
 import { Coupon } from './entities/coupon.entity';
 import {
+  CouponActorContext,
+  CouponApplicableTo,
   CouponAudience,
   CouponBenefitType,
   CouponChargeScope,
   CouponRedemptionStatus,
   CouponRideTypeScope,
   normalizeCouponCode,
+  resolveCouponApplicableTo,
 } from './enums/coupon.enums';
 import {
   CouponAlreadyUsedError,
+  CouponDriversOnlyError,
   CouponExhaustedError,
   CouponIneligibleError,
   CouponNotAssignedError,
+  CouponRidersOnlyError,
 } from './errors/coupon.errors';
 import { calculateCouponDiscount } from './coupon.math';
 
@@ -108,6 +113,11 @@ describe('Coupon catalog (integration)', () => {
     couponsService = moduleRef.get(CouponsService);
     redemptionService = moduleRef.get(CouponRedemptionService);
     issuanceService = moduleRef.get(CouponIssuanceService);
+
+    await dataSource.query(`
+      ALTER TABLE "coupons"
+      ADD COLUMN IF NOT EXISTS "applicable_to" character varying(32) NOT NULL DEFAULT 'ALL'
+    `);
   });
 
   afterEach(async () => {
@@ -920,5 +930,340 @@ describe('Coupon catalog (integration)', () => {
     });
     const promo = lots.reduce((s, l) => s + BigInt(l.availableAmount), 0n);
     expect(promo).toBe(25n);
+  });
+
+  describe('applicableTo audience eligibility', () => {
+    async function createAudienceCoupon(
+      adminUserId: string,
+      applicableTo?: CouponApplicableTo,
+    ) {
+      const code = `AUD${Date.now().toString(36)}${Math.random()
+        .toString(36)
+        .slice(2, 6)}`.toUpperCase();
+      const created = await couponsService.createAdmin(adminUserId, {
+        code,
+        title: `Audience ${applicableTo ?? 'default'}`,
+        benefitType: CouponBenefitType.FIXED_DISCOUNT,
+        benefitValue: '10',
+        rideTypeScope: CouponRideTypeScope.ALL,
+        chargeScope: CouponChargeScope.RIDE_FARE,
+        audience: CouponAudience.PUBLIC,
+        ...(applicableTo != null ? { applicableTo } : {}),
+        ...futureWindow(),
+        perUserRedemptionLimit: 5,
+      });
+      couponIds.push(created.id as string);
+      return { created, code: created.code as string };
+    }
+
+    async function reserve(
+      userId: string,
+      code: string,
+      actorContext?: CouponActorContext,
+    ) {
+      return dataSource.transaction(async (manager) => {
+        return redemptionService.reserveInTransaction(manager, {
+          userId,
+          rideType: CouponRideTypeScope.REGULAR,
+          chargeScope: CouponChargeScope.RIDE_FARE,
+          amount: 100n,
+          bookingId: randomUUID(),
+          rideId: randomUUID(),
+          code,
+          idempotencyKey: uniqueIdempotencyKey('aud'),
+          ...(actorContext != null ? { actorContext } : {}),
+        });
+      });
+    }
+
+    it('treats missing applicableTo as ALL', () => {
+      expect(resolveCouponApplicableTo(undefined)).toBe(CouponApplicableTo.ALL);
+      expect(resolveCouponApplicableTo(null)).toBe(CouponApplicableTo.ALL);
+      expect(resolveCouponApplicableTo('')).toBe(CouponApplicableTo.ALL);
+      expect(resolveCouponApplicableTo('GARBAGE')).toBe(CouponApplicableTo.ALL);
+    });
+
+    it('defaults new coupons to ALL and keeps them redeemable', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { created, code } = await createAudienceCoupon(user.userId);
+      expect(created.applicableTo).toBe(CouponApplicableTo.ALL);
+
+      const applied = await reserve(user.userId, code);
+      expect(applied.discountAmount).toBe(10n);
+      expect(applied.finalAmount).toBe(90n);
+    });
+
+    it('accepts ALL coupons for rider context', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.ALL,
+      );
+      const applied = await reserve(
+        user.userId,
+        code,
+        CouponActorContext.RIDER,
+      );
+      expect(applied.finalAmount).toBe(90n);
+    });
+
+    it('accepts ALL coupons for driver context where driver redemption is invoked internally', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.ALL,
+      );
+      const applied = await reserve(
+        user.userId,
+        code,
+        CouponActorContext.DRIVER,
+      );
+      expect(applied.finalAmount).toBe(90n);
+    });
+
+    it('accepts DRIVERS_ONLY for driver context and rejects rider context', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.DRIVERS_ONLY,
+      );
+
+      const asDriver = await reserve(
+        user.userId,
+        code,
+        CouponActorContext.DRIVER,
+      );
+      expect(asDriver.finalAmount).toBe(90n);
+
+      await expect(
+        reserve(user.userId, code, CouponActorContext.RIDER),
+      ).rejects.toBeInstanceOf(CouponDriversOnlyError);
+    });
+
+    it('accepts RIDERS_ONLY for rider context and rejects driver context', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.RIDERS_ONLY,
+      );
+
+      const asRider = await reserve(
+        user.userId,
+        code,
+        CouponActorContext.RIDER,
+      );
+      expect(asRider.finalAmount).toBe(90n);
+
+      await expect(
+        reserve(user.userId, code, CouponActorContext.DRIVER),
+      ).rejects.toBeInstanceOf(CouponRidersOnlyError);
+    });
+
+    it('evaluates booking-style redemption as rider even when actorContext is omitted', async () => {
+      const dualRoleUser = await trackUser();
+      await ensureAdmin(dualRoleUser.userId);
+      const ridersOnly = await createAudienceCoupon(
+        dualRoleUser.userId,
+        CouponApplicableTo.RIDERS_ONLY,
+      );
+      const driversOnly = await createAudienceCoupon(
+        dualRoleUser.userId,
+        CouponApplicableTo.DRIVERS_ONLY,
+      );
+
+      const riderOk = await reserve(dualRoleUser.userId, ridersOnly.code);
+      expect(riderOk.finalAmount).toBe(90n);
+
+      await expect(
+        reserve(dualRoleUser.userId, driversOnly.code),
+      ).rejects.toBeInstanceOf(CouponDriversOnlyError);
+    });
+
+    it('rejects client-supplied role and applicableTo on validate', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.DRIVERS_ONLY,
+      );
+      const token = await login(user.userId);
+
+      await request(app.getHttpServer())
+        .post('/coupons/validate')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          code,
+          rideType: CouponRideTypeScope.REGULAR,
+          chargeScope: CouponChargeScope.RIDE_FARE,
+          amount: '100',
+          role: 'DRIVER',
+        })
+        .expect(400);
+
+      await request(app.getHttpServer())
+        .post('/coupons/validate')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          code,
+          rideType: CouponRideTypeScope.REGULAR,
+          chargeScope: CouponChargeScope.RIDE_FARE,
+          amount: '100',
+          applicableTo: CouponApplicableTo.ALL,
+        })
+        .expect(400);
+    });
+
+    it('enforces eligibility on validate/preview for the authenticated rider', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.DRIVERS_ONLY,
+      );
+      const token = await login(user.userId);
+
+      const res = await request(app.getHttpServer())
+        .post('/coupons/validate')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          code,
+          rideType: CouponRideTypeScope.REGULAR,
+          chargeScope: CouponChargeScope.RIDE_FARE,
+          amount: '100',
+        })
+        .expect(422);
+
+      expect(res.body.code).toBe('COUPON_DRIVERS_ONLY');
+      expect(res.body.message).toBe(
+        'This coupon is available only for drivers.',
+      );
+
+      const riders = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.RIDERS_ONLY,
+      );
+      const ok = await request(app.getHttpServer())
+        .post('/coupons/preview')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          code: riders.code,
+          rideType: CouponRideTypeScope.REGULAR,
+          chargeScope: CouponChargeScope.RIDE_FARE,
+          amount: '100',
+        })
+        .expect(201);
+      expect(ok.body.valid).toBe(true);
+      expect(ok.body.finalAmount).toBe('90');
+      expect(ok.body.applicableTo).toBe(CouponApplicableTo.RIDERS_ONLY);
+    });
+
+    it('returns RIDERS_ONLY error when a driver-context redemption is attempted', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.RIDERS_ONLY,
+      );
+      await expect(
+        reserve(user.userId, code, CouponActorContext.DRIVER),
+      ).rejects.toBeInstanceOf(CouponRidersOnlyError);
+    });
+
+    it('rejects invalid applicableTo on create', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const token = await login(user.userId);
+      await request(app.getHttpServer())
+        .post('/admin/coupons')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          title: 'Bad audience',
+          benefitType: CouponBenefitType.FIXED_DISCOUNT,
+          benefitValue: '10',
+          rideTypeScope: CouponRideTypeScope.ALL,
+          chargeScope: CouponChargeScope.RIDE_FARE,
+          audience: CouponAudience.PUBLIC,
+          applicableTo: 'PASSENGERS',
+          ...futureWindow(),
+        })
+        .expect(400);
+    });
+
+    it('preserves applicableTo when omitted on update and status patch', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const token = await login(user.userId);
+      const { created } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.RIDERS_ONLY,
+      );
+
+      const omitted = await request(app.getHttpServer())
+        .patch(`/admin/coupons/${created.id as string}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({})
+        .expect(200);
+      expect(omitted.body.applicableTo).toBe(CouponApplicableTo.RIDERS_ONLY);
+
+      const status = await request(app.getHttpServer())
+        .patch(`/admin/coupons/${created.id as string}/status`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ isActive: true })
+        .expect(200);
+      expect(status.body.applicableTo).toBe(CouponApplicableTo.RIDERS_ONLY);
+
+      const changed = await request(app.getHttpServer())
+        .patch(`/admin/coupons/${created.id as string}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ applicableTo: CouponApplicableTo.ALL })
+        .expect(200);
+      expect(changed.body.applicableTo).toBe(CouponApplicableTo.ALL);
+    });
+
+    it('filters driver-only coupons from user offer lists and includes applicableTo', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const all = await createAudienceCoupon(user.userId, CouponApplicableTo.ALL);
+      const riders = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.RIDERS_ONLY,
+      );
+      const drivers = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.DRIVERS_ONLY,
+      );
+      const token = await login(user.userId);
+
+      const listed = await request(app.getHttpServer())
+        .get('/coupons/public')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      const ids = listed.body.items.map((c: { id: string }) => c.id);
+      expect(ids).toContain(all.created.id);
+      expect(ids).toContain(riders.created.id);
+      expect(ids).not.toContain(drivers.created.id);
+
+      const riderItem = listed.body.items.find(
+        (c: { id: string }) => c.id === riders.created.id,
+      );
+      expect(riderItem.applicableTo).toBe(CouponApplicableTo.RIDERS_ONLY);
+
+      const adminList = await request(app.getHttpServer())
+        .get('/admin/coupons')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const adminIds = adminList.body.items.map((c: { id: string }) => c.id);
+      expect(adminIds).toContain(drivers.created.id);
+      const driverAdmin = adminList.body.items.find(
+        (c: { id: string }) => c.id === drivers.created.id,
+      );
+      expect(driverAdmin.applicableTo).toBe(CouponApplicableTo.DRIVERS_ONLY);
+    });
   });
 });

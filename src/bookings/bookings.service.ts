@@ -46,6 +46,7 @@ import {
   UserCouponType,
 } from '../coupons/entities/user-coupon.entity';
 import {
+  CouponActorContext,
   CouponBenefitType,
   CouponChargeScope,
   CouponRideTypeScope,
@@ -236,6 +237,8 @@ export class BookingsService {
           rideId: full.rideId,
           recipientUserId: ride.driverId,
           bookingMode: mode,
+          cancelledBy: 'passenger',
+          cancellationReason: 'RIDER_CANCELLED',
         });
       }
     }
@@ -600,6 +603,8 @@ export class BookingsService {
           bookingId: cancelledBooking.id,
           rideId: cancelledBooking.rideId,
           recipientUserId: cancelledBooking.passengerId,
+          cancelledBy: 'system',
+          cancellationReason: 'COMMUTE_RIDE_FULL',
         });
       }
     }
@@ -720,6 +725,8 @@ export class BookingsService {
         bookingId: result.id,
         rideId: result.ride.id,
         recipientUserId: result.passenger.id,
+        cancelledBy: 'driver',
+        cancellationReason: 'DRIVER_REJECTED',
       });
       return result;
     } catch (error) {
@@ -740,6 +747,8 @@ export class BookingsService {
             bookingId: booking.id,
             rideId: booking.rideId,
             recipientUserId: booking.passengerId,
+            cancelledBy: 'driver',
+            cancellationReason: 'DRIVER_REJECTED',
           });
           return this.toCommuteDriverActionResponse(
             booking,
@@ -853,6 +862,7 @@ export class BookingsService {
               rideId: ride.id,
               code: catalogCode,
               idempotencyKey: `${key}:coupon:RIDE_FARE`,
+              actorContext: CouponActorContext.RIDER,
             });
           if (
             applied.redemption.benefitTypeSnapshot !==
@@ -1134,6 +1144,7 @@ export class BookingsService {
               rideId: ride.id,
               code: catalogCode,
               idempotencyKey: `${key}:coupon:RIDE_FARE`,
+              actorContext: CouponActorContext.RIDER,
             });
           if (
             applied.redemption.benefitTypeSnapshot !==
@@ -1405,6 +1416,7 @@ export class BookingsService {
               rideId: ride.id,
               code: catalogCode,
               idempotencyKey: `${key}:coupon:${chargeScope}`,
+              actorContext: CouponActorContext.RIDER,
             });
 
           reservedRedemptionId = applied.redemption.id;

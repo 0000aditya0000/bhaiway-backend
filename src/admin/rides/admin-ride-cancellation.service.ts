@@ -156,7 +156,7 @@ export class AdminRideCancellationService {
           seriesScope: scope,
         });
         results.push(result.dto);
-        if (!result.alreadyCancelledByOther && !result.dto.alreadyApplied) {
+        if (!result.alreadyCancelledByOther) {
           sideEffects.push({
             rideId: target.id,
             inProgress: result.wasInProgress,
@@ -246,9 +246,9 @@ export class AdminRideCancellationService {
       if (existingAudit) {
         return {
           dto: this.toOccurrenceDto(existingAudit, true),
-          wasInProgress: false,
+          wasInProgress: existingAudit.supportEscalationRequired,
           alreadyCancelledByOther: false,
-          notifyPassengers: [],
+          notifyPassengers: this.notifyPassengersFromAudit(existingAudit),
         };
       }
       return {
@@ -392,9 +392,9 @@ export class AdminRideCancellationService {
       }
       return {
         dto: this.toOccurrenceDto(recovered, true),
-        wasInProgress,
+        wasInProgress: recovered.supportEscalationRequired || wasInProgress,
         alreadyCancelledByOther: false,
-        notifyPassengers: [],
+        notifyPassengers: this.notifyPassengersFromAudit(recovered),
       };
     }
 
@@ -621,6 +621,15 @@ export class AdminRideCancellationService {
     return ride;
   }
 
+  private notifyPassengersFromAudit(
+    audit: AdminRideCancellation,
+  ): Array<{ bookingId: string; passengerId: string }> {
+    return (audit.bookings ?? []).map((row) => ({
+      bookingId: row.bookingId,
+      passengerId: row.passengerId,
+    }));
+  }
+
   private collectedAmount(booking: Booking): string {
     if (booking.paymentStatus === BookingPaymentStatus.UNPAID) {
       return '0';
@@ -657,6 +666,7 @@ export class AdminRideCancellationService {
       role: 'driver',
       body: driverBody,
       inProgress: effect.inProgress,
+      cancellationReason: 'ADMIN_CANCELLED',
     });
     for (const passenger of effect.passengers) {
       await this.notificationsService.safeNotifyAdminRideCancelled({
@@ -666,6 +676,7 @@ export class AdminRideCancellationService {
         role: 'passenger',
         body: passengerBody,
         inProgress: effect.inProgress,
+        cancellationReason: 'ADMIN_CANCELLED',
       });
     }
   }

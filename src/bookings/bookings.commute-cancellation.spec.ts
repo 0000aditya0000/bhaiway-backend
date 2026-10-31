@@ -36,6 +36,8 @@ import {
   uniqueIdempotencyKey,
 } from '../wallet/test/wallet-test.helpers';
 import { WalletService } from '../wallet/wallet.service';
+import { Notification } from '../notifications/entities/notification.entity';
+import { NotificationType } from '../notifications/enums/notification.enums';
 import { BookingsModule } from './bookings.module';
 import { Booking } from './entities/booking.entity';
 import {
@@ -347,6 +349,15 @@ describe('Commute cancellation lifecycle (integration)', () => {
       .getRepository(WalletBalance)
       .findOneByOrFail({ walletId: wallet.id });
     expect(balance.purchasedAvailable).toBe('5000');
+
+    const driverNotes = await dataSource.getRepository(Notification).find({
+      where: {
+        recipientUserId: driver.user.id,
+        type: NotificationType.COMMUTE_BOOKING_CANCELLED,
+      },
+    });
+    expect(driverNotes).toHaveLength(1);
+    expect(driverNotes[0].data?.cancelledBy).toBe('passenger');
   });
 
   it('passenger cancellation is idempotent', async () => {
@@ -374,6 +385,14 @@ describe('Commute cancellation lifecycle (integration)', () => {
       where: { idempotencyKey: `commute:rider-cancel:${booking.body.id}` },
     });
     expect(refundCount).toBe(1);
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: driver.user.id,
+          type: NotificationType.COMMUTE_BOOKING_CANCELLED,
+        },
+      }),
+    ).toBe(1);
   });
 
   it('accepting final seat auto-cancels remaining pending requests with refund', async () => {
@@ -594,6 +613,25 @@ describe('Commute cancellation lifecycle (integration)', () => {
       })
       .expect(200);
     expect(search.body.items.find((item: { id: string }) => item.id === ride.id)).toBeUndefined();
+
+    for (const passenger of [a, b, c, d]) {
+      expect(
+        await dataSource.getRepository(Notification).count({
+          where: {
+            recipientUserId: passenger.login.user.id,
+            type: NotificationType.COMMUTE_BOOKING_CANCELLED,
+          },
+        }),
+      ).toBe(1);
+    }
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: driver.user.id,
+          type: NotificationType.COMMUTE_BOOKING_CANCELLED,
+        },
+      }),
+    ).toBe(0);
   });
 
   it('driver ride cancellation is idempotent', async () => {
@@ -621,6 +659,14 @@ describe('Commute cancellation lifecycle (integration)', () => {
       where: { idempotencyKey: `commute:ride-cancel:${booking.body.id}` },
     });
     expect(refundCount).toBe(1);
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: passenger.user.id,
+          type: NotificationType.COMMUTE_BOOKING_CANCELLED,
+        },
+      }),
+    ).toBe(1);
   });
 
   it('failed accept does not auto-cancel remaining pending requests', async () => {

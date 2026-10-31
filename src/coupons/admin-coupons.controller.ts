@@ -29,6 +29,7 @@ import {
   AdminCouponListQueryDto,
   AssignCouponUsersDto,
   CreateCouponAdminDto,
+  UpdateCouponAdminDto,
   UpdateCouponStatusDto,
 } from './dto/admin-coupon.dto';
 import { CouponsService } from './coupons.service';
@@ -84,5 +85,18 @@ export class AdminCouponsController {
     @Body() body: UpdateCouponStatusDto,
   ) {
     return this.couponsService.setActive(id, admin.userId, body.isActive);
+  }
+
+  @Patch(':id')
+  @ApiOperation({
+    summary:
+      'Update coupon fields. Omitted fields (including applicableTo) are preserved.',
+  })
+  update(
+    @CurrentUser() admin: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateCouponAdminDto,
+  ) {
+    return this.couponsService.updateAdmin(id, admin.userId, body);
   }
 }

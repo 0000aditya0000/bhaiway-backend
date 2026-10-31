@@ -936,6 +936,32 @@ describe('Daily Office Commute series (integration)', () => {
       },
     });
     expect(cancelNotices).toHaveLength(1);
+    expect(cancelNotices[0].data?.rideId).toBe(selected.id);
+
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: laterConfirmedPassenger.login.user.id,
+          type: NotificationType.COMMUTE_BOOKING_CANCELLED,
+        },
+      }),
+    ).toBe(0);
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: pendingPassenger.login.user.id,
+          type: NotificationType.COMMUTE_BOOKING_CANCELLED,
+        },
+      }),
+    ).toBe(0);
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: login.user.id,
+          type: NotificationType.COMMUTE_BOOKING_CANCELLED,
+        },
+      }),
+    ).toBe(0);
 
     const pendingAfter = await dataSource.getRepository(Ride).findOneByOrFail({
       id: pendingLater.id,

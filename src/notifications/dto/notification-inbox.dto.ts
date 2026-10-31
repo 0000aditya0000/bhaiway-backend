@@ -2,8 +2,36 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import { IsBoolean, IsInt, IsOptional, Max, Min } from 'class-validator';
 
+import { NotificationEmailDeliveryStatus } from '../enums/notification-email.enums';
 import { NotificationType } from '../enums/notification.enums';
 import type { NotificationDataPayload } from '../notifications.types';
+
+export class NotificationEmailDeliveryDto {
+  @ApiProperty({
+    enum: NotificationEmailDeliveryStatus,
+    enumName: 'NotificationEmailDeliveryStatus',
+  })
+  status!: NotificationEmailDeliveryStatus;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Present when status is SKIPPED: email_missing or email_unverified',
+  })
+  skipReason!: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Provider or send failure detail when status is FAILED/PENDING',
+  })
+  failureReason!: string | null;
+
+  @ApiProperty()
+  attemptCount!: number;
+
+  @ApiPropertyOptional({ nullable: true, format: 'date-time' })
+  sentAt!: string | null;
+}
 
 export class NotificationListQueryDto {
   @ApiPropertyOptional({ default: 1, minimum: 1 })
@@ -69,6 +97,14 @@ export class NotificationItemDto {
 
   @ApiPropertyOptional({ nullable: true, format: 'date-time' })
   readAt!: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    type: NotificationEmailDeliveryDto,
+    description:
+      'Email outbox status for this notification. Independent of in-app persistence and FCM.',
+  })
+  emailDelivery!: NotificationEmailDeliveryDto | null;
 }
 
 export class NotificationPageDto {

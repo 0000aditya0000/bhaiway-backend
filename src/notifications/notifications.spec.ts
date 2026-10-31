@@ -15,8 +15,10 @@ import { ChatModule } from '../chat/chat.module';
 import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
+import { withAssuredPublishHeaders } from '../rides/test/assured-ride-test.helpers';
 import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { TrackingModule } from '../tracking/tracking.module';
+import { User } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { markVerificationVerified } from '../verification/test/verification-test.helpers';
 import { VerificationModule } from '../verification/verification.module';
@@ -37,7 +39,9 @@ import {
 import { WalletModule } from '../wallet/wallet.module';
 import { WalletService } from '../wallet/wallet.service';
 import { NotificationDevice } from './entities/notification-device.entity';
+import { NotificationEmailDelivery } from './entities/notification-email-delivery.entity';
 import { Notification } from './entities/notification.entity';
+import { NotificationEmailDeliveryStatus } from './enums/notification-email.enums';
 import {
   NotificationPlatform,
   NotificationStatus,
@@ -45,9 +49,11 @@ import {
 } from './enums/notification.enums';
 import {
   assuredPublishedKey,
+  bookingCancelledKey,
   bookingConfirmedKey,
   bookingReceivedKey,
   chatMessageKey,
+  commuteCancelledKey,
   commuteConfirmedKey,
   commuteRequestedKey,
   walletCreditedKey,
@@ -577,22 +583,23 @@ describe('Notifications (integration)', () => {
 
       const res = await request(app.getHttpServer())
         .post('/rides')
-        .set('Authorization', `Bearer ${driver.accessToken}`)
-        .set('Idempotency-Key', uniqueIdempotencyKey('assured-pub'))
-        .send({
-          vehicleId: vehicle.id,
-          rideType: RideType.ASSURED,
-          source: 'Noida Sector 18',
-          destination: 'Haridwar',
-          departureDate: '2031-11-22',
-          departureTime: '06:15:00',
-          totalSeats: 3,
-          pricePerSeat: 500,
-          sourceLatitude: 28.5701,
-          sourceLongitude: 77.3219,
-          destinationLatitude: 29.9457,
-          destinationLongitude: 78.1642,
-        })
+        .set(withAssuredPublishHeaders(driver.accessToken))
+        .send(
+          withSelectedRoute({
+            vehicleId: vehicle.id,
+            rideType: RideType.ASSURED,
+            source: 'Noida Sector 18',
+            destination: 'Haridwar',
+            departureDate: '2031-11-22',
+            departureTime: '06:15:00',
+            totalSeats: 3,
+            pricePerSeat: 500,
+            sourceLatitude: 28.5701,
+            sourceLongitude: 77.3219,
+            destinationLatitude: 29.9457,
+            destinationLongitude: 78.1642,
+          }),
+        )
         .expect(201);
 
       // First into an empty geographic queue becomes ACTIVE; otherwise PENDING.
@@ -920,6 +927,315 @@ describe('Notifications (integration)', () => {
         list.body.items.some((item: { id: string }) => item.id === row!.id),
       ).toBe(true);
       mockProvider.throwOnSend = false;
+    });
+  });
+
+  describe('cancellation notifications', () => {
+    it('passenger Regular cancel notifies the driver once and keeps in-app on FCM failure', async () => {
+      const { login: driver, vehicle } = await publishableDriver('CancelDrv');
+      const passenger = await createUser('CancelPass');
+      await registerDevice(
+        driver.accessToken,
+        `tok-cdrv-${randomUUID()}`,
+      ).expect(201);
+      mockProvider.throwOnSend = true;
+
+      const ride = await publishRegularRide(driver.accessToken, vehicle.id);
+      const booking = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('reg-cancel-book'))
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.PAY_LATER,
+        })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post(`/bookings/${booking.body.id}/cancel`)
+        .set('Authorization', `Bearer ${passenger.accessToken}`)
+        .expect(200);
+
+      const key = bookingCancelledKey(booking.body.id, driver.user.id);
+      const note = await waitForNotification(key);
+      expect(note.recipientUserId).toBe(driver.user.id);
+      expect(note.type).toBe(NotificationType.BOOKING_CANCELLED);
+      expect(note.body).toContain('The passenger cancelled');
+      expect(note.body).toContain('Noida');
+      expect(note.data?.cancelledBy).toBe('passenger');
+
+      const inbox = await request(app.getHttpServer())
+        .get('/notifications')
+        .set('Authorization', `Bearer ${driver.accessToken}`)
+        .expect(200);
+      expect(
+        inbox.body.items.some((item: { id: string }) => item.id === note.id),
+      ).toBe(true);
+
+      await request(app.getHttpServer())
+        .post(`/bookings/${booking.body.id}/cancel`)
+        .set('Authorization', `Bearer ${passenger.accessToken}`)
+        .expect(200);
+      expect(
+        await dataSource.getRepository(Notification).count({
+          where: { idempotencyKey: key },
+        }),
+      ).toBe(1);
+      expect(
+        await dataSource.getRepository(Notification).count({
+          where: {
+            recipientUserId: passenger.user.id,
+            type: NotificationType.BOOKING_CANCELLED,
+          },
+        }),
+      ).toBe(0);
+
+      mockProvider.throwOnSend = false;
+      await deleteChatForBookingIds(dataSource, [booking.body.id]);
+    });
+
+    it('driver Regular cancel notifies booked passengers and not the driver', async () => {
+      const { login: driver, vehicle } = await publishableDriver('DrvCanReg');
+      const passenger = await createUser('PassCanReg');
+      const ride = await publishRegularRide(driver.accessToken, vehicle.id);
+      const booking = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.accessToken}`)
+        .send({
+          rideId: ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.PAY_LATER,
+        })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post(`/rides/${ride.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.accessToken}`)
+        .expect(200);
+
+      const key = bookingCancelledKey(booking.body.id, passenger.user.id);
+      const note = await waitForNotification(key);
+      expect(note.recipientUserId).toBe(passenger.user.id);
+      expect(note.body).toContain('The driver cancelled');
+
+      await request(app.getHttpServer())
+        .post(`/rides/${ride.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.accessToken}`)
+        .expect(200);
+      expect(
+        await dataSource.getRepository(Notification).count({
+          where: { idempotencyKey: key },
+        }),
+      ).toBe(1);
+      expect(
+        await dataSource.getRepository(Notification).count({
+          where: {
+            recipientUserId: driver.user.id,
+            type: NotificationType.BOOKING_CANCELLED,
+          },
+        }),
+      ).toBe(0);
+
+      await deleteChatForBookingIds(dataSource, [booking.body.id]);
+    });
+
+    it('passenger Commute cancel notifies the driver on first request and recovery', async () => {
+      const { login: driver, vehicle } = await publishableDriver('CmtCancel');
+      const passenger = await createUser('CmtPass');
+      const ride = await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${driver.accessToken}`)
+        .send(
+          withSelectedRoute({
+            vehicleId: vehicle.id,
+            rideType: RideType.COMMUTE,
+            source: 'Office Park',
+            destination: 'Home Colony',
+            departureDate: '2030-08-11',
+            departureTime: '08:30:00',
+            totalSeats: 3,
+            pricePerSeat: 80,
+            sourceLatitude: 28.5,
+            sourceLongitude: 77.4,
+            destinationLatitude: 28.55,
+            destinationLongitude: 77.45,
+          }),
+        )
+        .expect(201);
+
+      const booking = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('cmt-cancel-book'))
+        .send({
+          rideId: ride.body.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.PAY_NOW,
+        })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post(`/bookings/${booking.body.id}/cancel`)
+        .set('Authorization', `Bearer ${passenger.accessToken}`)
+        .expect(200);
+
+      const key = commuteCancelledKey(booking.body.id, driver.user.id);
+      const note = await waitForNotification(key);
+      expect(note.recipientUserId).toBe(driver.user.id);
+      expect(note.data?.cancelledBy).toBe('passenger');
+
+      await dataSource.getRepository(NotificationEmailDelivery).delete({
+        notificationId: note.id,
+      });
+      await dataSource.getRepository(Notification).delete({ id: note.id });
+
+      await request(app.getHttpServer())
+        .post(`/bookings/${booking.body.id}/cancel`)
+        .set('Authorization', `Bearer ${passenger.accessToken}`)
+        .expect(200);
+
+      const recovered = await waitForNotification(key);
+      expect(recovered.recipientUserId).toBe(driver.user.id);
+      expect(
+        await dataSource.getRepository(Notification).count({
+          where: { idempotencyKey: key },
+        }),
+      ).toBe(1);
+
+      await deleteChatForBookingIds(dataSource, [booking.body.id]);
+    });
+
+    it('driver Commute cancel notifies passengers and not the driver', async () => {
+      const { login: driver, vehicle } = await publishableDriver('CmtDrvCan');
+      const passenger = await createUser('CmtDrvPass');
+      const ride = await request(app.getHttpServer())
+        .post('/rides')
+        .set('Authorization', `Bearer ${driver.accessToken}`)
+        .send(
+          withSelectedRoute({
+            vehicleId: vehicle.id,
+            rideType: RideType.COMMUTE,
+            source: 'Office Park',
+            destination: 'Home Colony',
+            departureDate: '2030-08-12',
+            departureTime: '08:30:00',
+            totalSeats: 3,
+            pricePerSeat: 80,
+            sourceLatitude: 28.5,
+            sourceLongitude: 77.4,
+            destinationLatitude: 28.55,
+            destinationLongitude: 77.45,
+          }),
+        )
+        .expect(201);
+      const booking = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${passenger.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('cmt-drv-cancel-book'))
+        .send({
+          rideId: ride.body.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethod.PAY_NOW,
+        })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post(`/rides/${ride.body.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.accessToken}`)
+        .expect(200);
+
+      const key = commuteCancelledKey(booking.body.id, passenger.user.id);
+      const note = await waitForNotification(key);
+      expect(note.recipientUserId).toBe(passenger.user.id);
+      expect(note.data?.cancelledBy).toBe('driver');
+      expect(
+        await dataSource.getRepository(Notification).count({
+          where: {
+            recipientUserId: driver.user.id,
+            type: NotificationType.COMMUTE_BOOKING_CANCELLED,
+          },
+        }),
+      ).toBe(0);
+
+      await request(app.getHttpServer())
+        .post(`/rides/${ride.body.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.accessToken}`)
+        .expect(200);
+      expect(
+        await dataSource.getRepository(Notification).count({
+          where: { idempotencyKey: key },
+        }),
+      ).toBe(1);
+
+      await deleteChatForBookingIds(dataSource, [booking.body.id]);
+    });
+
+    it('records unverified and missing email as skipped while keeping in-app', async () => {
+      const user = await createUser('EmailSkip');
+      await dataSource.getRepository(User).update(user.user.id, {
+        email: `skip-${randomUUID()}@example.com`,
+        emailVerified: false,
+      });
+
+      const unverified = await notificationsService.enqueue({
+        recipientUserId: user.user.id,
+        type: NotificationType.BOOKING_CANCELLED,
+        title: 'Ride cancelled',
+        body: 'Your ride booking has been cancelled.',
+        data: { type: NotificationType.BOOKING_CANCELLED },
+        idempotencyKey: uniqueIdempotencyKey('email-unverified'),
+      });
+      await notificationsService.flushEmail(unverified!.id);
+      const unverifiedDelivery = await notificationsService.findEmailDelivery(
+        unverified!.id,
+      );
+      expect(unverifiedDelivery?.status).toBe(
+        NotificationEmailDeliveryStatus.SKIPPED,
+      );
+      expect(unverifiedDelivery?.skipReason).toBe('email_unverified');
+
+      await dataSource.getRepository(User).update(user.user.id, {
+        email: null,
+        emailVerified: false,
+      });
+      const missing = await notificationsService.enqueue({
+        recipientUserId: user.user.id,
+        type: NotificationType.BOOKING_CANCELLED,
+        title: 'Ride cancelled',
+        body: 'Your ride booking has been cancelled.',
+        data: { type: NotificationType.BOOKING_CANCELLED },
+        idempotencyKey: uniqueIdempotencyKey('email-missing'),
+      });
+      await notificationsService.flushEmail(missing!.id);
+      const missingDelivery = await notificationsService.findEmailDelivery(
+        missing!.id,
+      );
+      expect(missingDelivery?.status).toBe(
+        NotificationEmailDeliveryStatus.SKIPPED,
+      );
+      expect(missingDelivery?.skipReason).toBe('email_missing');
+
+      const list = await request(app.getHttpServer())
+        .get('/notifications')
+        .query({ limit: 50 })
+        .set('Authorization', `Bearer ${user.accessToken}`)
+        .expect(200);
+      const unverifiedItem = list.body.items.find(
+        (item: { id: string }) => item.id === unverified!.id,
+      );
+      const missingItem = list.body.items.find(
+        (item: { id: string }) => item.id === missing!.id,
+      );
+      expect(unverifiedItem).toBeTruthy();
+      expect(unverifiedItem.emailDelivery).toMatchObject({
+        status: NotificationEmailDeliveryStatus.SKIPPED,
+        skipReason: 'email_unverified',
+      });
+      expect(missingItem.emailDelivery).toMatchObject({
+        status: NotificationEmailDeliveryStatus.SKIPPED,
+        skipReason: 'email_missing',
+      });
     });
   });
 });

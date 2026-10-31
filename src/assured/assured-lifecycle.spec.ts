@@ -74,6 +74,8 @@ import {
 } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
 import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
+import { Notification } from '../notifications/entities/notification.entity';
+import { NotificationType } from '../notifications/enums/notification.enums';
 import { ASSURED_TEST_ROUTE, withAssuredPublishHeaders } from '../rides/test/assured-ride-test.helpers';
 import { withSelectedRoute } from '../rides/test/selected-route-test.helpers';
 import { startRideAndVerifyAllPickups } from '../rides/test/ride-trip-test.helpers';
@@ -663,6 +665,25 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
     expect(retry.body.alreadyApplied).toBe(true);
     expect(retry.body.riderCompensationTotal).toBe('60');
 
+    for (const passenger of [passengerA, passengerB]) {
+      expect(
+        await dataSource.getRepository(Notification).count({
+          where: {
+            recipientUserId: passenger.login.user.id,
+            type: NotificationType.BOOKING_CANCELLED,
+          },
+        }),
+      ).toBe(1);
+    }
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: driver.login.user.id,
+          type: NotificationType.BOOKING_CANCELLED,
+        },
+      }),
+    ).toBe(0);
+
     const emptyDriver = await fundedDriver();
     const emptyRide = await publishAssuredRide(emptyDriver, {
       source: 'Empty Cancel Source',
@@ -753,6 +774,23 @@ describe('Assured lifecycle Phase 4 (integration)', () => {
       .findOneByOrFail({ id: ride.id });
     expect(rideAfter.availableSeats).toBe(seatsBeforeCancel + 1);
     expect(rideAfter.status).toBe(RideStatus.ASSURANCE_ACTIVE);
+
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: driver.login.user.id,
+          type: NotificationType.BOOKING_CANCELLED,
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: passenger.login.user.id,
+          type: NotificationType.BOOKING_CANCELLED,
+        },
+      }),
+    ).toBe(0);
   });
 
   it('rider cancel PAY_NOW: deposit and fare split separately (30/70), no fare refund', async () => {

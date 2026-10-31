@@ -17,6 +17,8 @@ import {
   BookingStatus,
 } from '../bookings/enums/booking.enums';
 import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
+import { Notification } from '../notifications/entities/notification.entity';
+import { NotificationType } from '../notifications/enums/notification.enums';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import {
@@ -349,6 +351,25 @@ describe('Regular ride driver cancellation (integration)', () => {
       .expect(200);
 
     expect(response.body.cancelledBookingCount).toBe(2);
+
+    for (const passenger of [p1, p2]) {
+      const notes = await dataSource.getRepository(Notification).find({
+        where: {
+          recipientUserId: passenger.user.id,
+          type: NotificationType.BOOKING_CANCELLED,
+        },
+      });
+      expect(notes).toHaveLength(1);
+      expect(notes[0].body).toContain('The driver cancelled');
+    }
+    expect(
+      await dataSource.getRepository(Notification).count({
+        where: {
+          recipientUserId: driver.user.id,
+          type: NotificationType.BOOKING_CANCELLED,
+        },
+      }),
+    ).toBe(0);
 
     for (const id of [b1.body.id, b2.body.id]) {
       const row = await dataSource

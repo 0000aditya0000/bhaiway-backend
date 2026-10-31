@@ -957,6 +957,8 @@ export class NoShowClaimsService {
         rideId: effects.clearTracking ?? booking.bookingId,
         recipientUserId: booking.passengerId,
         bookingMode: 'REGULAR',
+        cancelledBy: 'driver',
+        cancellationReason: 'RIDE_CANCELLED',
       });
     }
     for (const booking of effects.commuteCancelled ?? []) {
@@ -964,6 +966,8 @@ export class NoShowClaimsService {
         bookingId: booking.bookingId,
         rideId: effects.clearTracking ?? booking.bookingId,
         recipientUserId: booking.passengerId,
+        cancelledBy: 'driver',
+        cancellationReason: 'RIDE_CANCELLED',
       });
     }
   }

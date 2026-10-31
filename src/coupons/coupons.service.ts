@@ -9,6 +9,7 @@ import { CouponRedemptionService } from './coupon-redemption.service';
 import {
   AssignCouponUsersDto,
   CreateCouponAdminDto,
+  UpdateCouponAdminDto,
 } from './dto/admin-coupon.dto';
 import { PreviewCouponDto, ValidateCouponDto } from './dto/user-coupon-api.dto';
 import { CouponAssignment } from './entities/coupon-assignment.entity';
@@ -22,10 +23,13 @@ import {
   CouponNotFoundError,
 } from './errors/coupon.errors';
 import {
+  CouponActorContext,
   CouponAudience,
   CouponChargeScope,
   CouponRideTypeScope,
+  USER_LISTING_APPLICABLE_TO,
   normalizeCouponCode,
+  resolveCouponApplicableTo,
 } from './enums/coupon.enums';
 
 @Injectable()
@@ -96,6 +100,7 @@ export class CouponsService {
       rideTypeScope: parsed.rideTypeScope,
       chargeScope: parsed.chargeScope,
       audience: parsed.audience,
+      applicableTo: parsed.applicableTo,
       isActive: parsed.isActive,
       startsAt: parsed.startsAt,
       expiresAt: parsed.expiresAt,
@@ -115,6 +120,7 @@ export class CouponsService {
     await this.audit(adminId, saved.id, 'COUPON_CREATED', {
       code: saved.codeNormalized,
       audience: saved.audience,
+      applicableTo: saved.applicableTo,
     });
 
     return this.toAdminDetail(saved.id);
@@ -169,6 +175,33 @@ export class CouponsService {
     });
 
     return { assigned };
+  }
+
+  async updateAdmin(
+    couponId: string,
+    adminId: string,
+    dto: UpdateCouponAdminDto,
+  ): Promise<Record<string, unknown>> {
+    const coupon = await this.couponRepository.findOne({
+      where: { id: couponId },
+    });
+    if (!coupon) {
+      throw new CouponNotFoundError();
+    }
+
+    const previousApplicableTo = resolveCouponApplicableTo(coupon.applicableTo);
+    if (dto.applicableTo != null) {
+      coupon.applicableTo = dto.applicableTo;
+      await this.couponRepository.save(coupon);
+      await this.audit(adminId, couponId, 'COUPON_UPDATED', {
+        applicableTo: {
+          from: previousApplicableTo,
+          to: dto.applicableTo,
+        },
+      });
+    }
+
+    return this.toAdminDetail(couponId);
   }
 
   async setActive(
@@ -281,6 +314,10 @@ export class CouponsService {
       .andWhere(
         '(c.total_redemption_limit IS NULL OR (c.redeemed_count + c.reserved_count) < c.total_redemption_limit)',
       )
+      .andWhere(
+        '(c.applicable_to IS NULL OR c.applicable_to IN (:...userApplicableTo))',
+        { userApplicableTo: USER_LISTING_APPLICABLE_TO },
+      )
       .orderBy('c.expires_at', 'ASC')
       .skip((page - 1) * limit)
       .take(limit);
@@ -313,6 +350,10 @@ export class CouponsService {
       .andWhere('c.expires_at >= :now', { now })
       .andWhere(
         '(c.total_redemption_limit IS NULL OR (c.redeemed_count + c.reserved_count) < c.total_redemption_limit)',
+      )
+      .andWhere(
+        '(c.applicable_to IS NULL OR c.applicable_to IN (:...userApplicableTo))',
+        { userApplicableTo: USER_LISTING_APPLICABLE_TO },
       )
       .orderBy('c.expires_at', 'ASC')
       .skip((page - 1) * limit)
@@ -354,6 +395,7 @@ export class CouponsService {
       rideType: dto.rideType,
       chargeScope: dto.chargeScope,
       amount,
+      actorContext: CouponActorContext.RIDER,
     });
     return {
       valid: true,
@@ -361,6 +403,7 @@ export class CouponsService {
       benefitType: preview.coupon.benefitType,
       rideTypeScope: preview.coupon.rideTypeScope,
       chargeScope: preview.coupon.chargeScope,
+      applicableTo: resolveCouponApplicableTo(preview.coupon.applicableTo),
       originalAmount: preview.originalAmount.toString(),
       discountAmount: preview.discountAmount.toString(),
       finalAmount: preview.finalAmount.toString(),
@@ -429,6 +472,7 @@ export class CouponsService {
       rideTypeScope: coupon.rideTypeScope,
       chargeScope: coupon.chargeScope,
       audience: coupon.audience,
+      applicableTo: resolveCouponApplicableTo(coupon.applicableTo),
       isActive: coupon.isActive,
       startsAt: coupon.startsAt.toISOString(),
       expiresAt: coupon.expiresAt.toISOString(),

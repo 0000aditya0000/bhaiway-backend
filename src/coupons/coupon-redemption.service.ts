@@ -11,6 +11,7 @@ import { CouponRedemption } from './entities/coupon-redemption.entity';
 import { Coupon } from './entities/coupon.entity';
 import {
   CouponAlreadyUsedError,
+  CouponDriversOnlyError,
   CouponExhaustedError,
   CouponExpiredError,
   CouponInactiveError,
@@ -18,8 +19,11 @@ import {
   CouponNotAssignedError,
   CouponNotFoundError,
   CouponNotStartedError,
+  CouponRidersOnlyError,
 } from './errors/coupon.errors';
 import {
+  CouponActorContext,
+  CouponApplicableTo,
   CouponAudience,
   CouponBenefitType,
   CouponChargeScope,
@@ -27,6 +31,7 @@ import {
   CouponRideTypeScope,
   COUPON_REDEMPTION_REFERENCE_TYPE,
   normalizeCouponCode,
+  resolveCouponApplicableTo,
 } from './enums/coupon.enums';
 
 export interface CouponEligibilityContext {
@@ -36,6 +41,11 @@ export interface CouponEligibilityContext {
   /** Authoritative eligible amount (fare or security fee). */
   amount: bigint;
   now?: Date;
+  /**
+   * Server-set rider/driver context. Never taken from the client.
+   * Defaults to RIDER — the only product flow that redeems catalog coupons.
+   */
+  actorContext?: CouponActorContext;
 }
 
 export interface ReserveCouponInput extends CouponEligibilityContext {
@@ -423,6 +433,8 @@ export class CouponRedemptionService {
       );
     }
 
+    this.assertApplicableToActor(coupon, ctx);
+
     if (coupon.audience === CouponAudience.USER_SPECIFIC) {
       const assignmentRepo =
         options.manager?.getRepository(CouponAssignment) ??
@@ -469,6 +481,32 @@ export class CouponRedemptionService {
       if (used >= coupon.totalRedemptionLimit) {
         throw new CouponExhaustedError();
       }
+    }
+  }
+
+  /**
+   * Rider/driver eligibility. Actor is always server-set (booking passenger =
+   * RIDER). Client-supplied role / applicableTo are ignored because they never
+   * enter this context.
+   */
+  private assertApplicableToActor(
+    coupon: Coupon,
+    ctx: CouponEligibilityContext,
+  ): void {
+    const applicableTo = resolveCouponApplicableTo(coupon.applicableTo);
+    const actor = ctx.actorContext ?? CouponActorContext.RIDER;
+
+    if (
+      applicableTo === CouponApplicableTo.DRIVERS_ONLY &&
+      actor !== CouponActorContext.DRIVER
+    ) {
+      throw new CouponDriversOnlyError();
+    }
+    if (
+      applicableTo === CouponApplicableTo.RIDERS_ONLY &&
+      actor !== CouponActorContext.RIDER
+    ) {
+      throw new CouponRidersOnlyError();
     }
   }
 

@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 
 import {
+  CouponApplicableTo,
   CouponAudience,
   CouponBenefitType,
   CouponChargeScope,
@@ -79,6 +80,18 @@ export class Coupon {
     length: 32,
   })
   audience!: CouponAudience;
+
+  /**
+   * Rider/driver redemption eligibility. Distinct from `audience`
+   * (PUBLIC vs USER_SPECIFIC). Existing rows default to ALL.
+   */
+  @Column({
+    name: 'applicable_to',
+    type: 'varchar',
+    length: 32,
+    default: CouponApplicableTo.ALL,
+  })
+  applicableTo!: CouponApplicableTo;
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive!: boolean;

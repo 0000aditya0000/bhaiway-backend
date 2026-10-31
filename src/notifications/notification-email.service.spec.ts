@@ -104,6 +104,8 @@ describe('NotificationEmailService', () => {
     expect(delivery.status).toBe(NotificationEmailDeliveryStatus.PENDING);
     expect(delivery.attemptCount).toBe(1);
     expect(delivery.failureReason).toContain('SMTP unavailable');
+    expect(delivery.nextAttemptAt).toBeInstanceOf(Date);
+    expect(delivery.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
   });
 
   it('does not resend when already SENT', async () => {

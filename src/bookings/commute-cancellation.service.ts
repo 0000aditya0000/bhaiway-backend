@@ -102,17 +102,7 @@ export class CommuteCancellationService {
         where: { id: bookingId },
       });
       if (booking) {
-        // Passenger cancelled — notify driver (counterparty).
-        const ride = await this.dataSource.getRepository(Ride).findOne({
-          where: { id: booking.rideId },
-        });
-        if (ride) {
-          await this.notificationsService.safeNotifyCommuteCancelled({
-            bookingId: booking.id,
-            rideId: booking.rideId,
-            recipientUserId: ride.driverId,
-          });
-        }
+        await this.notifyPassengerCancelledDriver(booking);
       }
       return result;
     } catch (error) {
@@ -125,6 +115,12 @@ export class CommuteCancellationService {
         );
         if (recovered) {
           await this.chatService.safeCloseForBooking(bookingId);
+          const booking = await this.bookingRepository.findOne({
+            where: { id: bookingId },
+          });
+          if (booking) {
+            await this.notifyPassengerCancelledDriver(booking);
+          }
           return recovered;
         }
       }
@@ -203,13 +199,7 @@ export class CommuteCancellationService {
         });
       });
       await this.chatService.safeCloseForRide(rideId);
-      for (const item of result.cancelledForNotify) {
-        await this.notificationsService.safeNotifyCommuteCancelled({
-          bookingId: item.bookingId,
-          rideId,
-          recipientUserId: item.passengerId,
-        });
-      }
+      await this.notifyRideCancelledPassengers(rideId, result.cancelledForNotify);
       return result.response;
     } catch (error) {
       if (this.walletService.isIdempotencyKeyConflict(error)) {
@@ -222,15 +212,23 @@ export class CommuteCancellationService {
           ride.status === RideStatus.CANCELLED &&
           ride.cancellationReason === RideCancellationReason.DRIVER_CANCELLED
         ) {
-          const cancelledCount = await this.bookingRepository.count({
+          const cancelled = await this.bookingRepository.find({
             where: {
               rideId,
               status: BookingStatus.CANCELLED,
               cancellationReason: BookingCancellationReason.RIDE_CANCELLED,
             },
+            select: { id: true, passengerId: true },
           });
           await this.chatService.safeCloseForRide(rideId);
-          return this.toRideCancelResponse(ride, 0n, cancelledCount, true);
+          await this.notifyRideCancelledPassengers(
+            rideId,
+            cancelled.map((booking) => ({
+              bookingId: booking.id,
+              passengerId: booking.passengerId,
+            })),
+          );
+          return this.toRideCancelResponse(ride, 0n, cancelled.length, true);
         }
       }
       throw error;
@@ -313,9 +311,20 @@ export class CommuteCancellationService {
 
     if (ride.status === RideStatus.CANCELLED) {
       if (ride.cancellationReason === params.rideCancellationReason) {
+        const cancelled = await manager.getRepository(Booking).find({
+          where: {
+            rideId: ride.id,
+            status: BookingStatus.CANCELLED,
+            cancellationReason: params.bookingCancellationReason,
+          },
+          select: { id: true, passengerId: true },
+        });
         return {
-          response: this.toRideCancelResponse(ride, 0n, 0, true),
-          cancelledForNotify: [],
+          response: this.toRideCancelResponse(ride, 0n, cancelled.length, true),
+          cancelledForNotify: cancelled.map((booking) => ({
+            bookingId: booking.id,
+            passengerId: booking.passengerId,
+          })),
         };
       }
       throw new ConflictException(
@@ -486,6 +495,37 @@ export class CommuteCancellationService {
     const before = ride.availableSeats;
     ride.availableSeats = Math.min(ride.totalSeats, ride.availableSeats + seats);
     return ride.availableSeats - before;
+  }
+
+  private async notifyPassengerCancelledDriver(booking: Booking): Promise<void> {
+    const ride = await this.dataSource.getRepository(Ride).findOne({
+      where: { id: booking.rideId },
+    });
+    if (!ride) {
+      return;
+    }
+    await this.notificationsService.safeNotifyCommuteCancelled({
+      bookingId: booking.id,
+      rideId: booking.rideId,
+      recipientUserId: ride.driverId,
+      cancelledBy: 'passenger',
+      cancellationReason: BookingCancellationReason.RIDER_CANCELLED,
+    });
+  }
+
+  private async notifyRideCancelledPassengers(
+    rideId: string,
+    items: Array<{ bookingId: string; passengerId: string }>,
+  ): Promise<void> {
+    for (const item of items) {
+      await this.notificationsService.safeNotifyCommuteCancelled({
+        bookingId: item.bookingId,
+        rideId,
+        recipientUserId: item.passengerId,
+        cancelledBy: 'driver',
+        cancellationReason: BookingCancellationReason.RIDE_CANCELLED,
+      });
+    }
   }
 
   private assertCommuteBooking(booking: Booking, ride: Ride): void {

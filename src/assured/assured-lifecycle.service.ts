@@ -140,6 +140,13 @@ export class AssuredLifecycleService {
     } catch (error) {
       if (this.isLifecycleEventUniqueViolation(error, idempotencyKey)) {
         await this.chatService.safeCloseForRide(rideId);
+        const cancelledBookings =
+          await this.loadCancelledBookingsForNotify(rideId);
+        await this.afterAssuredRideCancelledNotifications({
+          rideId,
+          alreadyApplied: true,
+          cancelledBookings,
+        });
         return this.buildRideLifecycleResponseFromDb(rideId, true);
       }
       throw error;
@@ -469,9 +476,6 @@ export class AssuredLifecycleService {
       bookingMode: BookingMode;
     }>;
   }): Promise<void> {
-    if (result.alreadyApplied) {
-      return;
-    }
     for (const booking of result.cancelledBookings ?? []) {
       const mode =
         booking.bookingMode === BookingMode.ASSURED ? 'ASSURED' : 'REGULAR';
@@ -480,6 +484,8 @@ export class AssuredLifecycleService {
         rideId: result.rideId,
         recipientUserId: booking.passengerId,
         bookingMode: mode,
+        cancelledBy: 'driver',
+        cancellationReason: 'RIDE_CANCELLED',
       });
     }
     if (result.promotedRide) {
@@ -488,6 +494,34 @@ export class AssuredLifecycleService {
         driverId: result.promotedRide.driverId,
       });
     }
+  }
+
+  private async loadCancelledBookingsForNotify(
+    rideId: string,
+    manager?: EntityManager,
+  ): Promise<
+    Array<{
+      bookingId: string;
+      passengerId: string;
+      bookingMode: BookingMode;
+    }>
+  > {
+    const repo = manager
+      ? manager.getRepository(Booking)
+      : this.bookingRepository;
+    const rows = await repo.find({
+      where: {
+        rideId,
+        status: BookingStatus.CANCELLED,
+        cancellationReason: BookingCancellationReason.RIDE_CANCELLED,
+      },
+      select: { id: true, passengerId: true, bookingMode: true },
+    });
+    return rows.map((booking) => ({
+      bookingId: booking.id,
+      passengerId: booking.passengerId,
+      bookingMode: booking.bookingMode,
+    }));
   }
 
   private async executeDriverForfeit(
@@ -537,7 +571,10 @@ export class AssuredLifecycleService {
         return {
           ...(await this.buildRideLifecycleResponse(manager, ride, true)),
           promotedRide: null,
-          cancelledBookings: [],
+          cancelledBookings: await this.loadCancelledBookingsForNotify(
+            ride.id,
+            manager,
+          ),
         };
       }
 
@@ -572,7 +609,10 @@ export class AssuredLifecycleService {
         return {
           ...(await this.buildRideLifecycleResponse(manager, ride, true)),
           promotedRide: null,
-          cancelledBookings: [],
+          cancelledBookings: await this.loadCancelledBookingsForNotify(
+            ride.id,
+            manager,
+          ),
         };
       }
       throw new ConflictException(
@@ -616,7 +656,10 @@ export class AssuredLifecycleService {
       return {
         ...(await this.buildRideLifecycleResponse(manager, ride, true)),
         promotedRide: null,
-        cancelledBookings: [],
+        cancelledBookings: await this.loadCancelledBookingsForNotify(
+          ride.id,
+          manager,
+        ),
       };
     }
 

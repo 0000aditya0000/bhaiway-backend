@@ -22,7 +22,7 @@ const PENDING_POLL_MS = 20_000;
 @Injectable()
 export class NotificationEmailService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NotificationEmailService.name);
-  private readonly inFlight = new Set<string>();
+  private readonly inFlight = new Map<string, Promise<void>>();
   private pollTimer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -138,11 +138,20 @@ export class NotificationEmailService implements OnModuleInit, OnModuleDestroy {
   }
 
   async deliver(notificationId: string): Promise<void> {
-    if (this.inFlight.has(notificationId)) {
+    const existing = this.inFlight.get(notificationId);
+    if (existing) {
+      await existing;
       return;
     }
-    this.inFlight.add(notificationId);
 
+    const run = this.runDeliver(notificationId).finally(() => {
+      this.inFlight.delete(notificationId);
+    });
+    this.inFlight.set(notificationId, run);
+    await run;
+  }
+
+  private async runDeliver(notificationId: string): Promise<void> {
     try {
       let delivery = await this.deliveryRepository.findOne({
         where: { notificationId },
@@ -183,6 +192,9 @@ export class NotificationEmailService implements OnModuleInit, OnModuleDestroy {
         delivery.status = NotificationEmailDeliveryStatus.SKIPPED;
         delivery.skipReason = 'notification_missing';
         await this.deliveryRepository.save(delivery);
+        this.logger.log(
+          `Email skipped notification=${notificationId} status=SKIPPED skipReason=notification_missing`,
+        );
         return;
       }
 
@@ -196,6 +208,9 @@ export class NotificationEmailService implements OnModuleInit, OnModuleDestroy {
           : 'email_unverified';
         delivery.recipientEmail = null;
         await this.deliveryRepository.save(delivery);
+        this.logger.log(
+          `Email skipped notification=${notificationId} status=SKIPPED skipReason=${delivery.skipReason} recipientUser=${notification.recipientUserId}`,
+        );
         return;
       }
 
@@ -210,6 +225,9 @@ export class NotificationEmailService implements OnModuleInit, OnModuleDestroy {
           : 'email_unverified';
         delivery.recipientEmail = null;
         await this.deliveryRepository.save(delivery);
+        this.logger.log(
+          `Email skipped notification=${notificationId} status=SKIPPED skipReason=${delivery.skipReason} recipientUser=${notification.recipientUserId}`,
+        );
         return;
       }
 
@@ -232,6 +250,9 @@ export class NotificationEmailService implements OnModuleInit, OnModuleDestroy {
         delivery.failureReason = null;
         delivery.nextAttemptAt = null;
         await this.deliveryRepository.save(delivery);
+        this.logger.log(
+          `Email sent notification=${notificationId} status=SENT recipientUser=${notification.recipientUserId}`,
+        );
       } catch (error) {
         const reason =
           error instanceof Error ? error.message.slice(0, 500) : String(error);
@@ -246,7 +267,7 @@ export class NotificationEmailService implements OnModuleInit, OnModuleDestroy {
         );
         await this.deliveryRepository.save(delivery);
         this.logger.warn(
-          `Email delivery failed notification=${notificationId} attempt=${delivery.attemptCount}: ${reason}`,
+          `Email delivery failed notification=${notificationId} status=${delivery.status} attempt=${delivery.attemptCount} maxAttempts=${MAX_ATTEMPTS} nextAttemptAt=${delivery.nextAttemptAt?.toISOString() ?? 'none'}: ${reason}`,
         );
       }
     } catch (error) {
