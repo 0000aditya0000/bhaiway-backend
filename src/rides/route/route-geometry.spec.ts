@@ -684,4 +684,444 @@ describe('flexible route matching (backward pickup and destination extension)', 
       expect(res).toBeNull();
     });
   });
+
+  describe('Audited Geographic Accuracy & Diagonal Boundaries', () => {
+    // Route from South to North: (28.0, 77.0) -> (30.0, 77.0)
+    const southSource = { latitude: 28.0, longitude: 77.0 };
+    const midPoint = { latitude: 29.0, longitude: 77.0 };
+    const northDest = { latitude: 30.0, longitude: 77.0 };
+    const straightRoute = [southSource, midPoint, northDest];
+
+    it('matches pickup 10 km directly behind source', () => {
+      const p10km = { latitude: 28.0 - 10 / 111.32, longitude: 77.0 };
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: p10km,
+        dropoff: northDest,
+      });
+      expect(res?.category).toBe(RideMatchCategory.BACKWARD_PICKUP_MATCH);
+      expect(res?.pickupFlexibilityDistanceKm).toBeCloseTo(10.0, 0);
+    });
+
+    it('matches pickup 25 km directly behind source', () => {
+      const p25km = { latitude: 28.0 - 25 / 111.32, longitude: 77.0 };
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: p25km,
+        dropoff: northDest,
+      });
+      expect(res?.category).toBe(RideMatchCategory.BACKWARD_PICKUP_MATCH);
+      expect(res?.pickupFlexibilityDistanceKm).toBeCloseTo(25.0, 0);
+    });
+
+    it('rejects pickup 29 km from source diagonally when lateral offset exceeds 20 km corridor', () => {
+      // 20 km backward, 21 km lateral (dist ~ 29.0 km <= 30 km, but lateral 21 km > 20 km corridor)
+      const p29kmDiagFar = {
+        latitude: 28.0 - 20 / 111.32,
+        longitude: 77.0 + 21 / 98.0,
+      };
+      const dist = haversineMeters(p29kmDiagFar, southSource);
+      expect(dist).toBeLessThanOrEqual(30000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: p29kmDiagFar,
+        dropoff: northDest,
+      });
+      // Rejected due to perpDist > SELECTED_ROUTE_CORRIDOR_METERS (20km)
+      expect(res).toBeNull();
+    });
+
+    it('matches pickup 29 km from source diagonally when lateral offset is within 20 km corridor', () => {
+      // 25 km backward, 14 km lateral (dist ~ 28.7 km <= 30 km, lateral 14 km <= 20 km)
+      const p29kmDiagNear = {
+        latitude: 28.0 - 25 / 111.32,
+        longitude: 77.0 + 14 / 98.0,
+      };
+      const dist = haversineMeters(p29kmDiagNear, southSource);
+      expect(dist).toBeLessThanOrEqual(30000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: p29kmDiagNear,
+        dropoff: northDest,
+      });
+      expect(res?.category).toBe(RideMatchCategory.BACKWARD_PICKUP_MATCH);
+      expect(res?.pickupFlexibilityDistanceKm).toBeCloseTo(28.7, 0);
+    });
+
+    it('rejects pickup 31 km from source', () => {
+      const p31km = { latitude: 28.0 - 31 / 111.32, longitude: 77.0 };
+      expect(haversineMeters(p31km, southSource)).toBeGreaterThan(30000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: p31km,
+        dropoff: northDest,
+      });
+      expect(res).toBeNull();
+    });
+
+    it('rejects pickup within 30 km but geographically unrelated (behind dropoff progress requirement)', () => {
+      // Loop route returning south where south point is actually closer to dropoff than source
+      const loopRoute = [
+        southSource,
+        { latitude: 28.5, longitude: 77.0 },
+        { latitude: 28.2, longitude: 77.0 },
+      ];
+      // Pickup 10km south is closer to dropoff (28.2) than source is (28.0)
+      const pBehind = { latitude: 28.0 - 10 / 111.32, longitude: 77.0 };
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: loopRoute,
+        pickup: pBehind,
+        dropoff: { latitude: 27.8, longitude: 77.0 },
+      });
+      expect(res).toBeNull();
+    });
+
+    it('matches destination 15 km beyond driver destination', () => {
+      const d15km = { latitude: 30.0 + 15 / 111.32, longitude: 77.0 };
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: southSource,
+        dropoff: d15km,
+      });
+      expect(res?.category).toBe(RideMatchCategory.EXTENDED_DESTINATION_MATCH);
+      expect(res?.destinationExtensionDistanceKm).toBeCloseTo(15.0, 0);
+    });
+
+    it('matches destination 30 km beyond driver destination', () => {
+      const d30km = { latitude: 30.0 + 30 / 111.32, longitude: 77.0 };
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: southSource,
+        dropoff: d30km,
+      });
+      expect(res?.category).toBe(RideMatchCategory.EXTENDED_DESTINATION_MATCH);
+      expect(res?.destinationExtensionDistanceKm).toBeCloseTo(30.0, 0);
+    });
+
+    it('matches destination 49 km beyond driver destination', () => {
+      const d49km = { latitude: 30.0 + 49 / 111.32, longitude: 77.0 };
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: southSource,
+        dropoff: d49km,
+      });
+      expect(res?.category).toBe(RideMatchCategory.EXTENDED_DESTINATION_MATCH);
+      expect(res?.destinationExtensionDistanceKm).toBeCloseTo(49.0, 0);
+    });
+
+    it('rejects destination 51 km beyond driver destination', () => {
+      const d51km = { latitude: 30.0 + 51 / 111.32, longitude: 77.0 };
+      expect(haversineMeters(d51km, northDest)).toBeGreaterThan(50000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: southSource,
+        dropoff: d51km,
+      });
+      expect(res).toBeNull();
+    });
+
+    it('rejects destination 30 km diagonally away when lateral offset exceeds 20 km corridor', () => {
+      // 21km forward, 21.4km lateral (dist ~ 29.9km <= 50km, but lateral 21.4km > 20km corridor)
+      const d30kmDiagFar = {
+        latitude: 30.0 + 21 / 111.32,
+        longitude: 77.0 + 21.4 / 96.5,
+      };
+      const dist = haversineMeters(d30kmDiagFar, northDest);
+      expect(dist).toBeLessThanOrEqual(50000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: southSource,
+        dropoff: d30kmDiagFar,
+      });
+      // Rejected due to perpDist > SELECTED_ROUTE_CORRIDOR_METERS (20km)
+      expect(res).toBeNull();
+    });
+
+    it('matches destination 30 km diagonally away when lateral offset is within 20 km corridor', () => {
+      // 26km forward, 14km lateral (dist ~ 29.5km <= 50km, lateral 14km <= 20km corridor)
+      const d30kmDiagNear = {
+        latitude: 30.0 + 26 / 111.32,
+        longitude: 77.0 + 14 / 96.5,
+      };
+      const dist = haversineMeters(d30kmDiagNear, northDest);
+      expect(dist).toBeLessThanOrEqual(50000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: southSource,
+        dropoff: d30kmDiagNear,
+      });
+      expect(res?.category).toBe(RideMatchCategory.EXTENDED_DESTINATION_MATCH);
+      expect(res?.destinationExtensionDistanceKm).toBeCloseTo(29.5, 0);
+    });
+
+    it('rejects destination 25 km away in an unrelated direction (90 degrees sideways East)', () => {
+      // Pure East: 0 km forward, 25 km lateral (outside forward continuation cone cosAngle >= 0.25)
+      const d25kmSideways = {
+        latitude: 30.0,
+        longitude: 77.0 + 25 / 96.5,
+      };
+      const dist = haversineMeters(d25kmSideways, northDest);
+      expect(dist).toBeLessThan(50000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: straightRoute,
+        pickup: southSource,
+        dropoff: d25kmSideways,
+      });
+      expect(res).toBeNull();
+    });
+  });
+
+  describe('road-network distance validation for flexible route matching (Section 10)', () => {
+    const routeStart = { latitude: 28.5355, longitude: 77.391 }; // Noida
+    const routeEnd = { latitude: 30.3165, longitude: 78.0322 }; // Dehradun
+    const straightRoute = [routeStart, routeEnd];
+
+    describe('Backward pickup road distance validation (30 km limit)', () => {
+      // Behind routeStart (south)
+      const p10km = { latitude: 28.5355 - 10 / 111.32, longitude: 77.391 };
+      const p15km = { latitude: 28.5355 - 15 / 111.32, longitude: 77.391 };
+      const p20km = { latitude: 28.5355 - 20 / 111.32, longitude: 77.391 };
+      const p25km = { latitude: 28.5355 - 25 / 111.32, longitude: 77.391 };
+
+      it('Straight-line distance 10 km, road distance 12 km: accept', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p10km,
+          dropoff: routeEnd,
+          verifiedBackwardPickupRoadDistanceMeters: 12000,
+          distanceCalculationMethod: 'ROAD_NETWORK',
+          routingProvider: 'google',
+        });
+        expect(res).not.toBeNull();
+        expect(res?.category).toBe(RideMatchCategory.BACKWARD_PICKUP_MATCH);
+        expect(res?.pickupFlexibilityDistanceKm).toBe(12.0);
+        expect(res?.distanceCalculationMethod).toBe('ROAD_NETWORK');
+        expect(res?.roadDistanceVerified).toBe(true);
+        expect(res?.routingProvider).toBe('google');
+      });
+
+      it('Straight-line distance 15 km, road distance 25 km: accept', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p15km,
+          dropoff: routeEnd,
+          verifiedBackwardPickupRoadDistanceMeters: 25000,
+        });
+        expect(res).not.toBeNull();
+        expect(res?.category).toBe(RideMatchCategory.BACKWARD_PICKUP_MATCH);
+        expect(res?.pickupFlexibilityDistanceKm).toBe(25.0);
+        expect(res?.roadDistanceVerified).toBe(true);
+      });
+
+      it('Straight-line distance 20 km, road distance 35 km: reject (> 30 km)', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p20km,
+          dropoff: routeEnd,
+          verifiedBackwardPickupRoadDistanceMeters: 35000,
+        });
+        expect(res).toBeNull();
+      });
+
+      it('Straight-line distance 25 km, road distance 29 km: accept if directional and corridor conditions pass', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p25km,
+          dropoff: routeEnd,
+          verifiedBackwardPickupRoadDistanceMeters: 29000,
+        });
+        expect(res).not.toBeNull();
+        expect(res?.category).toBe(RideMatchCategory.BACKWARD_PICKUP_MATCH);
+        expect(res?.pickupFlexibilityDistanceKm).toBe(29.0);
+        expect(res?.roadDistanceVerified).toBe(true);
+      });
+
+      it('Straight-line distance 25 km, road distance 32 km: reject (> 30 km)', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p25km,
+          dropoff: routeEnd,
+          verifiedBackwardPickupRoadDistanceMeters: 32000,
+        });
+        expect(res).toBeNull();
+      });
+
+      it('No road route available (null): reject flexible match', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p10km,
+          dropoff: routeEnd,
+          verifiedBackwardPickupRoadDistanceMeters: null,
+        });
+        expect(res).toBeNull();
+      });
+    });
+
+    describe('Destination extension road distance validation (50 km limit)', () => {
+      // Beyond routeEnd (north along route continuation)
+      const d15km = { latitude: 30.3165 + 15 / 111.32, longitude: 78.0322 };
+      const d30km = { latitude: 30.3165 + 30 / 111.32, longitude: 78.0322 };
+      const d35km = { latitude: 30.3165 + 35 / 111.32, longitude: 78.0322 };
+      const d40km = { latitude: 30.3165 + 40 / 111.32, longitude: 78.0322 };
+      const d45km = { latitude: 30.3165 + 45 / 111.32, longitude: 78.0322 };
+
+      it('Straight-line distance 15 km, road distance 20 km: accept', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: routeStart,
+          dropoff: d15km,
+          verifiedDestinationExtensionRoadDistanceMeters: 20000,
+        });
+        expect(res).not.toBeNull();
+        expect(res?.category).toBe(
+          RideMatchCategory.EXTENDED_DESTINATION_MATCH,
+        );
+        expect(res?.destinationExtensionDistanceKm).toBe(20.0);
+        expect(res?.roadDistanceVerified).toBe(true);
+      });
+
+      it('Straight-line distance 30 km, road distance 45 km: accept', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: routeStart,
+          dropoff: d30km,
+          verifiedDestinationExtensionRoadDistanceMeters: 45000,
+        });
+        expect(res).not.toBeNull();
+        expect(res?.category).toBe(
+          RideMatchCategory.EXTENDED_DESTINATION_MATCH,
+        );
+        expect(res?.destinationExtensionDistanceKm).toBe(45.0);
+        expect(res?.roadDistanceVerified).toBe(true);
+      });
+
+      it('Straight-line distance 35 km, road distance 49 km: accept if directional conditions pass', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: routeStart,
+          dropoff: d35km,
+          verifiedDestinationExtensionRoadDistanceMeters: 49000,
+        });
+        expect(res).not.toBeNull();
+        expect(res?.category).toBe(
+          RideMatchCategory.EXTENDED_DESTINATION_MATCH,
+        );
+        expect(res?.destinationExtensionDistanceKm).toBe(49.0);
+        expect(res?.roadDistanceVerified).toBe(true);
+      });
+
+      it('Straight-line distance 40 km, road distance 55 km: reject (> 50 km)', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: routeStart,
+          dropoff: d40km,
+          verifiedDestinationExtensionRoadDistanceMeters: 55000,
+        });
+        expect(res).toBeNull();
+      });
+
+      it('Straight-line distance 45 km, road distance 60 km: reject (> 50 km)', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: routeStart,
+          dropoff: d45km,
+          verifiedDestinationExtensionRoadDistanceMeters: 60000,
+        });
+        expect(res).toBeNull();
+      });
+
+      it('No road route available (null): reject flexible match', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: routeStart,
+          dropoff: d15km,
+          verifiedDestinationExtensionRoadDistanceMeters: null,
+        });
+        expect(res).toBeNull();
+      });
+    });
+
+    describe('Combined flexible matching road distance validation', () => {
+      const p25km = { latitude: 28.5355 - 20 / 111.32, longitude: 77.391 }; // Straight-line ~20km, road testable
+      const d30km = { latitude: 30.3165 + 30 / 111.32, longitude: 78.0322 }; // Straight-line ~30km, road testable
+
+      it('Pickup road distance 25 km and destination road distance 40 km: accept', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p25km,
+          dropoff: d30km,
+          verifiedBackwardPickupRoadDistanceMeters: 25000,
+          verifiedDestinationExtensionRoadDistanceMeters: 40000,
+        });
+        expect(res).not.toBeNull();
+        expect(res?.category).toBe(
+          RideMatchCategory.FLEXIBLE_PICKUP_AND_DESTINATION_MATCH,
+        );
+        expect(res?.pickupFlexibilityDistanceKm).toBe(25.0);
+        expect(res?.destinationExtensionDistanceKm).toBe(40.0);
+        expect(res?.roadDistanceVerified).toBe(true);
+      });
+
+      it('Pickup road distance 35 km and destination road distance 40 km: reject (pickup > 30 km)', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p25km,
+          dropoff: d30km,
+          verifiedBackwardPickupRoadDistanceMeters: 35000,
+          verifiedDestinationExtensionRoadDistanceMeters: 40000,
+        });
+        expect(res).toBeNull();
+      });
+
+      it('Pickup road distance 25 km and destination road distance 55 km: reject (destination > 50 km)', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p25km,
+          dropoff: d30km,
+          verifiedBackwardPickupRoadDistanceMeters: 25000,
+          verifiedDestinationExtensionRoadDistanceMeters: 55000,
+        });
+        expect(res).toBeNull();
+      });
+
+      it('Both exactly at their configured limits (30 km & 50 km): accept', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p25km,
+          dropoff: d30km,
+          verifiedBackwardPickupRoadDistanceMeters: 30000,
+          verifiedDestinationExtensionRoadDistanceMeters: 50000,
+        });
+        expect(res).not.toBeNull();
+        expect(res?.category).toBe(
+          RideMatchCategory.FLEXIBLE_PICKUP_AND_DESTINATION_MATCH,
+        );
+        expect(res?.pickupFlexibilityDistanceKm).toBe(30.0);
+        expect(res?.destinationExtensionDistanceKm).toBe(50.0);
+        expect(res?.roadDistanceVerified).toBe(true);
+      });
+
+      it('Either distance above its limit (e.g. pickup 30.1 km): reject', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p25km,
+          dropoff: d30km,
+          verifiedBackwardPickupRoadDistanceMeters: 30100,
+          verifiedDestinationExtensionRoadDistanceMeters: 50000,
+        });
+        expect(res).toBeNull();
+      });
+
+      it('Either distance above its limit (e.g. destination 50.1 km): reject', () => {
+        const res = evaluateFlexibleDriverRouteMatch({
+          routePoints: straightRoute,
+          pickup: p25km,
+          dropoff: d30km,
+          verifiedBackwardPickupRoadDistanceMeters: 30000,
+          verifiedDestinationExtensionRoadDistanceMeters: 50100,
+        });
+        expect(res).toBeNull();
+      });
+    });
+  });
 });
