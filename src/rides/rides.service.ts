@@ -5,7 +5,9 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import {
@@ -137,7 +139,6 @@ import { Ride } from './entities/ride.entity';
 import {
   RegularSeatsPolicy,
   RideCancellationReason,
-  RideDirection,
   RideSeriesStatus,
   RideStatus,
   RideType,
@@ -160,9 +161,13 @@ import { RideDirectionsService } from './route/ride-directions.service';
 import { RouteSelectionService } from './route/route-selection.service';
 import {
   decodePolyline,
+  DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM,
+  DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM,
+  evaluateFlexibleDriverRouteMatch,
   isValidLatLng,
   LatLng,
-  matchesSelectedDriverRoute,
+  RideMatchCategory,
+  RouteMatchResult,
   SOURCE_CATCHMENT_METERS,
 } from './route/route-geometry';
 import {
@@ -220,7 +225,43 @@ export class RidesService {
     private readonly noShowClaimsService: NoShowClaimsService,
     private readonly invoicesService: InvoicesService,
     private readonly commuteRideSeriesService: CommuteRideSeriesService,
+    @Optional()
+    private readonly configService?: ConfigService,
   ) {}
+
+  private getBackwardPickupAllowanceMeters(): number {
+    const raw: unknown =
+      this.configService?.get('BACKWARD_PICKUP_ALLOWANCE_KM') ??
+      process.env.BACKWARD_PICKUP_ALLOWANCE_KM;
+    const km =
+      typeof raw === 'number'
+        ? raw
+        : typeof raw === 'string' && raw.trim().length > 0
+          ? Number(raw)
+          : DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM;
+    return (
+      (Number.isFinite(km) && km > 0
+        ? km
+        : DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM) * 1_000
+    );
+  }
+
+  private getDestinationExtensionAllowanceMeters(): number {
+    const raw: unknown =
+      this.configService?.get('DESTINATION_EXTENSION_ALLOWANCE_KM') ??
+      process.env.DESTINATION_EXTENSION_ALLOWANCE_KM;
+    const km =
+      typeof raw === 'number'
+        ? raw
+        : typeof raw === 'string' && raw.trim().length > 0
+          ? Number(raw)
+          : DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM;
+    return (
+      (Number.isFinite(km) && km > 0
+        ? km
+        : DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM) * 1_000
+    );
+  }
 
   async cancelByDriver(
     driverId: string,
@@ -259,10 +300,7 @@ export class RidesService {
     }
 
     if (ride.rideType === RideType.COMMUTE) {
-      if (
-        seriesScope === SeriesScope.THIS_AND_FUTURE &&
-        ride.seriesId
-      ) {
+      if (seriesScope === SeriesScope.THIS_AND_FUTURE && ride.seriesId) {
         return this.cancelCommuteSeriesByDriver(driverId, rideId);
       }
       const result = await this.commuteCancellationService.cancelRideByDriver(
@@ -273,7 +311,9 @@ export class RidesService {
       return result;
     }
 
-    throw new BadRequestException(`Unsupported ride type: ${ride.rideType}`);
+    throw new BadRequestException(
+      `Unsupported ride type: ${String(ride.rideType)}`,
+    );
   }
 
   /**
@@ -363,6 +403,7 @@ export class RidesService {
       });
     }
     const { cancelledBookings: _c, ...response } = result;
+    void _c;
     return response;
   }
 
@@ -402,8 +443,11 @@ export class RidesService {
       const cancelledRideIds: string[] = [];
       const skippedBookedRideIds: string[] = [];
       const skippedIneligibleRideIds: string[] = [];
-      const notify: Array<{ bookingId: string; passengerId: string; rideId: string }> =
-        [];
+      const notify: Array<{
+        bookingId: string;
+        passengerId: string;
+        rideId: string;
+      }> = [];
       let fareRefundedTotal = 0n;
       let cancelledBookingCount = 0;
       let selectedResponse: AssuredRideLifecycleResponseDto | null = null;
@@ -426,7 +470,8 @@ export class RidesService {
                   rideId: target.id,
                   cancelledByUserId: driverId,
                   requireDriverOwnership: true,
-                  rideCancellationReason: RideCancellationReason.DRIVER_CANCELLED,
+                  rideCancellationReason:
+                    RideCancellationReason.DRIVER_CANCELLED,
                   bookingCancellationReason:
                     BookingCancellationReason.RIDE_CANCELLED,
                   refundKeyForBooking: commuteRideCancelRefundKey,
@@ -459,7 +504,8 @@ export class RidesService {
               cancelledByUserId: driverId,
               requireDriverOwnership: true,
               rideCancellationReason: RideCancellationReason.DRIVER_CANCELLED,
-              bookingCancellationReason: BookingCancellationReason.RIDE_CANCELLED,
+              bookingCancellationReason:
+                BookingCancellationReason.RIDE_CANCELLED,
               refundKeyForBooking: commuteRideCancelRefundKey,
             },
           );
@@ -484,10 +530,12 @@ export class RidesService {
           })
           .getCount();
         if (remaining === 0) {
-          await manager.getRepository(RideSeries).update(
-            { id: ride.seriesId },
-            { status: RideSeriesStatus.CANCELLED },
-          );
+          await manager
+            .getRepository(RideSeries)
+            .update(
+              { id: ride.seriesId },
+              { status: RideSeriesStatus.CANCELLED },
+            );
         }
       }
 
@@ -598,7 +646,9 @@ export class RidesService {
       longitude: dto.destinationLongitude,
     };
     if (!isValidLatLng(source) || !isValidLatLng(destination)) {
-      throw new BadRequestException('Invalid source or destination coordinates');
+      throw new BadRequestException(
+        'Invalid source or destination coordinates',
+      );
     }
     const raw = await this.rideDirectionsService.listDrivingRouteOptions(
       source,
@@ -1559,10 +1609,20 @@ export class RidesService {
       latitude: dto.dropoffLatitude!,
       longitude: dto.dropoffLongitude!,
     };
+    const backwardPickupAllowanceMeters =
+      this.getBackwardPickupAllowanceMeters();
+    const destinationExtensionAllowanceMeters =
+      this.getDestinationExtensionAllowanceMeters();
+    const maxPadMeters = Math.max(
+      SOURCE_CATCHMENT_METERS,
+      backwardPickupAllowanceMeters,
+      destinationExtensionAllowanceMeters,
+    );
+
     const midLat = (pickup.latitude + dropoff.latitude) / 2;
-    const latPad = SOURCE_CATCHMENT_METERS / 111_320;
+    const latPad = maxPadMeters / 111_320;
     const cos = Math.max(0.2, Math.cos((midLat * Math.PI) / 180));
-    const lngPad = SOURCE_CATCHMENT_METERS / (111_320 * cos);
+    const lngPad = maxPadMeters / (111_320 * cos);
 
     qb.andWhere('ride.route_polyline IS NOT NULL')
       .andWhere('ride.route_bbox_min_lat IS NOT NULL')
@@ -1591,7 +1651,11 @@ export class RidesService {
       .addOrderBy('ride.departure_time', 'ASC')
       .addOrderBy('ride.created_at', 'ASC');
 
-    const matched: Ride[] = [];
+    type MatchedEntry = {
+      ride: Ride;
+      match: RouteMatchResult;
+    };
+    const matched: MatchedEntry[] = [];
     const batchSize = 200;
     let offset = 0;
     for (;;) {
@@ -1600,8 +1664,15 @@ export class RidesService {
         break;
       }
       for (const ride of batch) {
-        if (this.rideMatchesSelectedRouteSearch(ride, pickup, dropoff)) {
-          matched.push(ride);
+        const match = this.evaluateRideRouteMatch(
+          ride,
+          pickup,
+          dropoff,
+          backwardPickupAllowanceMeters,
+          destinationExtensionAllowanceMeters,
+        );
+        if (match) {
+          matched.push({ ride, match });
         }
       }
       offset += batch.length;
@@ -1610,9 +1681,87 @@ export class RidesService {
       }
     }
 
+    const categoryPriority: Record<RideMatchCategory, number> = {
+      [RideMatchCategory.FORWARD_ROUTE_MATCH]: 1,
+      [RideMatchCategory.BACKWARD_PICKUP_MATCH]: 2,
+      [RideMatchCategory.EXTENDED_DESTINATION_MATCH]: 3,
+      [RideMatchCategory.FLEXIBLE_PICKUP_AND_DESTINATION_MATCH]: 4,
+    };
+
+    matched.sort((a, b) => {
+      const prioA = categoryPriority[a.match.category];
+      const prioB = categoryPriority[b.match.category];
+      if (prioA !== prioB) {
+        return prioA - prioB;
+      }
+
+      if (a.match.category === RideMatchCategory.FORWARD_ROUTE_MATCH) {
+        if (Math.abs(a.match.score - b.match.score) > 10) {
+          return a.match.score - b.match.score;
+        }
+      } else if (a.match.category === RideMatchCategory.BACKWARD_PICKUP_MATCH) {
+        if (
+          Math.abs(
+            a.match.pickupFlexibilityDistanceMeters -
+              b.match.pickupFlexibilityDistanceMeters,
+          ) > 10
+        ) {
+          return (
+            a.match.pickupFlexibilityDistanceMeters -
+            b.match.pickupFlexibilityDistanceMeters
+          );
+        }
+        if (Math.abs(a.match.score - b.match.score) > 10) {
+          return a.match.score - b.match.score;
+        }
+      } else if (
+        a.match.category === RideMatchCategory.EXTENDED_DESTINATION_MATCH
+      ) {
+        if (
+          Math.abs(
+            a.match.destinationExtensionDistanceMeters -
+              b.match.destinationExtensionDistanceMeters,
+          ) > 10
+        ) {
+          return (
+            a.match.destinationExtensionDistanceMeters -
+            b.match.destinationExtensionDistanceMeters
+          );
+        }
+        if (Math.abs(a.match.score - b.match.score) > 10) {
+          return a.match.score - b.match.score;
+        }
+      } else if (
+        a.match.category ===
+        RideMatchCategory.FLEXIBLE_PICKUP_AND_DESTINATION_MATCH
+      ) {
+        const totalA =
+          a.match.pickupFlexibilityDistanceMeters +
+          a.match.destinationExtensionDistanceMeters;
+        const totalB =
+          b.match.pickupFlexibilityDistanceMeters +
+          b.match.destinationExtensionDistanceMeters;
+        if (Math.abs(totalA - totalB) > 10) {
+          return totalA - totalB;
+        }
+      }
+
+      const timeCmp = a.ride.departureTime.localeCompare(b.ride.departureTime);
+      if (timeCmp !== 0) {
+        return timeCmp;
+      }
+      return a.ride.createdAt.getTime() - b.ride.createdAt.getTime();
+    });
+
     const total = matched.length;
-    const pageRides = matched.slice((page - 1) * limit, page * limit);
-    const items = await this.toSearchItems(pageRides, { pickup, dropoff });
+    const pageEntries = matched.slice((page - 1) * limit, page * limit);
+    const pageRides = pageEntries.map((e) => e.ride);
+    const matchMap = new Map(pageEntries.map((e) => [e.ride.id, e.match]));
+    const items = await this.toSearchItems(
+      pageRides,
+      { pickup, dropoff },
+      matchMap,
+    );
 
     return {
       items,
@@ -1686,8 +1835,7 @@ export class RidesService {
           );
         const eligible = targets.filter(
           (target) =>
-            target.status === RideStatus.PUBLISHED &&
-            !isPastOccurrence(target),
+            target.status === RideStatus.PUBLISHED && !isPastOccurrence(target),
         );
         if (eligible.length === 0) {
           throw new ConflictException(
@@ -1973,7 +2121,10 @@ export class RidesService {
     return '(ride.departure_date > :nowCivilDate OR (ride.departure_date = :nowCivilDate AND ride.departure_time > :nowCivilTime))';
   }
 
-  private futureDepartureParams(): { nowCivilDate: string; nowCivilTime: string } {
+  private futureDepartureParams(): {
+    nowCivilDate: string;
+    nowCivilTime: string;
+  } {
     const clock = currentCivilClock();
     return { nowCivilDate: clock.date, nowCivilTime: clock.time };
   }
@@ -2156,16 +2307,18 @@ export class RidesService {
     );
   }
 
-  private rideMatchesSelectedRouteSearch(
+  private evaluateRideRouteMatch(
     ride: Ride,
     pickup: LatLng,
     dropoff: LatLng,
-  ): boolean {
+    backwardPickupAllowanceMeters?: number,
+    destinationExtensionAllowanceMeters?: number,
+  ): RouteMatchResult | null {
     if (!ride.routePolyline) {
       this.logger.warn(
         `Corridor search skipped ride=${ride.id}: missing selected route geometry`,
       );
-      return false;
+      return null;
     }
     try {
       const routePoints = decodePolyline(ride.routePolyline);
@@ -2173,9 +2326,9 @@ export class RidesService {
         this.logger.warn(
           `Corridor search skipped ride=${ride.id}: invalid route polyline`,
         );
-        return false;
+        return null;
       }
-      return matchesSelectedDriverRoute({
+      return evaluateFlexibleDriverRouteMatch({
         routePoints,
         pickup,
         dropoff,
@@ -2193,6 +2346,8 @@ export class RidesService {
                 longitude: ride.destinationLongitude,
               }
             : routePoints[routePoints.length - 1],
+        backwardPickupAllowanceMeters,
+        destinationExtensionAllowanceMeters,
       });
     } catch (error) {
       this.logger.warn(
@@ -2200,8 +2355,16 @@ export class RidesService {
           error instanceof Error ? error.message : 'invalid geometry'
         }`,
       );
-      return false;
+      return null;
     }
+  }
+
+  private rideMatchesSelectedRouteSearch(
+    ride: Ride,
+    pickup: LatLng,
+    dropoff: LatLng,
+  ): boolean {
+    return this.evaluateRideRouteMatch(ride, pickup, dropoff) !== null;
   }
 
   private assertDtoEndpointCoordsAllOrNone(dto: {
@@ -2949,6 +3112,7 @@ export class RidesService {
   private async toSearchItems(
     rides: Ride[],
     routeMatch?: CommuteSearchRouteMatchContext,
+    matchResults?: Map<string, RouteMatchResult>,
   ): Promise<RideSearchItemDto[]> {
     if (rides.length === 0) {
       return [];
@@ -2990,6 +3154,24 @@ export class RidesService {
         routeMatch,
       );
 
+      const match = matchResults?.get(ride.id);
+      const actualDriverPickupLocation =
+        ride.sourceLatitude != null && ride.sourceLongitude != null
+          ? {
+              latitude: Number(ride.sourceLatitude),
+              longitude: Number(ride.sourceLongitude),
+              name: ride.source,
+            }
+          : null;
+      const actualDriverDropLocation =
+        ride.destinationLatitude != null && ride.destinationLongitude != null
+          ? {
+              latitude: Number(ride.destinationLatitude),
+              longitude: Number(ride.destinationLongitude),
+              name: ride.destination,
+            }
+          : null;
+
       return {
         id: ride.id,
         rideType: ride.rideType,
@@ -3027,6 +3209,24 @@ export class RidesService {
             : null,
         assuredDepositAmount:
           ride.rideType === RideType.ASSURED ? ride.assuredDepositAmount : null,
+        matchType: match ? match.category : null,
+        isFlexibleMatch: match ? match.isFlexible : false,
+        pickupFlexibilityDistanceKm:
+          match && match.pickupFlexibilityDistanceKm !== null
+            ? match.pickupFlexibilityDistanceKm
+            : null,
+        destinationExtensionDistanceKm:
+          match && match.destinationExtensionDistanceKm !== null
+            ? match.destinationExtensionDistanceKm
+            : null,
+        actualDriverPickupLocation,
+        actualDriverDropLocation,
+        requiresIndependentPickupTravel: match
+          ? match.requiresIndependentPickupTravel
+          : false,
+        requiresIndependentDestinationTravel: match
+          ? match.requiresIndependentDestinationTravel
+          : false,
         driver: {
           id: ride.driverId,
           displayName: profile?.displayName ?? profile?.firstName ?? null,
@@ -3439,7 +3639,10 @@ export class RidesService {
   private driverFacingBookingFare(
     booking: Pick<
       Booking,
-      'seats' | 'totalAmount' | 'driverShareAmount' | 'driverPricePerSeatSnapshot'
+      | 'seats'
+      | 'totalAmount'
+      | 'driverShareAmount'
+      | 'driverPricePerSeatSnapshot'
     >,
   ): bigint {
     if (booking.driverShareAmount != null) {
@@ -3774,7 +3977,7 @@ export class RidesService {
       direction: ride.direction ?? null,
       isOriginalOccurrence: Boolean(
         options?.series?.originalRideId &&
-          options.series.originalRideId === ride.id,
+        options.series.originalRideId === ride.id,
       ),
       ...(options?.series
         ? {

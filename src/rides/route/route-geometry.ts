@@ -22,6 +22,35 @@ export const ROUTE_ENDPOINT_TOLERANCE_METERS = 250;
 const MAX_PROJECTION_CANDIDATES = 12;
 const PROJECTION_DEDUPE_METERS = 75;
 
+/** Configurable geographic flexibility allowances. */
+export const DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM = 30;
+export const DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM = 50;
+export const BACKWARD_PICKUP_ALLOWANCE_METERS =
+  DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM * 1_000;
+export const DESTINATION_EXTENSION_ALLOWANCE_METERS =
+  DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM * 1_000;
+
+export enum RideMatchCategory {
+  FORWARD_ROUTE_MATCH = 'FORWARD_ROUTE_MATCH',
+  BACKWARD_PICKUP_MATCH = 'BACKWARD_PICKUP_MATCH',
+  EXTENDED_DESTINATION_MATCH = 'EXTENDED_DESTINATION_MATCH',
+  FLEXIBLE_PICKUP_AND_DESTINATION_MATCH = 'FLEXIBLE_PICKUP_AND_DESTINATION_MATCH',
+}
+
+export interface RouteMatchResult {
+  category: RideMatchCategory;
+  isFlexible: boolean;
+  pickupFlexibilityDistanceKm: number | null;
+  destinationExtensionDistanceKm: number | null;
+  pickupFlexibilityDistanceMeters: number;
+  destinationExtensionDistanceMeters: number;
+  actualDriverPickupLocation: LatLng;
+  actualDriverDropLocation: LatLng;
+  requiresIndependentPickupTravel: boolean;
+  requiresIndependentDestinationTravel: boolean;
+  score: number;
+}
+
 export interface LatLng {
   latitude: number;
   longitude: number;
@@ -372,7 +401,8 @@ export function isPointBehindRouteSource(
     return false;
   }
   const t =
-    ((point.longitude - a.longitude) * dx + (point.latitude - a.latitude) * dy) /
+    ((point.longitude - a.longitude) * dx +
+      (point.latitude - a.latitude) * dy) /
     lengthSq;
   if (t >= 0) {
     return false;
@@ -422,9 +452,8 @@ export function collectProjectionCandidates(
   for (const candidate of raw) {
     const duplicate = deduped.some(
       (existing) =>
-        Math.abs(
-          existing.routePositionMeters - candidate.routePositionMeters,
-        ) < PROJECTION_DEDUPE_METERS,
+        Math.abs(existing.routePositionMeters - candidate.routePositionMeters) <
+        PROJECTION_DEDUPE_METERS,
     );
     if (!duplicate) {
       deduped.push(candidate);
@@ -456,9 +485,7 @@ function isPickupInSourceCatchment(params: {
   if (params.candidate.routePositionMeters > SOURCE_CATCHMENT_METERS) {
     return false;
   }
-  if (
-    params.candidate.routePositionMeters < -ROUTE_ENDPOINT_TOLERANCE_METERS
-  ) {
+  if (params.candidate.routePositionMeters < -ROUTE_ENDPOINT_TOLERANCE_METERS) {
     return false;
   }
   if (isPointBehindRouteSource(params.pickup, params.route)) {
@@ -473,7 +500,9 @@ function isPickupOnSelectedCorridor(params: {
   routeLengthMeters: number;
   route: LatLng[];
 }): boolean {
-  if (params.candidate.distanceFromRouteMeters > SELECTED_ROUTE_CORRIDOR_METERS) {
+  if (
+    params.candidate.distanceFromRouteMeters > SELECTED_ROUTE_CORRIDOR_METERS
+  ) {
     return false;
   }
   if (params.candidate.routePositionMeters < -ROUTE_ENDPOINT_TOLERANCE_METERS) {
@@ -495,7 +524,9 @@ function isDropoffOnSelectedCorridor(params: {
   candidate: RouteProjection;
   routeLengthMeters: number;
 }): boolean {
-  if (params.candidate.distanceFromRouteMeters > SELECTED_ROUTE_CORRIDOR_METERS) {
+  if (
+    params.candidate.distanceFromRouteMeters > SELECTED_ROUTE_CORRIDOR_METERS
+  ) {
     return false;
   }
   if (params.candidate.routePositionMeters < -ROUTE_ENDPOINT_TOLERANCE_METERS) {
@@ -515,26 +546,29 @@ function isDropoffOnSelectedCorridor(params: {
  * Uses multiple projection candidates so loops/self-crossings are not bound
  * to the single nearest segment.
  */
-export function matchesSelectedDriverRoute(params: {
+export function findBestSelectedDriverRouteMatch(params: {
   routePoints: LatLng[];
   pickup: LatLng;
   dropoff: LatLng;
   source?: LatLng | null;
   destination?: LatLng | null;
   minProgressMeters?: number;
-}): boolean {
+}): {
+  pickup: RouteProjection;
+  dropoff: RouteProjection;
+  score: number;
+} | null {
   const route = params.routePoints;
   if (
     route.length < 2 ||
     !isValidLatLng(params.pickup) ||
     !isValidLatLng(params.dropoff)
   ) {
-    return false;
+    return null;
   }
 
-  const source = params.source && isValidLatLng(params.source)
-    ? params.source
-    : route[0];
+  const source =
+    params.source && isValidLatLng(params.source) ? params.source : route[0];
   const routeLength = routeLengthMetersOf(route);
   const minProgress =
     params.minProgressMeters ?? SELECTED_ROUTE_MIN_PROGRESS_METERS;
@@ -550,7 +584,7 @@ export function matchesSelectedDriverRoute(params: {
     SELECTED_ROUTE_CORRIDOR_METERS,
   );
   if (pickupCandidates.length === 0 || dropoffCandidates.length === 0) {
-    return false;
+    return null;
   }
 
   const nearestPickup = pickupCandidates[0];
@@ -590,7 +624,7 @@ export function matchesSelectedDriverRoute(params: {
     }),
   );
   if (eligiblePickups.length === 0 || eligibleDropoffs.length === 0) {
-    return false;
+    return null;
   }
 
   type Pair = {
@@ -610,13 +644,12 @@ export function matchesSelectedDriverRoute(params: {
       pairs.push({
         pickup,
         dropoff,
-        score:
-          pickup.distanceFromRouteMeters + dropoff.distanceFromRouteMeters,
+        score: pickup.distanceFromRouteMeters + dropoff.distanceFromRouteMeters,
       });
     }
   }
   if (pairs.length === 0) {
-    return false;
+    return null;
   }
 
   pairs.sort(
@@ -625,5 +658,381 @@ export function matchesSelectedDriverRoute(params: {
       left.pickup.routePositionMeters - right.pickup.routePositionMeters ||
       left.dropoff.routePositionMeters - right.dropoff.routePositionMeters,
   );
-  return true;
+  return pairs[0];
+}
+
+export function matchesSelectedDriverRoute(params: {
+  routePoints: LatLng[];
+  pickup: LatLng;
+  dropoff: LatLng;
+  source?: LatLng | null;
+  destination?: LatLng | null;
+  minProgressMeters?: number;
+}): boolean {
+  return findBestSelectedDriverRouteMatch(params) !== null;
+}
+
+export function lastForwardAnchor(
+  route: LatLng[],
+): { u: LatLng; v: LatLng } | null {
+  if (route.length < 2) {
+    return null;
+  }
+  const v = route[route.length - 1];
+  for (let i = route.length - 2; i >= 0; i -= 1) {
+    if (haversineMeters(route[i], v) >= 10) {
+      return { u: route[i], v };
+    }
+  }
+  return { u: route[route.length - 2], v };
+}
+
+function evaluateBackwardPickupCandidate(params: {
+  pickup: LatLng;
+  dropoff: LatLng;
+  source: LatLng;
+  route: LatLng[];
+  backwardPickupAllowanceMeters: number;
+}): { distanceMeters: number; startPoint: LatLng } | null {
+  const { pickup, dropoff, source, route, backwardPickupAllowanceMeters } =
+    params;
+  const distToStart = haversineMeters(pickup, source);
+  if (distToStart > backwardPickupAllowanceMeters) {
+    return null;
+  }
+
+  if (!isPointBehindRouteSource(pickup, route)) {
+    return null;
+  }
+
+  const anchor = firstForwardAnchor(route);
+  if (!anchor) {
+    return null;
+  }
+  const { a, b } = anchor;
+  const dx = b.longitude - a.longitude;
+  const dy = b.latitude - a.latitude;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) {
+    return null;
+  }
+
+  const tUnclamped =
+    ((pickup.longitude - a.longitude) * dx +
+      (pickup.latitude - a.latitude) * dy) /
+    lengthSq;
+  const projLat = a.latitude + tUnclamped * dy;
+  const projLng = a.longitude + tUnclamped * dx;
+  const perpDist = haversineMeters(pickup, {
+    latitude: projLat,
+    longitude: projLng,
+  });
+
+  if (perpDist > SELECTED_ROUTE_CORRIDOR_METERS) {
+    return null;
+  }
+
+  if (
+    haversineMeters(pickup, dropoff) <
+    haversineMeters(source, dropoff) - ROUTE_ENDPOINT_TOLERANCE_METERS
+  ) {
+    return null;
+  }
+
+  return {
+    distanceMeters: distToStart,
+    startPoint: source,
+  };
+}
+
+function evaluateExtendedDestinationCandidate(params: {
+  pickup: LatLng;
+  dropoff: LatLng;
+  destination: LatLng;
+  route: LatLng[];
+  destinationExtensionAllowanceMeters: number;
+}): { distanceMeters: number; endPoint: LatLng } | null {
+  const {
+    pickup,
+    dropoff,
+    destination,
+    route,
+    destinationExtensionAllowanceMeters,
+  } = params;
+  const distToEnd = haversineMeters(dropoff, destination);
+  if (distToEnd > destinationExtensionAllowanceMeters) {
+    return null;
+  }
+
+  if (distToEnd <= ROUTE_ENDPOINT_TOLERANCE_METERS) {
+    return null;
+  }
+
+  const anchor = lastForwardAnchor(route);
+  if (!anchor) {
+    return null;
+  }
+  const { u, v } = anchor;
+  const dx = v.longitude - u.longitude;
+  const dy = v.latitude - u.latitude;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) {
+    return null;
+  }
+
+  const vox = dropoff.longitude - v.longitude;
+  const voy = dropoff.latitude - v.latitude;
+  const tUnclamped = (vox * dx + voy * dy) / lengthSq;
+
+  if (tUnclamped < -0.1) {
+    return null;
+  }
+
+  const arrivalLen = Math.sqrt(lengthSq);
+  const onwardLen = Math.sqrt(vox * vox + voy * voy);
+  if (onwardLen > 0) {
+    const cosAngle = (vox * dx + voy * dy) / (arrivalLen * onwardLen);
+    if (cosAngle < -0.25) {
+      return null;
+    }
+  }
+
+  const projLat = v.latitude + tUnclamped * dy;
+  const projLng = v.longitude + tUnclamped * dx;
+  const perpDist = haversineMeters(dropoff, {
+    latitude: projLat,
+    longitude: projLng,
+  });
+
+  if (perpDist > SELECTED_ROUTE_CORRIDOR_METERS) {
+    return null;
+  }
+
+  if (
+    haversineMeters(pickup, dropoff) <
+    haversineMeters(pickup, destination) - ROUTE_ENDPOINT_TOLERANCE_METERS
+  ) {
+    return null;
+  }
+
+  return {
+    distanceMeters: distToEnd,
+    endPoint: destination,
+  };
+}
+
+/**
+ * Enhanced passenger match supporting backward pickup (up to 30km) and
+ * destination extension (up to 50km) with strict category classification.
+ */
+export function evaluateFlexibleDriverRouteMatch(params: {
+  routePoints: LatLng[];
+  pickup: LatLng;
+  dropoff: LatLng;
+  source?: LatLng | null;
+  destination?: LatLng | null;
+  minProgressMeters?: number;
+  backwardPickupAllowanceMeters?: number;
+  destinationExtensionAllowanceMeters?: number;
+}): RouteMatchResult | null {
+  const route = params.routePoints;
+  if (
+    route.length < 2 ||
+    !isValidLatLng(params.pickup) ||
+    !isValidLatLng(params.dropoff)
+  ) {
+    return null;
+  }
+
+  const source =
+    params.source && isValidLatLng(params.source) ? params.source : route[0];
+  const destination =
+    params.destination && isValidLatLng(params.destination)
+      ? params.destination
+      : route[route.length - 1];
+
+  const minProgress =
+    params.minProgressMeters ?? SELECTED_ROUTE_MIN_PROGRESS_METERS;
+  const backwardPickupLimit =
+    params.backwardPickupAllowanceMeters ?? BACKWARD_PICKUP_ALLOWANCE_METERS;
+  const destinationExtensionLimit =
+    params.destinationExtensionAllowanceMeters ??
+    DESTINATION_EXTENSION_ALLOWANCE_METERS;
+
+  // 1. Check FORWARD_ROUTE_MATCH first (preferred)
+  const forwardMatch = findBestSelectedDriverRouteMatch({
+    routePoints: route,
+    pickup: params.pickup,
+    dropoff: params.dropoff,
+    source,
+    destination,
+    minProgressMeters: minProgress,
+  });
+
+  if (forwardMatch) {
+    return {
+      category: RideMatchCategory.FORWARD_ROUTE_MATCH,
+      isFlexible: false,
+      pickupFlexibilityDistanceKm: null,
+      destinationExtensionDistanceKm: null,
+      pickupFlexibilityDistanceMeters: 0,
+      destinationExtensionDistanceMeters: 0,
+      actualDriverPickupLocation: source,
+      actualDriverDropLocation: destination,
+      requiresIndependentPickupTravel: false,
+      requiresIndependentDestinationTravel: false,
+      score: forwardMatch.score,
+    };
+  }
+
+  const routeLength = routeLengthMetersOf(route);
+  const pickupCandidates = collectProjectionCandidates(
+    params.pickup,
+    route,
+    SOURCE_CATCHMENT_METERS,
+  );
+  const dropoffCandidates = collectProjectionCandidates(
+    params.dropoff,
+    route,
+    SELECTED_ROUTE_CORRIDOR_METERS,
+  );
+
+  const eligibleDropoffs = dropoffCandidates.filter((candidate) =>
+    isDropoffOnSelectedCorridor({
+      candidate,
+      routeLengthMeters: routeLength,
+    }),
+  );
+
+  const nearestPickup = pickupCandidates[0];
+  const nearestPickupDistance = nearestPickup?.distanceFromRouteMeters ?? 0;
+  const closePickupDistanceBudget = Math.max(
+    nearestPickupDistance * 1.5,
+    nearestPickupDistance + 500,
+  );
+  const pickupPool =
+    nearestPickup && nearestPickup.routePositionMeters > SOURCE_CATCHMENT_METERS
+      ? pickupCandidates.filter(
+          (candidate) =>
+            candidate.distanceFromRouteMeters <= closePickupDistanceBudget,
+        )
+      : pickupCandidates;
+  const eligiblePickups = pickupPool.filter((candidate) => {
+    const sourceEligible =
+      candidate.distanceFromRouteMeters <= closePickupDistanceBudget &&
+      isPickupInSourceCatchment({
+        pickup: params.pickup,
+        source,
+        candidate,
+        route,
+      });
+    const corridorEligible = isPickupOnSelectedCorridor({
+      pickup: params.pickup,
+      candidate,
+      routeLengthMeters: routeLength,
+      route,
+    });
+    return sourceEligible || corridorEligible;
+  });
+
+  const backwardPickup = evaluateBackwardPickupCandidate({
+    pickup: params.pickup,
+    dropoff: params.dropoff,
+    source,
+    route,
+    backwardPickupAllowanceMeters: backwardPickupLimit,
+  });
+
+  const extendedDestination = evaluateExtendedDestinationCandidate({
+    pickup: params.pickup,
+    dropoff: params.dropoff,
+    destination,
+    route,
+    destinationExtensionAllowanceMeters: destinationExtensionLimit,
+  });
+
+  // 2. BACKWARD_PICKUP_MATCH: backward pickup + eligible route dropoff
+  if (backwardPickup && eligibleDropoffs.length > 0) {
+    const validDropoffs = eligibleDropoffs.filter(
+      (d) => d.routePositionMeters >= minProgress,
+    );
+    if (validDropoffs.length > 0) {
+      validDropoffs.sort(
+        (a, b) =>
+          a.distanceFromRouteMeters - b.distanceFromRouteMeters ||
+          a.routePositionMeters - b.routePositionMeters,
+      );
+      const bestDropoff = validDropoffs[0];
+      return {
+        category: RideMatchCategory.BACKWARD_PICKUP_MATCH,
+        isFlexible: true,
+        pickupFlexibilityDistanceKm:
+          Math.round(backwardPickup.distanceMeters / 100) / 10,
+        destinationExtensionDistanceKm: null,
+        pickupFlexibilityDistanceMeters: backwardPickup.distanceMeters,
+        destinationExtensionDistanceMeters: 0,
+        actualDriverPickupLocation: source,
+        actualDriverDropLocation: destination,
+        requiresIndependentPickupTravel: true,
+        requiresIndependentDestinationTravel: false,
+        score:
+          backwardPickup.distanceMeters + bestDropoff.distanceFromRouteMeters,
+      };
+    }
+  }
+
+  // 3. EXTENDED_DESTINATION_MATCH: eligible route pickup + extended destination
+  if (extendedDestination && eligiblePickups.length > 0) {
+    const validPickups = eligiblePickups.filter(
+      (p) => p.routePositionMeters <= routeLength - minProgress,
+    );
+    if (validPickups.length > 0) {
+      validPickups.sort(
+        (a, b) =>
+          a.distanceFromRouteMeters - b.distanceFromRouteMeters ||
+          a.routePositionMeters - b.routePositionMeters,
+      );
+      const bestPickup = validPickups[0];
+      return {
+        category: RideMatchCategory.EXTENDED_DESTINATION_MATCH,
+        isFlexible: true,
+        pickupFlexibilityDistanceKm: null,
+        destinationExtensionDistanceKm:
+          Math.round(extendedDestination.distanceMeters / 100) / 10,
+        pickupFlexibilityDistanceMeters: 0,
+        destinationExtensionDistanceMeters: extendedDestination.distanceMeters,
+        actualDriverPickupLocation: source,
+        actualDriverDropLocation: destination,
+        requiresIndependentPickupTravel: false,
+        requiresIndependentDestinationTravel: true,
+        score:
+          bestPickup.distanceFromRouteMeters +
+          extendedDestination.distanceMeters,
+      };
+    }
+  }
+
+  // 4. FLEXIBLE_PICKUP_AND_DESTINATION_MATCH: both backward pickup and extended destination
+  if (backwardPickup && extendedDestination) {
+    if (routeLength >= minProgress) {
+      return {
+        category: RideMatchCategory.FLEXIBLE_PICKUP_AND_DESTINATION_MATCH,
+        isFlexible: true,
+        pickupFlexibilityDistanceKm:
+          Math.round(backwardPickup.distanceMeters / 100) / 10,
+        destinationExtensionDistanceKm:
+          Math.round(extendedDestination.distanceMeters / 100) / 10,
+        pickupFlexibilityDistanceMeters: backwardPickup.distanceMeters,
+        destinationExtensionDistanceMeters: extendedDestination.distanceMeters,
+        actualDriverPickupLocation: source,
+        actualDriverDropLocation: destination,
+        requiresIndependentPickupTravel: true,
+        requiresIndependentDestinationTravel: true,
+        score:
+          backwardPickup.distanceMeters + extendedDestination.distanceMeters,
+      };
+    }
+  }
+
+  return null;
 }

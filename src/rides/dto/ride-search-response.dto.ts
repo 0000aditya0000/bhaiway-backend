@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { VehicleType } from '../../vehicles/enums/vehicle-type.enum';
 import { RideDirection, RideStatus, RideType } from '../enums/ride.enums';
+import { RideMatchCategory } from '../route/route-geometry';
 
 export class RideSearchPreferencesDto {
   @ApiProperty()
@@ -112,6 +113,17 @@ export class RideSearchVehicleDto {
   seatingCapacity!: number;
 }
 
+export class RideSearchLocationDto {
+  @ApiProperty({ example: 28.5355 })
+  latitude!: number;
+
+  @ApiProperty({ example: 77.391 })
+  longitude!: number;
+
+  @ApiPropertyOptional({ example: 'Noida' })
+  name?: string;
+}
+
 export class RideSearchItemDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
@@ -174,7 +186,8 @@ export class RideSearchItemDto {
   @ApiPropertyOptional({
     format: 'uuid',
     nullable: true,
-    description: 'Commute series id when this search hit is a generated occurrence.',
+    description:
+      'Commute series id when this search hit is a generated occurrence.',
   })
   seriesId?: string | null;
 
@@ -212,6 +225,68 @@ export class RideSearchItemDto {
 
   @ApiProperty({ type: RideSearchVehicleDto })
   vehicle!: RideSearchVehicleDto;
+
+  @ApiPropertyOptional({
+    enum: RideMatchCategory,
+    enumName: 'RideMatchCategory',
+    nullable: true,
+    description:
+      'Match category: FORWARD_ROUTE_MATCH, BACKWARD_PICKUP_MATCH, EXTENDED_DESTINATION_MATCH, or FLEXIBLE_PICKUP_AND_DESTINATION_MATCH. Null for place-name search.',
+  })
+  matchType?: RideMatchCategory | null;
+
+  @ApiPropertyOptional({
+    description:
+      'True when the ride requires independent rider travel to driver pickup or from driver dropoff',
+    example: false,
+  })
+  isFlexibleMatch?: boolean;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Independent travel distance in km from rider pickup to driver starting point (BACKWARD_PICKUP_MATCH / FLEXIBLE_PICKUP_AND_DESTINATION_MATCH only). Null otherwise.',
+    example: 12.5,
+  })
+  pickupFlexibilityDistanceKm?: number | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Independent travel distance in km from driver dropoff to rider destination (EXTENDED_DESTINATION_MATCH / FLEXIBLE_PICKUP_AND_DESTINATION_MATCH only). Null otherwise.',
+    example: 24.3,
+  })
+  destinationExtensionDistanceKm?: number | null;
+
+  @ApiPropertyOptional({
+    type: RideSearchLocationDto,
+    nullable: true,
+    description:
+      'Actual driver starting location where the driver will meet the rider.',
+  })
+  actualDriverPickupLocation?: RideSearchLocationDto | null;
+
+  @ApiPropertyOptional({
+    type: RideSearchLocationDto,
+    nullable: true,
+    description:
+      'Actual driver drop-off location where the driver will drop the rider.',
+  })
+  actualDriverDropLocation?: RideSearchLocationDto | null;
+
+  @ApiPropertyOptional({
+    description:
+      'True if the rider must travel independently to reach the driver pickup point',
+    example: false,
+  })
+  requiresIndependentPickupTravel?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'True if the rider must travel independently from the driver drop-off point to their final destination',
+    example: false,
+  })
+  requiresIndependentDestinationTravel?: boolean;
 }
 
 export class RideSearchPageDto {

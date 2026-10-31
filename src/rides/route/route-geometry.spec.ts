@@ -1,11 +1,13 @@
 import {
   buildStraightRouteGeometry,
+  evaluateFlexibleDriverRouteMatch,
   finalizeRouteGeometry,
   haversineMeters,
   isPointBehindRouteSource,
   matchesRouteCorridor,
   matchesSelectedDriverRoute,
   projectPointOntoRoute,
+  RideMatchCategory,
   ROUTE_CORRIDOR_MAX_METERS,
   SELECTED_ROUTE_CORRIDOR_METERS,
   SELECTED_ROUTE_MIN_PROGRESS_METERS,
@@ -210,7 +212,10 @@ describe('selected-driver-route passenger matching', () => {
   });
 
   it('does not apply the source exception to a later loop that returns near A', () => {
-    const north = { latitude: NOIDA.latitude + 0.7, longitude: NOIDA.longitude };
+    const north = {
+      latitude: NOIDA.latitude + 0.7,
+      longitude: NOIDA.longitude,
+    };
     const loopNearA = {
       latitude: NOIDA.latitude + 0.01,
       longitude: NOIDA.longitude + 0.02,
@@ -356,5 +361,327 @@ describe('selected-driver-route passenger matching', () => {
         destination: DEHRADUN,
       }),
     ).toBe(false);
+  });
+});
+
+describe('flexible route matching (backward pickup and destination extension)', () => {
+  const published = buildStraightRouteGeometry(NOIDA, DEHRADUN);
+
+  // Calculated backward pickup coordinates along line of travel from NOIDA:
+  const pickup5kmBehind = { latitude: 28.4932, longitude: 77.3737 };
+  const pickup15kmBehind = { latitude: 28.4087, longitude: 77.3391 };
+  const pickup25kmBehind = { latitude: 28.3242, longitude: 77.3045 };
+  const pickup30kmBehind = { latitude: 28.2819, longitude: 77.2872 };
+  const pickup35kmBehind = { latitude: 28.2397, longitude: 77.2699 };
+
+  // Calculated extended destination coordinates along line of travel from DEHRADUN:
+  const dest10kmBeyond = { latitude: 30.401, longitude: 78.0674 };
+  const dest25kmBeyond = { latitude: 30.5278, longitude: 78.1202 };
+  const dest45kmBeyond = { latitude: 30.6968, longitude: 78.1906 };
+  const dest50kmBeyond = { latitude: 30.739, longitude: 78.2082 };
+  const dest55kmBeyond = { latitude: 30.7813, longitude: 78.2258 };
+
+  describe('Backward pickup', () => {
+    it('matches pickup 5 km behind driver source', () => {
+      expect(haversineMeters(pickup5kmBehind, NOIDA)).toBeCloseTo(5000, -2);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: pickup5kmBehind,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(RideMatchCategory.BACKWARD_PICKUP_MATCH);
+      expect(res?.isFlexible).toBe(true);
+      expect(res?.requiresIndependentPickupTravel).toBe(true);
+      expect(res?.requiresIndependentDestinationTravel).toBe(false);
+      expect(res?.pickupFlexibilityDistanceKm).toBeCloseTo(5.0, 0);
+      expect(res?.destinationExtensionDistanceKm).toBeNull();
+    });
+
+    it('matches pickup 15 km behind driver source', () => {
+      expect(haversineMeters(pickup15kmBehind, NOIDA)).toBeCloseTo(15000, -2);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: pickup15kmBehind,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(RideMatchCategory.BACKWARD_PICKUP_MATCH);
+      expect(res?.pickupFlexibilityDistanceKm).toBeCloseTo(15.0, 0);
+    });
+
+    it('matches pickup 25 km behind driver source', () => {
+      expect(haversineMeters(pickup25kmBehind, NOIDA)).toBeCloseTo(25000, -2);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: pickup25kmBehind,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(RideMatchCategory.BACKWARD_PICKUP_MATCH);
+      expect(res?.pickupFlexibilityDistanceKm).toBeCloseTo(25.0, 0);
+    });
+
+    it('matches pickup exactly 30 km away', () => {
+      expect(haversineMeters(pickup30kmBehind, NOIDA)).toBeCloseTo(30000, -2);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: pickup30kmBehind,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(RideMatchCategory.BACKWARD_PICKUP_MATCH);
+      expect(res?.pickupFlexibilityDistanceKm).toBeCloseTo(30.0, 0);
+    });
+
+    it('rejects pickup beyond 30 km (> 30 km allowance)', () => {
+      expect(haversineMeters(pickup35kmBehind, NOIDA)).toBeGreaterThan(30000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: pickup35kmBehind,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).toBeNull();
+    });
+
+    it('rejects pickup geographically close but unrelated (> 20km perpendicular from route line)', () => {
+      const lateralFar = {
+        latitude: NOIDA.latitude,
+        longitude: NOIDA.longitude - 0.28,
+      };
+      expect(haversineMeters(lateralFar, NOIDA)).toBeLessThan(30000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: lateralFar,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).toBeNull();
+    });
+
+    it('rejects pickup requiring the driver to reverse direction', () => {
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: DEHRADUN,
+        dropoff: NOIDA,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).toBeNull();
+    });
+  });
+
+  describe('Destination extension', () => {
+    it('matches destination 10 km beyond driver destination', () => {
+      expect(haversineMeters(dest10kmBeyond, DEHRADUN)).toBeCloseTo(10000, -2);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: dest10kmBeyond,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(RideMatchCategory.EXTENDED_DESTINATION_MATCH);
+      expect(res?.isFlexible).toBe(true);
+      expect(res?.requiresIndependentPickupTravel).toBe(false);
+      expect(res?.requiresIndependentDestinationTravel).toBe(true);
+      expect(res?.destinationExtensionDistanceKm).toBeCloseTo(10.0, 0);
+      expect(res?.pickupFlexibilityDistanceKm).toBeNull();
+    });
+
+    it('matches destination 25 km beyond driver destination', () => {
+      expect(haversineMeters(dest25kmBeyond, DEHRADUN)).toBeCloseTo(25000, -2);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: dest25kmBeyond,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(RideMatchCategory.EXTENDED_DESTINATION_MATCH);
+      expect(res?.destinationExtensionDistanceKm).toBeCloseTo(25.0, 0);
+    });
+
+    it('matches destination 45 km beyond driver destination', () => {
+      expect(haversineMeters(dest45kmBeyond, DEHRADUN)).toBeCloseTo(45000, -3);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: dest45kmBeyond,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(RideMatchCategory.EXTENDED_DESTINATION_MATCH);
+      expect(res?.destinationExtensionDistanceKm).toBeCloseTo(45.0, 0);
+    });
+
+    it('matches destination exactly 50 km beyond driver destination', () => {
+      expect(haversineMeters(dest50kmBeyond, DEHRADUN)).toBeCloseTo(50000, -3);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: dest50kmBeyond,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(RideMatchCategory.EXTENDED_DESTINATION_MATCH);
+      expect(res?.destinationExtensionDistanceKm).toBeCloseTo(50.0, 0);
+    });
+
+    it('rejects destination beyond 50 km (> 50 km allowance)', () => {
+      expect(haversineMeters(dest55kmBeyond, DEHRADUN)).toBeGreaterThan(50000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: dest55kmBeyond,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).toBeNull();
+    });
+
+    it('rejects destination close to driver destination but in an unrelated direction (> 20km perpendicular)', () => {
+      const unrelated = {
+        latitude: DEHRADUN.latitude,
+        longitude: DEHRADUN.longitude + 0.35,
+      };
+      expect(haversineMeters(unrelated, DEHRADUN)).toBeLessThan(50000);
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: unrelated,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).toBeNull();
+    });
+
+    it('rejects destination requiring reverse direction (doubling back toward source)', () => {
+      const reversePoint = {
+        latitude: DEHRADUN.latitude - 0.17,
+        longitude: DEHRADUN.longitude - 0.07,
+      };
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: HARIDWAR,
+        dropoff: reversePoint,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).toBeNull();
+    });
+  });
+
+  describe('Combined flexibility', () => {
+    it('matches pickup behind source and destination beyond driver destination', () => {
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: pickup15kmBehind,
+        dropoff: dest25kmBeyond,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(
+        RideMatchCategory.FLEXIBLE_PICKUP_AND_DESTINATION_MATCH,
+      );
+      expect(res?.isFlexible).toBe(true);
+      expect(res?.requiresIndependentPickupTravel).toBe(true);
+      expect(res?.requiresIndependentDestinationTravel).toBe(true);
+      expect(res?.pickupFlexibilityDistanceKm).toBeCloseTo(15.0, 0);
+      expect(res?.destinationExtensionDistanceKm).toBeCloseTo(25.0, 0);
+    });
+
+    it('rejects when pickup is within 30 km but destination is beyond 50 km (no compensation)', () => {
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: pickup15kmBehind,
+        dropoff: dest55kmBeyond,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).toBeNull();
+    });
+
+    it('rejects when pickup is beyond 30 km but destination is within 50 km (no compensation)', () => {
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: pickup35kmBehind,
+        dropoff: dest25kmBeyond,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).toBeNull();
+    });
+
+    it('matches when both distances are exactly at their respective limits (30km and 50km)', () => {
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: pickup30kmBehind,
+        dropoff: dest50kmBeyond,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(
+        RideMatchCategory.FLEXIBLE_PICKUP_AND_DESTINATION_MATCH,
+      );
+      expect(res?.pickupFlexibilityDistanceKm).toBeCloseTo(30.0, 0);
+      expect(res?.destinationExtensionDistanceKm).toBeCloseTo(50.0, 0);
+    });
+
+    it('rejects when both distances are beyond their respective limits', () => {
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: pickup35kmBehind,
+        dropoff: dest55kmBeyond,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).toBeNull();
+    });
+  });
+
+  describe('Existing behaviour and safeguards', () => {
+    it('normal forward-route match returns FORWARD_ROUTE_MATCH with isFlexible: false', () => {
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: NOIDA,
+        dropoff: DEHRADUN,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).not.toBeNull();
+      expect(res?.category).toBe(RideMatchCategory.FORWARD_ROUTE_MATCH);
+      expect(res?.isFlexible).toBe(false);
+      expect(res?.pickupFlexibilityDistanceKm).toBeNull();
+      expect(res?.destinationExtensionDistanceKm).toBeNull();
+    });
+
+    it('reverse-direction journey remains rejected', () => {
+      const res = evaluateFlexibleDriverRouteMatch({
+        routePoints: published.points,
+        pickup: DEHRADUN,
+        dropoff: MEERUT,
+        source: NOIDA,
+        destination: DEHRADUN,
+      });
+      expect(res).toBeNull();
+    });
   });
 });
