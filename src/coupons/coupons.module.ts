@@ -3,7 +3,9 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AuthModule } from '../auth/auth.module';
 import { AdminModule } from '../admin/admin.module';
+import { SettingsModule } from '../settings/settings.module';
 import { User } from '../users/entities/user.entity';
+import { VerificationModule } from '../verification/verification.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { AdminCouponsController } from './admin-coupons.controller';
 import { CouponIssuanceService } from './coupon-issuance.service';
@@ -31,6 +33,8 @@ import { Coupon } from './entities/coupon.entity';
     forwardRef(() => AuthModule),
     forwardRef(() => AdminModule),
     forwardRef(() => WalletModule),
+    SettingsModule,
+    forwardRef(() => VerificationModule),
   ],
   controllers: [CouponsController, AdminCouponsController],
   providers: [CouponsService, CouponRedemptionService, CouponIssuanceService],

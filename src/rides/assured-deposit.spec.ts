@@ -60,7 +60,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { Ride } from './entities/ride.entity';
 import { RideStatus, RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
-import { ASSURED_TEST_ROUTE } from './test/assured-ride-test.helpers';
+import { withAssuredTestRoute } from './test/assured-ride-test.helpers';
 
 describe('Assured deposit Phase 2 (integration)', () => {
   let app: INestApplication;
@@ -266,7 +266,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
+        ...withAssuredTestRoute({}),
         vehicleId: driver.vehicle.id,
         source: 'Deposit Source',
         destination: 'Deposit Dest',
@@ -324,7 +324,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${poor.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
+        ...withAssuredTestRoute({}),
         vehicleId: poor.vehicle.id,
         source: 'Poor Source',
         destination: 'Poor Dest',
@@ -355,7 +355,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${suspended.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
+        ...withAssuredTestRoute({}),
         vehicleId: suspended.vehicle.id,
         source: 'Sus Source',
         destination: 'Sus Dest',
@@ -375,7 +375,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${locked.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
+        ...withAssuredTestRoute({}),
         vehicleId: locked.vehicle.id,
         source: 'Lock Source',
         destination: 'Lock Dest',
@@ -394,7 +394,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
+        ...withAssuredTestRoute({}),
         vehicleId: driver.vehicle.id,
         source: 'Update Source',
         destination: 'Update Dest',
@@ -433,7 +433,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
+        ...withAssuredTestRoute({}),
         vehicleId: driver.vehicle.id,
         source: 'Book Source',
         destination: 'Book Dest',
@@ -533,7 +533,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
+        ...withAssuredTestRoute({}),
         vehicleId: driver.vehicle.id,
         source: 'Rollback Source',
         destination: 'Rollback Dest',
@@ -620,7 +620,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
       .set('Authorization', `Bearer ${driver.login.accessToken}`)
       .send({
         rideType: RideType.ASSURED,
-        ...ASSURED_TEST_ROUTE,
+        ...withAssuredTestRoute({}),
         vehicleId: driver.vehicle.id,
         source: 'Conc Source',
         destination: 'Conc Dest',
@@ -671,7 +671,7 @@ describe('Assured deposit Phase 2 (integration)', () => {
         .set('Authorization', `Bearer ${driver.login.accessToken}`)
         .send({
           rideType: RideType.ASSURED,
-          ...ASSURED_TEST_ROUTE,
+          ...withAssuredTestRoute({}),
           vehicleId: driver.vehicle.id,
           source: 'FarePay Source',
           destination: 'FarePay Dest',
@@ -837,16 +837,18 @@ describe('Assured deposit Phase 2 (integration)', () => {
       const regular = await request(app.getHttpServer())
         .post('/rides')
         .set('Authorization', `Bearer ${driver.login.accessToken}`)
-        .send({
-          rideType: RideType.REGULAR,
-          vehicleId: driver.vehicle.id,
-          source: 'Reg Source',
-          destination: 'Reg Dest',
-          departureDate: '2026-11-16',
-          departureTime: '11:00',
-          totalSeats: 3,
-          pricePerSeat: 200,
-        })
+        .send(
+          withAssuredTestRoute({
+            rideType: RideType.REGULAR,
+            vehicleId: driver.vehicle.id,
+            source: 'Reg Source',
+            destination: 'Reg Dest',
+            departureDate: '2026-11-16',
+            departureTime: '11:00',
+            totalSeats: 3,
+            pricePerSeat: 200,
+          }),
+        )
         .expect(201);
 
       await request(app.getHttpServer())
@@ -1058,16 +1060,18 @@ describe('Assured deposit Phase 2 (integration)', () => {
       const regular = await request(app.getHttpServer())
         .post('/rides')
         .set('Authorization', `Bearer ${driver.login.accessToken}`)
-        .send({
-          rideType: RideType.REGULAR,
-          vehicleId: driver.vehicle.id,
-          source: 'Compat Source',
-          destination: 'Compat Dest',
-          departureDate: '2026-11-17',
-          departureTime: '12:00',
-          totalSeats: 3,
-          pricePerSeat: 200,
-        })
+        .send(
+          withAssuredTestRoute({
+            rideType: RideType.REGULAR,
+            vehicleId: driver.vehicle.id,
+            source: 'Compat Source',
+            destination: 'Compat Dest',
+            departureDate: '2026-11-17',
+            departureTime: '12:00',
+            totalSeats: 3,
+            pricePerSeat: 200,
+          }),
+        )
         .expect(201);
 
       const later = await request(app.getHttpServer())

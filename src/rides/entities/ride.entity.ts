@@ -297,7 +297,7 @@ export class Ride {
   })
   assuredDepositPercentage!: number | null;
 
-  /** Driver Assured deposit amount in points at publish time. */
+  /** Driver Assured deposit amount in points at publish time (final payable). */
   @Column({
     name: 'assured_deposit_amount',
     type: 'bigint',
@@ -311,6 +311,28 @@ export class Ride {
     nullable: true,
   })
   driverDepositHoldId!: string | null;
+
+  @Column({
+    name: 'coupon_redemption_id',
+    type: 'uuid',
+    nullable: true,
+  })
+  couponRedemptionId!: string | null;
+
+  /** Pre-discount Assured driver deposit. Null when no catalog coupon applied. */
+  @Column({
+    name: 'original_assured_deposit_amount',
+    type: 'bigint',
+    nullable: true,
+  })
+  originalAssuredDepositAmount!: string | null;
+
+  @Column({
+    name: 'coupon_discount_amount',
+    type: 'bigint',
+    nullable: true,
+  })
+  couponDiscountAmount!: string | null;
 
   /**
    * Half-time decision for remaining Assured seats.

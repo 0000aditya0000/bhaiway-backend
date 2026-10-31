@@ -20,20 +20,48 @@ export enum CouponApplicableTo {
 }
 
 /**
- * Server-resolved transaction context. Never accepted from the client.
- * Booking/payment coupon paths always use RIDER; DRIVER is reserved for a
- * future driver-side redemption flow that does not exist today.
+ * Server-resolved actor for audience checks. Never accepted from the client.
  */
 export enum CouponActorContext {
   RIDER = 'RIDER',
   DRIVER = 'DRIVER',
 }
 
-/** User offer lists are booking-oriented (rider context). */
+/**
+ * Server-resolved transaction that is redeeming a coupon.
+ * Never accepted from the client. Extensible for future driver-side charges.
+ */
+export enum CouponTransactionContext {
+  RIDER_BOOKING = 'RIDER_BOOKING',
+  DRIVER_ASSURED_DEPOSIT = 'DRIVER_ASSURED_DEPOSIT',
+}
+
+/** Rider offer lists (booking-oriented). */
 export const USER_LISTING_APPLICABLE_TO: CouponApplicableTo[] = [
   CouponApplicableTo.ALL,
   CouponApplicableTo.RIDERS_ONLY,
 ];
+
+/** Driver offer lists (Assured driver-deposit-oriented). */
+export const DRIVER_LISTING_APPLICABLE_TO: CouponApplicableTo[] = [
+  CouponApplicableTo.ALL,
+  CouponApplicableTo.DRIVERS_ONLY,
+];
+
+export function actorContextForTransaction(
+  tx?: CouponTransactionContext | null,
+): CouponActorContext {
+  if (tx === CouponTransactionContext.DRIVER_ASSURED_DEPOSIT) {
+    return CouponActorContext.DRIVER;
+  }
+  return CouponActorContext.RIDER;
+}
+
+export function isDriverAssuredDepositTransaction(
+  tx?: CouponTransactionContext | null,
+): boolean {
+  return tx === CouponTransactionContext.DRIVER_ASSURED_DEPOSIT;
+}
 
 export function resolveCouponApplicableTo(
   value?: string | null,
@@ -58,7 +86,13 @@ export enum CouponRideTypeScope {
 
 export enum CouponChargeScope {
   RIDE_FARE = 'RIDE_FARE',
+  /** Rider Assured security deposit (booking). */
   ASSURED_SECURITY_DEPOSIT = 'ASSURED_SECURITY_DEPOSIT',
+  /**
+   * Driver Assured Ride security deposit (publish hold).
+   * Distinct from ASSURED_SECURITY_DEPOSIT. BOTH does not include this.
+   */
+  DRIVER_ASSURED_DEPOSIT = 'DRIVER_ASSURED_DEPOSIT',
   BOTH = 'BOTH',
 }
 

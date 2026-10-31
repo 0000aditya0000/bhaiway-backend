@@ -10,18 +10,23 @@ import { CouponAssignment } from './entities/coupon-assignment.entity';
 import { CouponRedemption } from './entities/coupon-redemption.entity';
 import { Coupon } from './entities/coupon.entity';
 import {
+  CouponAlreadyRedeemedError,
   CouponAlreadyUsedError,
   CouponDriversOnlyError,
   CouponExhaustedError,
   CouponExpiredError,
   CouponInactiveError,
   CouponIneligibleError,
+  CouponInvalidTransactionContextError,
+  CouponMinAmountNotMetError,
   CouponNotAssignedError,
   CouponNotFoundError,
   CouponNotStartedError,
   CouponRidersOnlyError,
+  CouponUsageLimitReachedError,
 } from './errors/coupon.errors';
 import {
+  actorContextForTransaction,
   CouponActorContext,
   CouponApplicableTo,
   CouponAudience,
@@ -29,7 +34,9 @@ import {
   CouponChargeScope,
   CouponRedemptionStatus,
   CouponRideTypeScope,
+  CouponTransactionContext,
   COUPON_REDEMPTION_REFERENCE_TYPE,
+  isDriverAssuredDepositTransaction,
   normalizeCouponCode,
   resolveCouponApplicableTo,
 } from './enums/coupon.enums';
@@ -43,13 +50,18 @@ export interface CouponEligibilityContext {
   now?: Date;
   /**
    * Server-set rider/driver context. Never taken from the client.
-   * Defaults to RIDER — the only product flow that redeems catalog coupons.
+   * Defaults from transactionContext, otherwise RIDER.
    */
   actorContext?: CouponActorContext;
+  /**
+   * Server-set transaction being charged. Never taken from the client.
+   * Defaults to RIDER_BOOKING.
+   */
+  transactionContext?: CouponTransactionContext;
 }
 
 export interface ReserveCouponInput extends CouponEligibilityContext {
-  bookingId: string;
+  bookingId?: string | null;
   rideId: string;
   code: string;
   idempotencyKey: string;
@@ -121,9 +133,7 @@ export class CouponRedemptionService {
       coupon.minEligibleAmount != null &&
       ctx.amount < BigInt(coupon.minEligibleAmount)
     ) {
-      throw new CouponIneligibleError(
-        'Charge amount is below the coupon minimum.',
-      );
+      this.throwMinAmountNotMet(ctx);
     }
 
     return {
@@ -199,9 +209,7 @@ export class CouponRedemptionService {
         coupon.minEligibleAmount != null &&
         input.amount < BigInt(coupon.minEligibleAmount)
       ) {
-        throw new CouponIneligibleError(
-          'Charge amount is below the coupon minimum.',
-        );
+        this.throwMinAmountNotMet(input);
       }
       const calc = calculateCouponDiscount(input.amount, {
         benefitType: coupon.benefitType,
@@ -226,7 +234,7 @@ export class CouponRedemptionService {
       couponId: coupon.id,
       userId: input.userId,
       status: CouponRedemptionStatus.RESERVED,
-      bookingId: input.bookingId,
+      bookingId: input.bookingId ?? null,
       rideId: input.rideId,
       rideTypeScope: input.rideType,
       chargeScope: input.chargeScope,
@@ -418,21 +426,7 @@ export class CouponRedemptionService {
       );
     }
 
-    // Apply/validate/preview must name one concrete charge. BOTH is a coupon
-    // configuration value only — never an apply-time target (one code / one
-    // charge per booking in v1).
-    if (ctx.chargeScope === CouponChargeScope.BOTH) {
-      throw new CouponIneligibleError(
-        'Specify RIDE_FARE or ASSURED_SECURITY_DEPOSIT when applying a coupon.',
-      );
-    }
-
-    if (!this.chargeScopeMatches(coupon.chargeScope, ctx.chargeScope)) {
-      throw new CouponIneligibleError(
-        'This coupon is not valid for this charge type.',
-      );
-    }
-
+    this.assertTransactionAndCharge(coupon, ctx);
     this.assertApplicableToActor(coupon, ctx);
 
     if (coupon.audience === CouponAudience.USER_SPECIFIC) {
@@ -464,14 +458,14 @@ export class CouponRedemptionService {
         .andWhere('r.status IN (:...statuses)', { statuses: activeStatuses })
         .getCount();
       if (userCount >= coupon.perUserRedemptionLimit) {
-        throw new CouponAlreadyUsedError();
+        this.throwPerUserLimit(ctx);
       }
     }
 
     if (options.consumeCapacity && coupon.totalRedemptionLimit != null) {
       const used = coupon.redeemedCount + coupon.reservedCount;
       if (used >= coupon.totalRedemptionLimit) {
-        throw new CouponExhaustedError();
+        this.throwGlobalLimit(ctx);
       }
     } else if (
       !options.consumeCapacity &&
@@ -479,22 +473,91 @@ export class CouponRedemptionService {
     ) {
       const used = coupon.redeemedCount + coupon.reservedCount;
       if (used >= coupon.totalRedemptionLimit) {
-        throw new CouponExhaustedError();
+        this.throwGlobalLimit(ctx);
       }
     }
   }
 
+  private resolveTransactionContext(
+    ctx: CouponEligibilityContext,
+  ): CouponTransactionContext {
+    return ctx.transactionContext ?? CouponTransactionContext.RIDER_BOOKING;
+  }
+
+  private throwMinAmountNotMet(ctx: CouponEligibilityContext): never {
+    if (isDriverAssuredDepositTransaction(this.resolveTransactionContext(ctx))) {
+      throw new CouponMinAmountNotMetError();
+    }
+    throw new CouponIneligibleError(
+      'Charge amount is below the coupon minimum.',
+    );
+  }
+
+  private throwPerUserLimit(ctx: CouponEligibilityContext): never {
+    if (isDriverAssuredDepositTransaction(this.resolveTransactionContext(ctx))) {
+      throw new CouponAlreadyRedeemedError();
+    }
+    throw new CouponAlreadyUsedError();
+  }
+
+  private throwGlobalLimit(ctx: CouponEligibilityContext): never {
+    if (isDriverAssuredDepositTransaction(this.resolveTransactionContext(ctx))) {
+      throw new CouponUsageLimitReachedError();
+    }
+    throw new CouponExhaustedError();
+  }
+
   /**
-   * Rider/driver eligibility. Actor is always server-set (booking passenger =
-   * RIDER). Client-supplied role / applicableTo are ignored because they never
-   * enter this context.
+   * Charge + transaction matching. Transaction context is always server-set.
+   */
+  private assertTransactionAndCharge(
+    coupon: Coupon,
+    ctx: CouponEligibilityContext,
+  ): void {
+    if (ctx.chargeScope === CouponChargeScope.BOTH) {
+      throw new CouponIneligibleError(
+        'Specify RIDE_FARE or ASSURED_SECURITY_DEPOSIT when applying a coupon.',
+      );
+    }
+
+    const tx = this.resolveTransactionContext(ctx);
+
+    if (tx === CouponTransactionContext.DRIVER_ASSURED_DEPOSIT) {
+      if (
+        ctx.chargeScope !== CouponChargeScope.DRIVER_ASSURED_DEPOSIT ||
+        coupon.chargeScope !== CouponChargeScope.DRIVER_ASSURED_DEPOSIT
+      ) {
+        throw new CouponInvalidTransactionContextError();
+      }
+      return;
+    }
+
+    if (
+      ctx.chargeScope === CouponChargeScope.DRIVER_ASSURED_DEPOSIT ||
+      coupon.chargeScope === CouponChargeScope.DRIVER_ASSURED_DEPOSIT
+    ) {
+      throw new CouponInvalidTransactionContextError();
+    }
+
+    if (!this.chargeScopeMatches(coupon.chargeScope, ctx.chargeScope)) {
+      throw new CouponIneligibleError(
+        'This coupon is not valid for this charge type.',
+      );
+    }
+  }
+
+  /**
+   * Rider/driver eligibility. Actor is always server-set.
+   * Client-supplied role / applicableTo / transactionContext never enter this context.
    */
   private assertApplicableToActor(
     coupon: Coupon,
     ctx: CouponEligibilityContext,
   ): void {
     const applicableTo = resolveCouponApplicableTo(coupon.applicableTo);
-    const actor = ctx.actorContext ?? CouponActorContext.RIDER;
+    const actor =
+      ctx.actorContext ??
+      actorContextForTransaction(this.resolveTransactionContext(ctx));
 
     if (
       applicableTo === CouponApplicableTo.DRIVERS_ONLY &&

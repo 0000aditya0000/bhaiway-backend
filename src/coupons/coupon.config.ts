@@ -116,6 +116,7 @@ export function validateAndParseCouponConfig(input: {
     if (
       input.chargeScope !== CouponChargeScope.RIDE_FARE &&
       input.chargeScope !== CouponChargeScope.ASSURED_SECURITY_DEPOSIT &&
+      input.chargeScope !== CouponChargeScope.DRIVER_ASSURED_DEPOSIT &&
       input.chargeScope !== CouponChargeScope.BOTH
     ) {
       throw new CouponInvalidConfigError('Invalid chargeScope.');

@@ -50,6 +50,7 @@ import {
   CouponBenefitType,
   CouponChargeScope,
   CouponRideTypeScope,
+  CouponTransactionContext,
   mapRideTypeToCouponScope,
 } from '../coupons/enums/coupon.enums';
 import { Ride } from '../rides/entities/ride.entity';
@@ -863,6 +864,7 @@ export class BookingsService {
               code: catalogCode,
               idempotencyKey: `${key}:coupon:RIDE_FARE`,
               actorContext: CouponActorContext.RIDER,
+              transactionContext: CouponTransactionContext.RIDER_BOOKING,
             });
           if (
             applied.redemption.benefitTypeSnapshot !==
@@ -1145,6 +1147,7 @@ export class BookingsService {
               code: catalogCode,
               idempotencyKey: `${key}:coupon:RIDE_FARE`,
               actorContext: CouponActorContext.RIDER,
+              transactionContext: CouponTransactionContext.RIDER_BOOKING,
             });
           if (
             applied.redemption.benefitTypeSnapshot !==
@@ -1377,7 +1380,10 @@ export class BookingsService {
           const chargeScope =
             dto.couponChargeScope ?? CouponChargeScope.ASSURED_SECURITY_DEPOSIT;
 
-          if (chargeScope === CouponChargeScope.BOTH) {
+          if (
+            chargeScope === CouponChargeScope.BOTH ||
+            chargeScope === CouponChargeScope.DRIVER_ASSURED_DEPOSIT
+          ) {
             throw new BadRequestException(
               'couponChargeScope must be RIDE_FARE or ASSURED_SECURITY_DEPOSIT when applying a coupon',
             );
@@ -1417,6 +1423,7 @@ export class BookingsService {
               code: catalogCode,
               idempotencyKey: `${key}:coupon:${chargeScope}`,
               actorContext: CouponActorContext.RIDER,
+              transactionContext: CouponTransactionContext.RIDER_BOOKING,
             });
 
           reservedRedemptionId = applied.redemption.id;

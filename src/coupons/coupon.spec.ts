@@ -43,6 +43,7 @@ import {
   CouponChargeScope,
   CouponRedemptionStatus,
   CouponRideTypeScope,
+  CouponTransactionContext,
   normalizeCouponCode,
   resolveCouponApplicableTo,
 } from './enums/coupon.enums';
@@ -51,6 +52,8 @@ import {
   CouponDriversOnlyError,
   CouponExhaustedError,
   CouponIneligibleError,
+  CouponInvalidTransactionContextError,
+  CouponMinAmountNotMetError,
   CouponNotAssignedError,
   CouponRidersOnlyError,
 } from './errors/coupon.errors';
@@ -936,6 +939,14 @@ describe('Coupon catalog (integration)', () => {
     async function createAudienceCoupon(
       adminUserId: string,
       applicableTo?: CouponApplicableTo,
+      extra?: {
+        chargeScope?: CouponChargeScope;
+        rideTypeScope?: CouponRideTypeScope;
+        benefitType?: CouponBenefitType;
+        benefitValue?: string;
+        maxDiscountAmount?: string;
+        minEligibleAmount?: string;
+      },
     ) {
       const code = `AUD${Date.now().toString(36)}${Math.random()
         .toString(36)
@@ -943,12 +954,18 @@ describe('Coupon catalog (integration)', () => {
       const created = await couponsService.createAdmin(adminUserId, {
         code,
         title: `Audience ${applicableTo ?? 'default'}`,
-        benefitType: CouponBenefitType.FIXED_DISCOUNT,
-        benefitValue: '10',
-        rideTypeScope: CouponRideTypeScope.ALL,
-        chargeScope: CouponChargeScope.RIDE_FARE,
+        benefitType: extra?.benefitType ?? CouponBenefitType.FIXED_DISCOUNT,
+        benefitValue: extra?.benefitValue ?? '10',
+        rideTypeScope: extra?.rideTypeScope ?? CouponRideTypeScope.ALL,
+        chargeScope: extra?.chargeScope ?? CouponChargeScope.RIDE_FARE,
         audience: CouponAudience.PUBLIC,
         ...(applicableTo != null ? { applicableTo } : {}),
+        ...(extra?.maxDiscountAmount
+          ? { maxDiscountAmount: extra.maxDiscountAmount }
+          : {}),
+        ...(extra?.minEligibleAmount
+          ? { minEligibleAmount: extra.minEligibleAmount }
+          : {}),
         ...futureWindow(),
         perUserRedemptionLimit: 5,
       });
@@ -960,18 +977,27 @@ describe('Coupon catalog (integration)', () => {
       userId: string,
       code: string,
       actorContext?: CouponActorContext,
+      extra?: {
+        chargeScope?: CouponChargeScope;
+        rideType?: CouponRideTypeScope;
+        transactionContext?: CouponTransactionContext;
+        amount?: bigint;
+      },
     ) {
       return dataSource.transaction(async (manager) => {
         return redemptionService.reserveInTransaction(manager, {
           userId,
-          rideType: CouponRideTypeScope.REGULAR,
-          chargeScope: CouponChargeScope.RIDE_FARE,
-          amount: 100n,
+          rideType: extra?.rideType ?? CouponRideTypeScope.REGULAR,
+          chargeScope: extra?.chargeScope ?? CouponChargeScope.RIDE_FARE,
+          amount: extra?.amount ?? 100n,
           bookingId: randomUUID(),
           rideId: randomUUID(),
           code,
           idempotencyKey: uniqueIdempotencyKey('aud'),
           ...(actorContext != null ? { actorContext } : {}),
+          ...(extra?.transactionContext != null
+            ? { transactionContext: extra.transactionContext }
+            : {}),
         });
       });
     }
@@ -1264,6 +1290,150 @@ describe('Coupon catalog (integration)', () => {
         (c: { id: string }) => c.id === drivers.created.id,
       );
       expect(driverAdmin.applicableTo).toBe(CouponApplicableTo.DRIVERS_ONLY);
+    });
+
+    it('lists driver deposit coupons to drivers and never to riders', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const token = await login(user.userId);
+      const driverAll = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.ALL,
+        { chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT },
+      );
+      const driverOnly = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.DRIVERS_ONLY,
+        { chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT },
+      );
+      const riderOnly = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.RIDERS_ONLY,
+      );
+
+      const riderList = await request(app.getHttpServer())
+        .get('/coupons/public')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const riderIds = riderList.body.items.map((c: { id: string }) => c.id);
+      expect(riderIds).toContain(riderOnly.created.id);
+      expect(riderIds).not.toContain(driverAll.created.id);
+      expect(riderIds).not.toContain(driverOnly.created.id);
+
+      const driverList = await request(app.getHttpServer())
+        .get('/coupons/driver/public')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const driverIds = driverList.body.items.map((c: { id: string }) => c.id);
+      expect(driverIds).toContain(driverAll.created.id);
+      expect(driverIds).toContain(driverOnly.created.id);
+      expect(driverIds).not.toContain(riderOnly.created.id);
+    });
+
+    it('rejects driver-deposit coupons on rider booking context', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.DRIVERS_ONLY,
+        { chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT },
+      );
+
+      await expect(
+        reserve(user.userId, code, CouponActorContext.RIDER, {
+          chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
+          rideType: CouponRideTypeScope.ASSURED,
+          transactionContext: CouponTransactionContext.RIDER_BOOKING,
+        }),
+      ).rejects.toBeInstanceOf(CouponInvalidTransactionContextError);
+
+      await expect(
+        reserve(user.userId, code, undefined, {
+          chargeScope: CouponChargeScope.RIDE_FARE,
+          transactionContext: CouponTransactionContext.RIDER_BOOKING,
+        }),
+      ).rejects.toBeInstanceOf(CouponInvalidTransactionContextError);
+    });
+
+    it('accepts DRIVER_ASSURED_DEPOSIT coupons only in driver deposit context', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.DRIVERS_ONLY,
+        { chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT },
+      );
+
+      const applied = await reserve(
+        user.userId,
+        code,
+        CouponActorContext.DRIVER,
+        {
+          chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
+          rideType: CouponRideTypeScope.ASSURED,
+          transactionContext: CouponTransactionContext.DRIVER_ASSURED_DEPOSIT,
+        },
+      );
+      expect(applied.discountAmount).toBe(10n);
+      expect(applied.finalAmount).toBe(90n);
+    });
+
+    it('rejects RIDERS_ONLY coupons in driver deposit context', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.RIDERS_ONLY,
+        { chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT },
+      );
+
+      await expect(
+        reserve(user.userId, code, CouponActorContext.DRIVER, {
+          chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
+          rideType: CouponRideTypeScope.ASSURED,
+          transactionContext: CouponTransactionContext.DRIVER_ASSURED_DEPOSIT,
+        }),
+      ).rejects.toBeInstanceOf(CouponRidersOnlyError);
+    });
+
+    it('rejects client-supplied transactionContext on rider validate', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(user.userId);
+      const token = await login(user.userId);
+      await request(app.getHttpServer())
+        .post('/coupons/validate')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          code,
+          rideType: CouponRideTypeScope.REGULAR,
+          chargeScope: CouponChargeScope.RIDE_FARE,
+          amount: '100',
+          transactionContext: CouponTransactionContext.DRIVER_ASSURED_DEPOSIT,
+        })
+        .expect(400);
+    });
+
+    it('enforces minimum amount for driver deposit coupons', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const { code } = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.DRIVERS_ONLY,
+        {
+          chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
+          minEligibleAmount: '200',
+        },
+      );
+
+      await expect(
+        reserve(user.userId, code, CouponActorContext.DRIVER, {
+          chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
+          rideType: CouponRideTypeScope.ASSURED,
+          transactionContext: CouponTransactionContext.DRIVER_ASSURED_DEPOSIT,
+          amount: 100n,
+        }),
+      ).rejects.toBeInstanceOf(CouponMinAmountNotMetError);
     });
   });
 });

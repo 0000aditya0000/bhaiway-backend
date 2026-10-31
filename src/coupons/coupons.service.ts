@@ -1,9 +1,19 @@
-import { Injectable } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
-import { In, Repository } from 'typeorm';
+import { In, Repository, SelectQueryBuilder } from 'typeorm';
 
-import { User } from '../users/entities/user.entity';
+import { calculateDriverAssuredDeposit } from '../assured/assured-deposit.math';
+import { SettingsService } from '../settings/settings.service';
+import { User, UserStatus } from '../users/entities/user.entity';
+import { VerificationService } from '../verification/verification.service';
+import {
+  VerificationType,
+} from '../verification/enums/verification.enums';
 import { validateAndParseCouponConfig } from './coupon.config';
 import { CouponRedemptionService } from './coupon-redemption.service';
 import {
@@ -11,7 +21,11 @@ import {
   CreateCouponAdminDto,
   UpdateCouponAdminDto,
 } from './dto/admin-coupon.dto';
-import { PreviewCouponDto, ValidateCouponDto } from './dto/user-coupon-api.dto';
+import {
+  DriverPreviewCouponDto,
+  PreviewCouponDto,
+  ValidateCouponDto,
+} from './dto/user-coupon-api.dto';
 import { CouponAssignment } from './entities/coupon-assignment.entity';
 import { CouponAuditLog } from './entities/coupon-audit-log.entity';
 import { CouponIssuance } from './entities/coupon-issuance.entity';
@@ -27,6 +41,8 @@ import {
   CouponAudience,
   CouponChargeScope,
   CouponRideTypeScope,
+  CouponTransactionContext,
+  DRIVER_LISTING_APPLICABLE_TO,
   USER_LISTING_APPLICABLE_TO,
   normalizeCouponCode,
   resolveCouponApplicableTo,
@@ -48,6 +64,8 @@ export class CouponsService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly redemptionService: CouponRedemptionService,
+    private readonly settingsService: SettingsService,
+    private readonly verificationService: VerificationService,
   ) {}
 
   async createAdmin(
@@ -303,69 +321,27 @@ export class CouponsService {
   }
 
   async listPublicForUser(userId: string, page = 1, limit = 20) {
-    const now = new Date();
-    const qb = this.couponRepository
-      .createQueryBuilder('c')
-      .where('c.audience = :audience', { audience: CouponAudience.PUBLIC })
-      .andWhere('c.is_active = true')
-      .andWhere('c.starts_at <= :now', { now })
-      .andWhere('c.expires_at >= :now', { now })
-      // Hide globally exhausted coupons from discovery.
-      .andWhere(
-        '(c.total_redemption_limit IS NULL OR (c.redeemed_count + c.reserved_count) < c.total_redemption_limit)',
-      )
-      .andWhere(
-        '(c.applicable_to IS NULL OR c.applicable_to IN (:...userApplicableTo))',
-        { userApplicableTo: USER_LISTING_APPLICABLE_TO },
-      )
-      .orderBy('c.expires_at', 'ASC')
-      .skip((page - 1) * limit)
-      .take(limit);
-
-    const [items, total] = await qb.getManyAndCount();
-    void userId;
-    return {
-      items: items.map((c) => this.toPublicCoupon(c, false)),
-      page,
-      limit,
-      total,
-    };
+    const qb = this.basePublicOfferQuery();
+    this.applyRiderOfferFilters(qb);
+    return this.paginateOffers(qb, page, limit, userId);
   }
 
   async listAssignedForUser(userId: string, page = 1, limit = 20) {
-    const now = new Date();
-    const qb = this.couponRepository
-      .createQueryBuilder('c')
-      .innerJoin(
-        CouponAssignment,
-        'a',
-        'a.coupon_id = c.id AND a.user_id = :userId',
-        { userId },
-      )
-      .where('c.audience = :audience', {
-        audience: CouponAudience.USER_SPECIFIC,
-      })
-      .andWhere('c.is_active = true')
-      .andWhere('c.starts_at <= :now', { now })
-      .andWhere('c.expires_at >= :now', { now })
-      .andWhere(
-        '(c.total_redemption_limit IS NULL OR (c.redeemed_count + c.reserved_count) < c.total_redemption_limit)',
-      )
-      .andWhere(
-        '(c.applicable_to IS NULL OR c.applicable_to IN (:...userApplicableTo))',
-        { userApplicableTo: USER_LISTING_APPLICABLE_TO },
-      )
-      .orderBy('c.expires_at', 'ASC')
-      .skip((page - 1) * limit)
-      .take(limit);
+    const qb = this.baseAssignedOfferQuery(userId);
+    this.applyRiderOfferFilters(qb);
+    return this.paginateOffers(qb, page, limit);
+  }
 
-    const [items, total] = await qb.getManyAndCount();
-    return {
-      items: items.map((c) => this.toPublicCoupon(c, false)),
-      page,
-      limit,
-      total,
-    };
+  async listPublicForDriver(userId: string, page = 1, limit = 20) {
+    const qb = this.basePublicOfferQuery();
+    this.applyDriverOfferFilters(qb);
+    return this.paginateOffers(qb, page, limit, userId);
+  }
+
+  async listAssignedForDriver(userId: string, page = 1, limit = 20) {
+    const qb = this.baseAssignedOfferQuery(userId);
+    this.applyDriverOfferFilters(qb);
+    return this.paginateOffers(qb, page, limit);
   }
 
   async getForUser(userId: string, couponId: string) {
@@ -396,19 +372,9 @@ export class CouponsService {
       chargeScope: dto.chargeScope,
       amount,
       actorContext: CouponActorContext.RIDER,
+      transactionContext: CouponTransactionContext.RIDER_BOOKING,
     });
-    return {
-      valid: true,
-      code: preview.coupon.codeNormalized,
-      benefitType: preview.coupon.benefitType,
-      rideTypeScope: preview.coupon.rideTypeScope,
-      chargeScope: preview.coupon.chargeScope,
-      applicableTo: resolveCouponApplicableTo(preview.coupon.applicableTo),
-      originalAmount: preview.originalAmount.toString(),
-      discountAmount: preview.discountAmount.toString(),
-      finalAmount: preview.finalAmount.toString(),
-      pointsCredit: preview.pointsCredit,
-    };
+    return this.toPreviewResponse(preview);
   }
 
   async previewForUser(userId: string, dto: PreviewCouponDto) {
@@ -416,6 +382,34 @@ export class CouponsService {
       throw new CouponInvalidConfigError('amount must be a non-negative integer.');
     }
     return this.validateForUser(userId, dto);
+  }
+
+  async previewForDriver(userId: string, dto: DriverPreviewCouponDto) {
+    await this.assertDriverCanPreviewAssuredDeposit(userId, dto.vehicleId);
+
+    const percentage =
+      await this.settingsService.getAssuredRideDepositPercentage();
+    const originalAmount = calculateDriverAssuredDeposit(
+      dto.totalSeats,
+      BigInt(dto.pricePerSeat),
+      percentage,
+    );
+
+    const preview = await this.redemptionService.preview(dto.code, {
+      userId,
+      rideType: CouponRideTypeScope.ASSURED,
+      chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
+      amount: originalAmount,
+      actorContext: CouponActorContext.DRIVER,
+      transactionContext: CouponTransactionContext.DRIVER_ASSURED_DEPOSIT,
+    });
+
+    return {
+      ...this.toPreviewResponse(preview),
+      depositPercentage: percentage,
+      totalSeats: dto.totalSeats,
+      pricePerSeat: String(dto.pricePerSeat),
+    };
   }
 
   async listRedemptionsForUser(userId: string, page = 1, limit = 20) {
@@ -457,6 +451,153 @@ export class CouponsService {
       limit,
       total,
     };
+  }
+
+  private basePublicOfferQuery() {
+    const now = new Date();
+    return this.couponRepository
+      .createQueryBuilder('c')
+      .where('c.audience = :audience', { audience: CouponAudience.PUBLIC })
+      .andWhere('c.is_active = true')
+      .andWhere('c.starts_at <= :now', { now })
+      .andWhere('c.expires_at >= :now', { now })
+      .andWhere(
+        '(c.total_redemption_limit IS NULL OR (c.redeemed_count + c.reserved_count) < c.total_redemption_limit)',
+      );
+  }
+
+  private baseAssignedOfferQuery(userId: string) {
+    const now = new Date();
+    return this.couponRepository
+      .createQueryBuilder('c')
+      .innerJoin(
+        CouponAssignment,
+        'a',
+        'a.coupon_id = c.id AND a.user_id = :userId',
+        { userId },
+      )
+      .where('c.audience = :audience', {
+        audience: CouponAudience.USER_SPECIFIC,
+      })
+      .andWhere('c.is_active = true')
+      .andWhere('c.starts_at <= :now', { now })
+      .andWhere('c.expires_at >= :now', { now })
+      .andWhere(
+        '(c.total_redemption_limit IS NULL OR (c.redeemed_count + c.reserved_count) < c.total_redemption_limit)',
+      );
+  }
+
+  private applyRiderOfferFilters(qb: SelectQueryBuilder<Coupon>) {
+    qb.andWhere(
+      '(c.applicable_to IS NULL OR c.applicable_to IN (:...userApplicableTo))',
+      { userApplicableTo: USER_LISTING_APPLICABLE_TO },
+    ).andWhere(
+      '(c.charge_scope IS NULL OR c.charge_scope <> :driverDepositCharge)',
+      { driverDepositCharge: CouponChargeScope.DRIVER_ASSURED_DEPOSIT },
+    );
+  }
+
+  private applyDriverOfferFilters(qb: SelectQueryBuilder<Coupon>) {
+    qb.andWhere(
+      '(c.applicable_to IS NULL OR c.applicable_to IN (:...driverApplicableTo))',
+      { driverApplicableTo: DRIVER_LISTING_APPLICABLE_TO },
+    ).andWhere('c.charge_scope = :driverDepositCharge', {
+      driverDepositCharge: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
+    });
+  }
+
+  private async paginateOffers(
+    qb: SelectQueryBuilder<Coupon>,
+    page: number,
+    limit: number,
+    userId?: string,
+  ) {
+    qb.orderBy('c.expires_at', 'ASC')
+      .skip((page - 1) * limit)
+      .take(limit);
+    const [items, total] = await qb.getManyAndCount();
+    void userId;
+    return {
+      items: items.map((c) => this.toPublicCoupon(c, false)),
+      page,
+      limit,
+      total,
+    };
+  }
+
+  private toPreviewResponse(preview: {
+    coupon: Coupon;
+    originalAmount: bigint;
+    discountAmount: bigint;
+    finalAmount: bigint;
+    pointsCredit: string | null;
+  }) {
+    return {
+      valid: true,
+      code: preview.coupon.codeNormalized,
+      benefitType: preview.coupon.benefitType,
+      rideTypeScope: preview.coupon.rideTypeScope,
+      chargeScope: preview.coupon.chargeScope,
+      applicableTo: resolveCouponApplicableTo(preview.coupon.applicableTo),
+      originalAmount: preview.originalAmount.toString(),
+      discountAmount: preview.discountAmount.toString(),
+      finalAmount: preview.finalAmount.toString(),
+      pointsCredit: preview.pointsCredit,
+    };
+  }
+
+  private async assertDriverCanPreviewAssuredDeposit(
+    userId: string,
+    vehicleId: string,
+  ): Promise<void> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    if (user.status !== UserStatus.ACTIVE) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code:
+          user.status === UserStatus.SUSPENDED
+            ? 'USER_SUSPENDED'
+            : 'USER_NOT_ACTIVE',
+        message: 'User status does not allow publishing rides',
+        error: 'Forbidden',
+      });
+    }
+    if (user.ridePublishRestricted) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'USER_RIDE_PUBLISH_RESTRICTED',
+        message:
+          user.ridePublishRestrictedReason?.trim() ||
+          'Ride publishing is restricted on this account',
+        error: 'Forbidden',
+      });
+    }
+
+    const eligibility = await this.verificationService.canPublishRide(
+      userId,
+      vehicleId,
+    );
+    if (!eligibility.allowed) {
+      if (eligibility.vehicleEligible === false) {
+        throw new ForbiddenException(
+          'Selected vehicle is not eligible for publishing (must exist, belong to you, be active, and not deleted)',
+        );
+      }
+      const labels = eligibility.missing
+        .map((type) => {
+          if (type === VerificationType.IDENTITY) return 'identity';
+          if (type === VerificationType.DRIVING_LICENSE)
+            return 'driving license';
+          return 'vehicle';
+        })
+        .join(', ');
+      throw new ForbiddenException(
+        `Missing required verification to publish a ride: ${labels}`,
+      );
+    }
   }
 
   toPublicCoupon(coupon: Coupon, includeAdmin: boolean) {

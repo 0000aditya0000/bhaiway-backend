@@ -66,6 +66,16 @@ import { RatingsService } from '../ratings/ratings.service';
 import { ChatService } from '../chat/chat.service';
 import { CommuteRewardProgressService } from '../commute-rewards/commute-reward-progress.service';
 import { CouponIssuanceService } from '../coupons/coupon-issuance.service';
+import { CouponRedemptionService } from '../coupons/coupon-redemption.service';
+import { CouponRedemption } from '../coupons/entities/coupon-redemption.entity';
+import {
+  CouponActorContext,
+  CouponBenefitType,
+  CouponChargeScope,
+  CouponRideTypeScope,
+  CouponTransactionContext,
+  normalizeCouponCode,
+} from '../coupons/enums/coupon.enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SettingsService } from '../settings/settings.service';
 import { TrackingService } from '../tracking/tracking.service';
@@ -204,6 +214,7 @@ export class RidesService {
     private readonly chatService: ChatService,
     private readonly notificationsService: NotificationsService,
     private readonly couponIssuanceService: CouponIssuanceService,
+    private readonly couponRedemptionService: CouponRedemptionService,
     private readonly commuteRewardProgressService: CommuteRewardProgressService,
     private readonly regularRideCancellationService: RegularRideCancellationService,
     private readonly noShowClaimsService: NoShowClaimsService,
@@ -541,6 +552,11 @@ export class RidesService {
     options?: { idempotencyKey?: string | null },
   ): Promise<RideResponseDto> {
     this.assertCommuteSeriesFieldsForRideType(dto);
+    if (dto.couponCode?.trim() && dto.rideType !== RideType.ASSURED) {
+      throw new BadRequestException(
+        'Coupons can only be applied to the Assured Ride driver security deposit',
+      );
+    }
     await this.assertDriverCanPublish(driverId, dto.vehicleId);
 
     assertDepartureIsInFuture(
@@ -752,7 +768,11 @@ export class RidesService {
         where: { publishIdempotencyKey: key },
       });
       if (existing) {
-        this.assertAssuredPublishIdempotentMatches(existing, driverId, dto);
+        await this.assertAssuredPublishIdempotentMatches(
+          existing,
+          driverId,
+          dto,
+        );
         return this.toResponse(existing);
       }
     }
@@ -765,13 +785,14 @@ export class RidesService {
     const percentage =
       await this.settingsService.getAssuredRideDepositPercentage();
     const pricePerSeat = BigInt(dto.pricePerSeat);
-    const depositAmount = calculateDriverAssuredDeposit(
+    const originalDepositAmount = calculateDriverAssuredDeposit(
       dto.totalSeats,
       pricePerSeat,
       percentage,
     );
     const rideId = randomUUID();
     const depositLedgerKey = `assured-driver-deposit:${rideId}`;
+    const catalogCode = dto.couponCode?.trim() || null;
 
     try {
       const created = await this.dataSource.transaction(async (manager) => {
@@ -780,10 +801,11 @@ export class RidesService {
             where: { publishIdempotencyKey: key },
           });
           if (existingAfterLock) {
-            this.assertAssuredPublishIdempotentMatches(
+            await this.assertAssuredPublishIdempotentMatches(
               existingAfterLock,
               driverId,
               dto,
+              manager,
             );
             return this.toResponse(existingAfterLock);
           }
@@ -798,13 +820,44 @@ export class RidesService {
         const wallet = await this.lockWalletForUpdate(manager, driverId);
         this.assertWalletAllowsDeposit(wallet);
 
+        let payableDepositAmount = originalDepositAmount;
+        let couponRedemptionId: string | null = null;
+        let originalAssuredDepositAmount: string | null = null;
+        let couponDiscountAmount: string | null = null;
+        let reservedRedemptionId: string | null = null;
+
+        if (catalogCode) {
+          const applied =
+            await this.couponRedemptionService.reserveInTransaction(manager, {
+              userId: driverId,
+              rideType: CouponRideTypeScope.ASSURED,
+              chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
+              amount: originalDepositAmount,
+              rideId,
+              code: catalogCode,
+              idempotencyKey: `${key}:coupon:DRIVER_ASSURED_DEPOSIT`,
+              actorContext: CouponActorContext.DRIVER,
+              transactionContext:
+                CouponTransactionContext.DRIVER_ASSURED_DEPOSIT,
+            });
+          reservedRedemptionId = applied.redemption.id;
+          if (
+            applied.redemption.benefitTypeSnapshot !==
+            CouponBenefitType.POINTS_CREDIT
+          ) {
+            originalAssuredDepositAmount = originalDepositAmount.toString();
+            payableDepositAmount = applied.finalAmount;
+            couponDiscountAmount = applied.discountAmount.toString();
+          }
+        }
+
         let driverDepositHoldId: string | null = null;
-        if (depositAmount > 0n) {
+        if (payableDepositAmount > 0n) {
           const holdResult = await this.walletService.createHoldInTransaction(
             manager,
             {
               walletId: wallet.id,
-              amount: depositAmount,
+              amount: payableDepositAmount,
               holdType: WalletHoldType.ASSURED_DEPOSIT,
               referenceType: ASSURED_RIDE_DRIVER_DEPOSIT_REF,
               referenceId: rideId,
@@ -812,6 +865,15 @@ export class RidesService {
             },
           );
           driverDepositHoldId = holdResult.hold!.id;
+        }
+
+        if (reservedRedemptionId) {
+          await this.couponRedemptionService.finalizeReservedInTransaction(
+            manager,
+            reservedRedemptionId,
+            wallet.id,
+          );
+          couponRedemptionId = reservedRedemptionId;
         }
 
         const ride = manager.getRepository(Ride).create({
@@ -833,8 +895,11 @@ export class RidesService {
           womenOnly: dto.womenOnly === true,
           notes: dto.notes?.trim() ?? null,
           assuredDepositPercentage: percentage,
-          assuredDepositAmount: depositAmount.toString(),
+          assuredDepositAmount: payableDepositAmount.toString(),
           driverDepositHoldId,
+          couponRedemptionId,
+          originalAssuredDepositAmount,
+          couponDiscountAmount,
           publishIdempotencyKey: key,
           ...routeFields,
         });
@@ -869,7 +934,11 @@ export class RidesService {
           where: { publishIdempotencyKey: key },
         });
         if (recovered) {
-          this.assertAssuredPublishIdempotentMatches(recovered, driverId, dto);
+          await this.assertAssuredPublishIdempotentMatches(
+            recovered,
+            driverId,
+            dto,
+          );
           if (recovered.status === RideStatus.ASSURANCE_ACTIVE) {
             await this.notificationsService.safeNotifyAssuredPublished({
               rideId: recovered.id,
@@ -975,11 +1044,12 @@ export class RidesService {
     );
   }
 
-  private assertAssuredPublishIdempotentMatches(
+  private async assertAssuredPublishIdempotentMatches(
     existing: Ride,
     driverId: string,
     dto: CreateRideDto,
-  ): void {
+    manager?: EntityManager,
+  ): Promise<void> {
     if (
       existing.driverId !== driverId ||
       existing.rideType !== RideType.ASSURED ||
@@ -992,6 +1062,25 @@ export class RidesService {
       existing.totalSeats !== dto.totalSeats ||
       existing.pricePerSeat !== String(dto.pricePerSeat)
     ) {
+      throw new ConflictException(
+        'Idempotency key was reused for a different Assured publish request',
+      );
+    }
+
+    const requestedCode = dto.couponCode?.trim()
+      ? normalizeCouponCode(dto.couponCode)
+      : null;
+    let existingCode: string | null = null;
+    if (existing.couponRedemptionId) {
+      const redemptionRepo =
+        manager?.getRepository(CouponRedemption) ??
+        this.dataSource.getRepository(CouponRedemption);
+      const redemption = await redemptionRepo.findOne({
+        where: { id: existing.couponRedemptionId },
+      });
+      existingCode = redemption?.codeSnapshot ?? null;
+    }
+    if (existingCode !== requestedCode) {
       throw new ConflictException(
         'Idempotency key was reused for a different Assured publish request',
       );
@@ -3660,6 +3749,9 @@ export class RidesService {
       notes: ride.notes,
       assuredDepositPercentage: ride.assuredDepositPercentage,
       assuredDepositAmount: ride.assuredDepositAmount,
+      originalAssuredDepositAmount: ride.originalAssuredDepositAmount ?? null,
+      couponDiscountAmount: ride.couponDiscountAmount ?? null,
+      couponRedemptionId: ride.couponRedemptionId ?? null,
       regularSeatsPolicy: ride.regularSeatsPolicy,
       assuranceWindowStart: isAssured
         ? ride.assuranceWindowStart

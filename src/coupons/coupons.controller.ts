@@ -21,6 +21,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import {
   CouponListQueryDto,
+  DriverPreviewCouponDto,
   PreviewCouponDto,
   ValidateCouponDto,
 } from './dto/user-coupon-api.dto';
@@ -86,6 +87,62 @@ export class CouponsController {
       query.page,
       query.limit,
     );
+  }
+
+  @Get('driver/public')
+  @ApiOperation({
+    summary:
+      'List public coupons available for the authenticated driver (ALL and DRIVERS_ONLY Assured deposit coupons)',
+  })
+  listDriverPublic(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: CouponListQueryDto,
+  ) {
+    return this.couponsService.listPublicForDriver(
+      user.userId,
+      query.page,
+      query.limit,
+    );
+  }
+
+  @Get('driver/mine')
+  @ApiOperation({
+    summary:
+      'List user-specific coupons assigned to the authenticated driver for Assured deposit redemption',
+  })
+  listDriverMine(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: CouponListQueryDto,
+  ) {
+    return this.couponsService.listAssignedForDriver(
+      user.userId,
+      query.page,
+      query.limit,
+    );
+  }
+
+  @Post('driver/validate')
+  @ApiOperation({
+    summary:
+      'Validate a driver coupon against the server-calculated Assured deposit (no capacity consumed)',
+  })
+  validateDriver(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: DriverPreviewCouponDto,
+  ) {
+    return this.couponsService.previewForDriver(user.userId, body);
+  }
+
+  @Post('driver/preview')
+  @ApiOperation({
+    summary:
+      'Preview a driver coupon against the server-calculated Assured deposit (no capacity consumed)',
+  })
+  previewDriver(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: DriverPreviewCouponDto,
+  ) {
+    return this.couponsService.previewForDriver(user.userId, body);
   }
 
   @Get(':id')

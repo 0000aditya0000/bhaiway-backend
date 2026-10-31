@@ -15,6 +15,7 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 
 import { RideType, Weekday } from '../enums/ride.enums';
@@ -166,6 +167,17 @@ export class CreateRideDto {
   @IsString()
   @MaxLength(2000)
   notes?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Catalog coupon code. ASSURED only — applied server-side to the driver security deposit. Ignored/rejected for REGULAR and COMMUTE. Discount is recalculated from the server deposit; never trust client amounts.',
+    example: 'DRV10',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(4)
+  @MaxLength(64)
+  couponCode?: string;
 
   @ApiPropertyOptional({
     default: false,

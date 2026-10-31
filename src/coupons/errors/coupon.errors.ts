@@ -115,6 +115,60 @@ export class CouponAlreadyUsedError extends ConflictException {
   }
 }
 
+export class CouponAlreadyRedeemedError extends ConflictException {
+  constructor(message = 'You have already redeemed this coupon.') {
+    super(
+      body(
+        HttpStatus.CONFLICT,
+        'COUPON_ALREADY_REDEEMED',
+        message,
+        'Conflict',
+      ),
+    );
+  }
+}
+
+export class CouponUsageLimitReachedError extends ConflictException {
+  constructor(message = 'This coupon has reached its redemption limit.') {
+    super(
+      body(
+        HttpStatus.CONFLICT,
+        'COUPON_USAGE_LIMIT_REACHED',
+        message,
+        'Conflict',
+      ),
+    );
+  }
+}
+
+export class CouponMinAmountNotMetError extends UnprocessableEntityException {
+  constructor(message = 'The amount is below the coupon minimum.') {
+    super(
+      body(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        'COUPON_MIN_AMOUNT_NOT_MET',
+        message,
+        'Unprocessable Entity',
+      ),
+    );
+  }
+}
+
+export class CouponInvalidTransactionContextError extends UnprocessableEntityException {
+  constructor(
+    message = 'This coupon cannot be used for this transaction.',
+  ) {
+    super(
+      body(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        'COUPON_INVALID_TRANSACTION_CONTEXT',
+        message,
+        'Unprocessable Entity',
+      ),
+    );
+  }
+}
+
 export class CouponNotAssignedError extends ForbiddenException {
   constructor(message = 'This coupon is not available for your account.') {
     super(

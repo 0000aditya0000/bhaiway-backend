@@ -122,11 +122,33 @@ export class RideResponseDto {
 
   @ApiPropertyOptional({
     description:
-      'Owner-only Assured driver deposit amount in points (null for Regular)',
+      'Owner-only Assured driver deposit amount in points (final payable after coupon). Null for Regular.',
     nullable: true,
     example: '100',
   })
   assuredDepositAmount?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Pre-discount Assured driver deposit when a catalog coupon was applied',
+    nullable: true,
+    example: '100',
+  })
+  originalAssuredDepositAmount?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Catalog coupon discount applied to the Assured driver deposit',
+    nullable: true,
+    example: '10',
+  })
+  couponDiscountAmount?: string | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
+    description: 'Catalog coupon redemption id when a driver deposit coupon was applied',
+  })
+  couponRedemptionId?: string | null;
 
   @ApiPropertyOptional({
     description:
