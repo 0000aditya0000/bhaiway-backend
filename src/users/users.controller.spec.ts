@@ -523,7 +523,7 @@ describe('UsersController (integration)', () => {
       .set('Authorization', `Bearer ${login.accessToken}`)
       .expect(200);
 
-    expect(me.body.wallet).toBeUndefined();
+    expect(me.body.profile).not.toHaveProperty('walletId');
     expect(me.body.user).not.toHaveProperty('walletId');
   });
 
