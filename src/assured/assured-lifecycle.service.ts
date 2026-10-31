@@ -18,9 +18,11 @@ import {
   BookingCancellationReason,
   BookingFarePayment,
   BookingMode,
+  BookingPaymentMethod,
   BookingPaymentStatus,
   BookingStatus,
 } from '../bookings/enums/booking.enums';
+import { regularRiderCancelRefundKey } from '../bookings/regular-cancellation.math';
 import { ChatService } from '../chat/chat.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
@@ -180,6 +182,15 @@ export class AssuredLifecycleService {
       if (this.isLifecycleEventUniqueViolation(error, idempotencyKey)) {
         await this.chatService.safeCloseForBooking(bookingId);
         return this.buildBookingLifecycleResponseFromDb(bookingId, true);
+      }
+      if (this.walletService.isIdempotencyKeyConflict(error)) {
+        const recovered = await this.bookingRepository.findOne({
+          where: { id: bookingId },
+        });
+        if (recovered?.status === BookingStatus.CANCELLED) {
+          await this.chatService.safeCloseForBooking(bookingId);
+          return this.buildBookingLifecycleResponseFromDb(bookingId, true);
+        }
       }
       throw error;
     }
@@ -1087,9 +1098,16 @@ export class AssuredLifecycleService {
         ride,
         seatsRestored,
       );
+      const fareRefunded = await this.refundRegularPrepaidFareInTransaction(
+        manager,
+        booking,
+      );
       booking.status = BookingStatus.CANCELLED;
       booking.cancellationReason = params.cancellationReason;
       booking.cancelledAt = now;
+      if (fareRefunded > 0n) {
+        booking.paymentStatus = BookingPaymentStatus.REFUNDED;
+      }
       await manager.getRepository(Booking).save(booking);
       await manager.getRepository(Ride).save(ride);
 
@@ -1100,6 +1118,7 @@ export class AssuredLifecycleService {
         cancellationReason: booking.cancellationReason,
         seatsRestored,
         partialFillCompensation: null,
+        fareRefunded: fareRefunded.toString(),
         alreadyApplied: false,
       };
     }
@@ -1595,6 +1614,66 @@ export class AssuredLifecycleService {
       .setLock('pessimistic_write')
       .where('booking.id = :bookingId', { bookingId })
       .getOne();
+  }
+
+  /**
+   * Regular prepaid (WALLET / PAY_NOW) passenger cancel refunds the collected
+   * fare. PAY_LATER / PAY_AFTER_RIDE has no collected fare, so this is a no-op.
+   * Regular has no cancellation fee: refundable amount is the charged totalAmount.
+   */
+  private async refundRegularPrepaidFareInTransaction(
+    manager: EntityManager,
+    booking: Booking,
+  ): Promise<bigint> {
+    if (booking.bookingMode !== BookingMode.REGULAR) {
+      return 0n;
+    }
+    if (booking.paymentMethod !== BookingPaymentMethod.PAY_NOW) {
+      return 0n;
+    }
+    if (booking.paymentStatus !== BookingPaymentStatus.PAID) {
+      return 0n;
+    }
+
+    const amount = BigInt(booking.totalAmount);
+    if (amount <= 0n) {
+      return 0n;
+    }
+
+    const wallet = await this.lockWalletForUpdate(
+      manager,
+      booking.passengerId,
+    );
+    await this.walletService.creditPointsInTransaction(manager, {
+      walletId: wallet.id,
+      userId: booking.passengerId,
+      amount,
+      sourceType: WalletPointSource.PURCHASED,
+      referenceType: 'BOOKING',
+      referenceId: booking.id,
+      parentTransactionId: booking.walletTransactionId,
+      idempotencyKey: regularRiderCancelRefundKey(booking.id),
+      transactionType: WalletTransactionType.REFUND,
+    });
+    return amount;
+  }
+
+  private async lockWalletForUpdate(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<Wallet> {
+    const wallet = await manager
+      .getRepository(Wallet)
+      .createQueryBuilder('wallet')
+      .setLock('pessimistic_write')
+      .where('wallet.user_id = :userId', { userId })
+      .getOne();
+
+    if (!wallet) {
+      throw new NotFoundException('Wallet not found');
+    }
+
+    return wallet;
   }
 
   private async insertLifecycleEvent(

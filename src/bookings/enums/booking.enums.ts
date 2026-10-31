@@ -12,6 +12,27 @@ export enum BookingPaymentMethod {
 }
 
 /**
+ * Mobile request aliases for Regular Ride booking.
+ * Never persisted: WALLET → PAY_NOW, PAY_AFTER_RIDE → PAY_LATER.
+ */
+export enum BookingPaymentMethodAlias {
+  WALLET = 'WALLET',
+  PAY_AFTER_RIDE = 'PAY_AFTER_RIDE',
+}
+
+export function canonicalizeBookingPaymentMethod(
+  value: unknown,
+): unknown {
+  if (value === BookingPaymentMethodAlias.WALLET) {
+    return BookingPaymentMethod.PAY_NOW;
+  }
+  if (value === BookingPaymentMethodAlias.PAY_AFTER_RIDE) {
+    return BookingPaymentMethod.PAY_LATER;
+  }
+  return value;
+}
+
+/**
  * Assured fare choice independent of the mandatory security deposit.
  * Only meaningful when paymentMethod === ASSURED_DEPOSIT.
  */

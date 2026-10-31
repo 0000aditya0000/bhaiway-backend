@@ -122,6 +122,7 @@ import {
   BookingPickupStatus,
   BookingStatus,
   BookingCancellationReason,
+  canonicalizeBookingPaymentMethod,
 } from './enums/booking.enums';
 import {
   decryptPickupOtp,
@@ -449,6 +450,7 @@ export class BookingsService {
     options: CreateBookingOptions = {},
   ): Promise<BookingResponseDto> {
     await this.assertPassengerCanBook(passengerId);
+    this.canonicalizePaymentMethod(dto);
     this.assertFarePaymentCompatibility(dto);
 
     const ridePreview = await this.rideRepository.findOne({
@@ -769,6 +771,22 @@ export class BookingsService {
    * farePayment is only valid with Assured ASSURED_DEPOSIT bookings.
    * Regular payment methods must not carry farePayment.
    */
+  private canonicalizePaymentMethod(dto: CreateBookingDto): void {
+    const canonical = canonicalizeBookingPaymentMethod(dto.paymentMethod);
+    if (
+      canonical !== BookingPaymentMethod.PAY_NOW &&
+      canonical !== BookingPaymentMethod.PAY_LATER &&
+      canonical !== BookingPaymentMethod.ASSURED_DEPOSIT
+    ) {
+      throw new BadRequestException('Invalid payment method');
+    }
+    dto.paymentMethod = canonical;
+  }
+
+  /**
+   * farePayment is only valid with Assured ASSURED_DEPOSIT bookings.
+   * Regular payment methods must not carry farePayment.
+   */
   private assertFarePaymentCompatibility(dto: CreateBookingDto): void {
     if (dto.farePayment === undefined) {
       return;
@@ -1067,7 +1085,7 @@ export class BookingsService {
   ): Promise<BookingResponseDto> {
     if (!idempotencyKey?.trim()) {
       throw new BadRequestException(
-        'Idempotency-Key header is required for PAY_NOW bookings',
+        'Idempotency-Key header is required for WALLET / PAY_NOW bookings',
       );
     }
 
@@ -1133,7 +1151,7 @@ export class BookingsService {
             dto.couponChargeScope ?? CouponChargeScope.RIDE_FARE;
           if (chargeScope !== CouponChargeScope.RIDE_FARE) {
             throw new BadRequestException(
-              'Regular PAY_NOW bookings only accept RIDE_FARE coupons',
+              'Regular WALLET / PAY_NOW bookings only accept RIDE_FARE coupons',
             );
           }
           const applied =

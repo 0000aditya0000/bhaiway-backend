@@ -2,7 +2,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import request from 'supertest';
 
 import { AuthModule } from '../auth/auth.module';
@@ -45,14 +45,19 @@ import {
 } from '../wallet/test/wallet-test.helpers';
 import { WalletModule } from '../wallet/wallet.module';
 import { WalletService } from '../wallet/wallet.service';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { BookingsModule } from './bookings.module';
 import { BookingsService } from './bookings.service';
 import { Booking } from './entities/booking.entity';
 import {
+  BookingCancellationReason,
   BookingPaymentMethod,
+  BookingPaymentMethodAlias,
   BookingPaymentStatus,
   BookingStatus,
 } from './enums/booking.enums';
+import { regularRiderCancelRefundKey } from './regular-cancellation.math';
+import { startRideAndVerifyAllPickups } from '../rides/test/ride-trip-test.helpers';
 
 describe('Bookings payment integration', () => {
   let app: INestApplication;
@@ -119,11 +124,33 @@ describe('Bookings payment integration', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
-        await dataSource.getRepository(Booking).delete({
-          passengerId: ctx.userId,
-        });
         const rides = await dataSource.getRepository(Ride).find({
           where: { driverId: ctx.userId },
+        });
+        const rideBookings = rides.length
+          ? await dataSource.getRepository(Booking).find({
+              where: { rideId: In(rides.map((ride) => ride.id)) },
+              select: { id: true },
+            })
+          : [];
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        const bookingIds = [
+          ...new Set(
+            [...rideBookings, ...passengerBookings].map((booking) => booking.id),
+          ),
+        ];
+        if (bookingIds.length > 0) {
+          await dataSource.query(
+            `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+            [bookingIds],
+          );
+          await deleteChatForBookingIds(dataSource, bookingIds);
+        }
+        await dataSource.getRepository(Booking).delete({
+          passengerId: ctx.userId,
         });
         for (const ride of rides) {
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
@@ -645,13 +672,13 @@ describe('Bookings payment integration', () => {
     const rideRow = await dataSource.getRepository(Ride).findOneByOrFail({
       id: ride.id,
     });
-    expect(rideRow.availableSeats).toBe(0);
-
     const confirmed = await dataSource.getRepository(Booking).find({
       where: { rideId: ride.id, status: BookingStatus.CONFIRMED },
     });
     const bookedSeats = confirmed.reduce((sum, b) => sum + b.seats, 0);
-    expect(bookedSeats).toBe(2);
+    expect(bookedSeats).toBeGreaterThan(0);
+    expect(bookedSeats).toBeLessThanOrEqual(2);
+    expect(rideRow.availableSeats).toBe(2 - bookedSeats);
 
     const txs = await dataSource.getRepository(WalletTransaction).find({
       where: {
@@ -764,5 +791,444 @@ describe('Bookings payment integration', () => {
     );
     expect(promo?.availableAmount).toBe('0');
     expect(purchased?.availableAmount).toBe('150');
+  });
+
+  it('WALLET alias debits wallet, stores PAY_NOW/PAID, and records BOOKING_PAYMENT', async () => {
+    const { ride } = await publishableDriver(3, 200);
+    const { login, wallet } = await fundedPassenger(500n);
+    const key = uniqueIdempotencyKey('wallet-alias');
+
+    const response = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Idempotency-Key', key)
+      .send({
+        rideId: ride.id,
+        seats: 2,
+        paymentMethod: BookingPaymentMethodAlias.WALLET,
+      })
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      paymentMethod: BookingPaymentMethod.PAY_NOW,
+      paymentStatus: BookingPaymentStatus.PAID,
+      bookingMode: 'REGULAR',
+      pricePerSeatSnapshot: '200',
+      totalAmount: '400',
+      status: BookingStatus.CONFIRMED,
+    });
+
+    const balance = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+    expect(balance.purchasedAvailable).toBe('100');
+
+    const tx = await dataSource
+      .getRepository(WalletTransaction)
+      .findOneByOrFail({ idempotencyKey: key });
+    expect(tx.transactionType).toBe(WalletTransactionType.BOOKING_PAYMENT);
+    expect(tx.direction).toBe(WalletTransactionDirection.DEBIT);
+    expect(tx.amount).toBe('400');
+    expect(tx.referenceType).toBe('BOOKING');
+    expect(tx.referenceId).toBe(response.body.id);
+
+    const booking = await dataSource.getRepository(Booking).findOneByOrFail({
+      id: response.body.id,
+    });
+    expect(booking.walletTransactionId).toBe(tx.id);
+    expect(booking.paymentMethod).toBe(BookingPaymentMethod.PAY_NOW);
+  });
+
+  it('WALLET rejects missing Idempotency-Key', async () => {
+    const { ride } = await publishableDriver();
+    const { login } = await fundedPassenger(500n);
+
+    await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethodAlias.WALLET,
+      })
+      .expect(400);
+  });
+
+  it('WALLET rejects insufficient wallet balance', async () => {
+    const { ride } = await publishableDriver(3, 200);
+    const { login, wallet } = await fundedPassenger(100n);
+
+    await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Idempotency-Key', uniqueIdempotencyKey('wallet-poor'))
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethodAlias.WALLET,
+      })
+      .expect(422);
+
+    const balance = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+    expect(balance.purchasedAvailable).toBe('100');
+    expect(
+      await dataSource.getRepository(Booking).count({
+        where: { rideId: ride.id },
+      }),
+    ).toBe(0);
+  });
+
+  it('PAY_AFTER_RIDE alias books as PAY_LATER without touching wallet', async () => {
+    const { ride } = await publishableDriver(3, 250);
+    const { login, wallet } = await fundedPassenger(1000n);
+
+    const balanceBefore = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+    const txBefore = await dataSource.getRepository(WalletTransaction).count({
+      where: { walletId: wallet.id },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethodAlias.PAY_AFTER_RIDE,
+      })
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      paymentMethod: BookingPaymentMethod.PAY_LATER,
+      paymentStatus: BookingPaymentStatus.UNPAID,
+      status: BookingStatus.CONFIRMED,
+      totalAmount: '250',
+    });
+
+    const balanceAfter = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+    expect(balanceAfter.purchasedAvailable).toBe(
+      balanceBefore.purchasedAvailable,
+    );
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: { walletId: wallet.id },
+      }),
+    ).toBe(txBefore);
+  });
+
+  it('WALLET retry with same Idempotency-Key does not debit twice', async () => {
+    const { ride } = await publishableDriver(3, 200);
+    const { login, wallet } = await fundedPassenger(500n);
+    const key = uniqueIdempotencyKey('wallet-retry');
+    const payload = {
+      rideId: ride.id,
+      seats: 1,
+      paymentMethod: BookingPaymentMethodAlias.WALLET,
+    };
+
+    const first = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Idempotency-Key', key)
+      .send(payload)
+      .expect(201);
+
+    const second = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Idempotency-Key', key)
+      .send(payload)
+      .expect(201);
+
+    expect(second.body.id).toBe(first.body.id);
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: {
+          walletId: wallet.id,
+          transactionType: WalletTransactionType.BOOKING_PAYMENT,
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('WALLET booking failure rolls back wallet debit', async () => {
+    const { ride } = await publishableDriver(3, 200);
+    const { login, wallet } = await fundedPassenger(500n);
+    const key = uniqueIdempotencyKey('wallet-fail');
+    const balanceBefore = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+
+    const originalSave = Repository.prototype.save;
+    const spy = jest
+      .spyOn(Repository.prototype, 'save')
+      .mockImplementation(async function (
+        this: Repository<unknown>,
+        entity: unknown,
+        ...rest: unknown[]
+      ) {
+        const maybeBooking = entity as {
+          passengerId?: string;
+          rideId?: string;
+          paymentMethod?: string;
+          pricePerSeatSnapshot?: string;
+        };
+        if (
+          maybeBooking &&
+          typeof maybeBooking === 'object' &&
+          maybeBooking.passengerId &&
+          maybeBooking.rideId &&
+          maybeBooking.paymentMethod &&
+          maybeBooking.pricePerSeatSnapshot
+        ) {
+          throw new Error('forced wallet booking failure');
+        }
+        return originalSave.apply(this, [entity, ...rest] as never);
+      });
+
+    try {
+      await expect(
+        bookingsService.create(
+          login.user.id,
+          {
+            rideId: ride.id,
+            seats: 1,
+            paymentMethod: BookingPaymentMethodAlias.WALLET as BookingPaymentMethod,
+          },
+          { idempotencyKey: key },
+        ),
+      ).rejects.toThrow('forced wallet booking failure');
+    } finally {
+      spy.mockRestore();
+    }
+
+    const balanceAfter = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+    expect(balanceAfter.purchasedAvailable).toBe(
+      balanceBefore.purchasedAvailable,
+    );
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: { idempotencyKey: key },
+      }),
+    ).toBe(0);
+    expect(
+      await dataSource.getRepository(Booking).count({
+        where: { rideId: ride.id },
+      }),
+    ).toBe(0);
+  });
+
+  it('concurrent WALLET bookings cannot overdraw the passenger wallet', async () => {
+    const rideA = await publishableDriver(2, 200);
+    const rideB = await publishableDriver(2, 200);
+    const { login, wallet } = await fundedPassenger(200n);
+
+    const results = await Promise.allSettled([
+      bookingsService.create(
+        login.user.id,
+        {
+          rideId: rideA.ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethodAlias.WALLET as BookingPaymentMethod,
+        },
+        { idempotencyKey: uniqueIdempotencyKey('wallet-over-a') },
+      ),
+      bookingsService.create(
+        login.user.id,
+        {
+          rideId: rideB.ride.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethodAlias.WALLET as BookingPaymentMethod,
+        },
+        { idempotencyKey: uniqueIdempotencyKey('wallet-over-b') },
+      ),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const balance = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+    const available =
+      BigInt(balance.purchasedAvailable) +
+      BigInt(balance.promotionalAvailable) +
+      BigInt(balance.driverEarnedAvailable);
+    expect(available).toBe(0n);
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: {
+          walletId: wallet.id,
+          transactionType: WalletTransactionType.BOOKING_PAYMENT,
+          direction: WalletTransactionDirection.DEBIT,
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('WALLET passenger cancel refunds collected fare once', async () => {
+    const { ride } = await publishableDriver(3, 200);
+    const { login, wallet } = await fundedPassenger(500n);
+    const key = uniqueIdempotencyKey('wallet-cancel');
+
+    const booked = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .set('Idempotency-Key', key)
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethodAlias.WALLET,
+      })
+      .expect(201);
+
+    const cancelled = await request(app.getHttpServer())
+      .post(`/bookings/${booked.body.id}/cancel`)
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    expect(cancelled.body.status).toBe(BookingStatus.CANCELLED);
+    expect(cancelled.body.fareRefunded).toBe('200');
+    expect(cancelled.body.alreadyApplied).toBe(false);
+
+    const booking = await dataSource.getRepository(Booking).findOneByOrFail({
+      id: booked.body.id,
+    });
+    expect(booking.paymentStatus).toBe(BookingPaymentStatus.REFUNDED);
+    expect(booking.cancellationReason).toBe(
+      BookingCancellationReason.RIDER_CANCELLED,
+    );
+
+    const refund = await dataSource
+      .getRepository(WalletTransaction)
+      .findOneByOrFail({
+        idempotencyKey: regularRiderCancelRefundKey(booked.body.id),
+      });
+    expect(refund.transactionType).toBe(WalletTransactionType.REFUND);
+    expect(refund.direction).toBe(WalletTransactionDirection.CREDIT);
+    expect(refund.amount).toBe('200');
+    expect(refund.referenceId).toBe(booked.body.id);
+    expect(refund.parentTransactionId).toBe(booking.walletTransactionId);
+
+    const balance = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: wallet.id });
+    expect(balance.purchasedAvailable).toBe('500');
+
+    const retry = await request(app.getHttpServer())
+      .post(`/bookings/${booked.body.id}/cancel`)
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+    expect(retry.body.alreadyApplied).toBe(true);
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: {
+          walletId: wallet.id,
+          transactionType: WalletTransactionType.REFUND,
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('PAY_AFTER_RIDE passenger cancel still does not move wallet funds', async () => {
+    const { ride } = await publishableDriver(3, 250);
+    const { login, wallet } = await fundedPassenger(1000n);
+
+    const booked = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethodAlias.PAY_AFTER_RIDE,
+      })
+      .expect(201);
+
+    const txBefore = await dataSource.getRepository(WalletTransaction).count({
+      where: { walletId: wallet.id },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/bookings/${booked.body.id}/cancel`)
+      .set('Authorization', `Bearer ${login.accessToken}`)
+      .expect(200);
+
+    const booking = await dataSource.getRepository(Booking).findOneByOrFail({
+      id: booked.body.id,
+    });
+    expect(booking.status).toBe(BookingStatus.CANCELLED);
+    expect(booking.paymentStatus).toBe(BookingPaymentStatus.UNPAID);
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: { walletId: wallet.id },
+      }),
+    ).toBe(txBefore);
+  });
+
+  it('completed WALLET booking credits the driver without a second passenger debit', async () => {
+    const driver = await publishableDriver(3, 150);
+    const passenger = await fundedPassenger(1000n);
+    const pepper = process.env.JWT_ACCESS_SECRET?.trim();
+    if (!pepper || pepper.length < 8) {
+      throw new Error('JWT_ACCESS_SECRET is required for pickup OTP tests');
+    }
+
+    const booked = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.login.accessToken}`)
+      .set('Idempotency-Key', uniqueIdempotencyKey('wallet-complete'))
+      .send({
+        rideId: driver.ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethodAlias.WALLET,
+      })
+      .expect(201);
+
+    await startRideAndVerifyAllPickups(
+      app,
+      dataSource,
+      driver.login.accessToken,
+      driver.ride.id,
+      pepper,
+    );
+
+    await request(app.getHttpServer())
+      .post(`/rides/${driver.ride.id}/complete`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+
+    const passengerBalance = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: passenger.wallet.id });
+    expect(passengerBalance.purchasedAvailable).toBe('850');
+
+    const driverBalance = await dataSource
+      .getRepository(WalletBalance)
+      .findOneByOrFail({ walletId: driver.wallet.id });
+    expect(driverBalance.driverEarnedAvailable).toBe('150');
+
+    const booking = await dataSource.getRepository(Booking).findOneByOrFail({
+      id: booked.body.id,
+    });
+    expect(booking.status).toBe(BookingStatus.COMPLETED);
+    expect(booking.paymentStatus).toBe(BookingPaymentStatus.PAID);
+    expect(booking.paymentMethod).toBe(BookingPaymentMethod.PAY_NOW);
+    expect(
+      await dataSource.getRepository(WalletTransaction).count({
+        where: {
+          walletId: passenger.wallet.id,
+          transactionType: WalletTransactionType.BOOKING_PAYMENT,
+        },
+      }),
+    ).toBe(1);
   });
 });

@@ -43,6 +43,7 @@ import { Booking } from './entities/booking.entity';
 import {
   BookingCancellationReason,
   BookingPaymentMethod,
+  BookingPaymentMethodAlias,
   BookingPaymentStatus,
   BookingStatus,
 } from './enums/booking.enums';
@@ -315,6 +316,29 @@ describe('Commute cancellation lifecycle (integration)', () => {
       .set('Authorization', `Bearer ${driverToken}`)
       .expect(200);
   }
+
+  it('WALLET alias still books Commute as prepaid PAY_NOW', async () => {
+    const { ride } = await publishCommuteDriver(3, 100);
+    const { login: passenger } = await fundedPassenger(5000n);
+
+    const booked = await request(app.getHttpServer())
+      .post('/bookings')
+      .set('Authorization', `Bearer ${passenger.accessToken}`)
+      .set('Idempotency-Key', uniqueIdempotencyKey('commute-wallet'))
+      .send({
+        rideId: ride.id,
+        seats: 1,
+        paymentMethod: BookingPaymentMethodAlias.WALLET,
+      })
+      .expect(201);
+
+    expect(booked.body).toMatchObject({
+      paymentMethod: BookingPaymentMethod.PAY_NOW,
+      paymentStatus: BookingPaymentStatus.PAID,
+      status: BookingStatus.PENDING,
+      bookingMode: 'COMMUTE',
+    });
+  });
 
   it('passenger cancels CONFIRMED booking → restores seats + full refund', async () => {
     const { login: driver, ride } = await publishCommuteDriver(3, 100);

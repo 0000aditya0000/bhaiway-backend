@@ -58,23 +58,23 @@ export class BookingsController {
 
   @Post()
   @ApiOperation({
-    summary: 'Create a booking (PAY_LATER, PAY_NOW, ASSURED_DEPOSIT, or COMMUTE request)',
+    summary: 'Create a booking (WALLET/PAY_NOW, PAY_AFTER_RIDE/PAY_LATER, ASSURED_DEPOSIT, or COMMUTE request)',
     description:
-      'REGULAR rides: PAY_NOW or PAY_LATER (farePayment must be omitted). ' +
+      'REGULAR rides: WALLET (alias PAY_NOW) debits BhaiWay Wallet at booking; PAY_AFTER_RIDE (alias PAY_LATER) defers fare. farePayment must be omitted. Stored paymentMethod is PAY_NOW or PAY_LATER. ' +
       'COMMUTE rides: mandatory upfront rider fare debit; booking starts PENDING until the driver accepts. ' +
       'Pending Commute requests do not reduce availableSeats. Idempotency-Key required for Commute. ' +
       'ASSURED rides with paymentMethod=ASSURED_DEPOSIT: mandatory security-deposit wallet HOLD; ' +
       'optional farePayment=PAY_NOW|PAY_LATER (defaults to PAY_LATER when omitted). ' +
       'ASSURED_DEPOSIT + PAY_LATER → deposit held, fare UNPAID. ' +
       'ASSURED_DEPOSIT + PAY_NOW → deposit held and fare debited atomically (fare PAID). ' +
-      'Assured rides cannot use PAY_NOW/PAY_LATER without deposit unless the driver has opened remaining seats (ALLOW_REGULAR_RIDERS). ' +
-      'Insufficient balance returns 422. Idempotency-Key is required for PAY_NOW, ASSURED_DEPOSIT, and COMMUTE.',
+      'Assured rides cannot use WALLET/PAY_NOW or PAY_AFTER_RIDE/PAY_LATER without deposit unless the driver has opened remaining seats (ALLOW_REGULAR_RIDERS). ' +
+      'Insufficient balance returns 422. Idempotency-Key is required for WALLET/PAY_NOW, ASSURED_DEPOSIT, and COMMUTE.',
   })
   @ApiHeader({
     name: 'Idempotency-Key',
     required: false,
     description:
-      'Required for PAY_NOW and ASSURED_DEPOSIT. Reused safely on retries. Changing farePayment with the same key is rejected.',
+      'Required for WALLET/PAY_NOW and ASSURED_DEPOSIT. Reused safely on retries. Changing farePayment with the same key is rejected.',
   })
   @ApiCreatedResponse({ type: BookingResponseDto })
   @ApiBadRequestResponse({
@@ -109,7 +109,8 @@ export class BookingsController {
   @ApiOperation({
     summary: 'Cancel own booking (passenger only)',
     description:
-      'REGULAR bookings: cancel and restore seats only (no wallet movements). ' +
+      'REGULAR PAY_AFTER_RIDE/PAY_LATER bookings: cancel and restore seats only (no wallet movements). ' +
+      'REGULAR WALLET/PAY_NOW bookings: restore seats and refund the collected fare (the server-charged totalAmount) to the passenger wallet. Idempotent via regular:rider-cancel:{bookingId}. ' +
       'COMMUTE bookings: full upfront fare refund. PENDING cancellations do not change availableSeats; CONFIRMED cancellations restore seats. Idempotent via commute:rider-cancel:{bookingId}. ' +
       'ASSURED CONFIRMED bookings before departure: forfeits security deposit (100% to driver on PAY_LATER; separate deposit + 30/70 fare split on PAY_NOW with no fare refund), restores seats, sets next Assured deposit to 10% for the passenger. ' +
       'Ride remains active when other passengers remain. Idempotent via assured:rider-cancel:{bookingId}. ' +

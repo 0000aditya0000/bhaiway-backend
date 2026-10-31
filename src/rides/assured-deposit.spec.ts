@@ -2,7 +2,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import request from 'supertest';
 
 import {
@@ -13,12 +13,14 @@ import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import { Msg91ResponseFormatError } from '../auth/errors/msg91.errors';
 import { OTP_PROVIDER } from '../auth/providers/otp-provider.interface';
+import { deleteChatForBookingIds } from '../chat/test/chat-test.helpers';
 import { BookingsModule } from '../bookings/bookings.module';
 import { BookingsService } from '../bookings/bookings.service';
 import { Booking } from '../bookings/entities/booking.entity';
 import {
   BookingFarePayment,
   BookingPaymentMethod,
+  BookingPaymentMethodAlias,
   BookingPaymentStatus,
 } from '../bookings/enums/booking.enums';
 import { SettingsModule } from '../settings/settings.module';
@@ -134,11 +136,33 @@ describe('Assured deposit Phase 2 (integration)', () => {
     while (tracked.length > 0) {
       const ctx = tracked.pop();
       if (ctx) {
-        await dataSource.getRepository(Booking).delete({
-          passengerId: ctx.userId,
-        });
         const rides = await dataSource.getRepository(Ride).find({
           where: { driverId: ctx.userId },
+        });
+        const rideBookings = rides.length
+          ? await dataSource.getRepository(Booking).find({
+              where: { rideId: In(rides.map((ride) => ride.id)) },
+              select: { id: true },
+            })
+          : [];
+        const passengerBookings = await dataSource.getRepository(Booking).find({
+          where: { passengerId: ctx.userId },
+          select: { id: true },
+        });
+        const bookingIds = [
+          ...new Set(
+            [...rideBookings, ...passengerBookings].map((booking) => booking.id),
+          ),
+        ];
+        if (bookingIds.length > 0) {
+          await dataSource.query(
+            `DELETE FROM rating_tasks WHERE booking_id = ANY($1::uuid[])`,
+            [bookingIds],
+          );
+          await deleteChatForBookingIds(dataSource, bookingIds);
+        }
+        await dataSource.getRepository(Booking).delete({
+          passengerId: ctx.userId,
         });
         for (const ride of rides) {
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
@@ -1053,10 +1077,11 @@ describe('Assured deposit Phase 2 (integration)', () => {
       expect(pendingAfter.status).toBe(RideStatus.ASSURANCE_ACTIVE);
     });
 
-    it('Regular PAY_NOW and PAY_LATER remain unchanged', async () => {
+    it('Regular PAY_NOW, PAY_LATER, and WALLET remain unchanged', async () => {
       const driver = await fundedDriver();
       const p1 = await fundedPassenger(1000n);
       const p2 = await fundedPassenger(1000n);
+      const p3 = await fundedPassenger(1000n);
       const regular = await request(app.getHttpServer())
         .post('/rides')
         .set('Authorization', `Bearer ${driver.login.accessToken}`)
@@ -1098,6 +1123,20 @@ describe('Assured deposit Phase 2 (integration)', () => {
         .expect(201);
       expect(now.body.paymentStatus).toBe(BookingPaymentStatus.PAID);
       expect(now.body.farePayment).toBeNull();
+
+      const wallet = await request(app.getHttpServer())
+        .post('/bookings')
+        .set('Authorization', `Bearer ${p3.login.accessToken}`)
+        .set('Idempotency-Key', uniqueIdempotencyKey('reg-wallet-ok'))
+        .send({
+          rideId: regular.body.id,
+          seats: 1,
+          paymentMethod: BookingPaymentMethodAlias.WALLET,
+        })
+        .expect(201);
+      expect(wallet.body.paymentMethod).toBe(BookingPaymentMethod.PAY_NOW);
+      expect(wallet.body.paymentStatus).toBe(BookingPaymentStatus.PAID);
+      expect(wallet.body.farePayment).toBeNull();
     });
   });
 });

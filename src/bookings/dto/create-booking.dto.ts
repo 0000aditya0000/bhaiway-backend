@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsEnum,
   IsInt,
@@ -16,6 +16,8 @@ import { CouponChargeScope } from '../../coupons/enums/coupon.enums';
 import {
   BookingFarePayment,
   BookingPaymentMethod,
+  BookingPaymentMethodAlias,
+  canonicalizeBookingPaymentMethod,
 } from '../enums/booking.enums';
 
 export class CreateBookingDto {
@@ -31,13 +33,18 @@ export class CreateBookingDto {
   seats!: number;
 
   @ApiProperty({
-    enum: BookingPaymentMethod,
-    enumName: 'BookingPaymentMethod',
-    example: BookingPaymentMethod.PAY_LATER,
+    enum: [
+      ...Object.values(BookingPaymentMethod),
+      ...Object.values(BookingPaymentMethodAlias),
+    ],
+    example: BookingPaymentMethodAlias.WALLET,
     description:
-      'REGULAR: PAY_NOW or PAY_LATER. COMMUTE: always charged upfront (send PAY_NOW; paymentMethod is ignored except ASSURED_DEPOSIT is rejected). ' +
-      'ASSURED deposit booking: ASSURED_DEPOSIT (mandatory). After ALLOW_REGULAR_RIDERS, remaining Assured seats may use PAY_NOW/PAY_LATER without deposit.',
+      'REGULAR: WALLET (alias PAY_NOW) debits BhaiWay Wallet at booking; PAY_AFTER_RIDE (alias PAY_LATER) defers fare until after the trip. ' +
+      'COMMUTE: always charged upfront (send PAY_NOW or WALLET; paymentMethod is ignored except ASSURED_DEPOSIT is rejected). ' +
+      'ASSURED deposit booking: ASSURED_DEPOSIT (mandatory). After ALLOW_REGULAR_RIDERS, remaining Assured seats may use WALLET/PAY_NOW or PAY_AFTER_RIDE/PAY_LATER without deposit. ' +
+      'WALLET and PAY_AFTER_RIDE are request aliases only; stored paymentMethod is PAY_NOW or PAY_LATER.',
   })
+  @Transform(({ value }) => canonicalizeBookingPaymentMethod(value))
   @IsEnum(BookingPaymentMethod)
   paymentMethod!: BookingPaymentMethod;
 
