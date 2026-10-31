@@ -388,6 +388,66 @@ describe('Driver Assured deposit coupons (integration)', () => {
     expect(minRes.body.code).toBe('COUPON_MIN_AMOUNT_NOT_MET');
   });
 
+  it('accepts ALL audience driver-deposit coupons and does not consume on preview', async () => {
+    const driver = await fundedDriver();
+    await ensureAdmin(driver.login.user.id);
+    const { code, created } = await createDriverCoupon(driver.login.user.id, {
+      applicableTo: CouponApplicableTo.ALL,
+    });
+
+    const preview = await request(app.getHttpServer())
+      .post('/coupons/driver/preview')
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .send({
+        code,
+        vehicleId: driver.vehicle.id,
+        totalSeats: 4,
+        pricePerSeat: 500,
+      })
+      .expect(201);
+    expect(preview.body.valid).toBe(true);
+    expect(preview.body.applicableTo).toBe(CouponApplicableTo.ALL);
+    expect(preview.body.finalAmount).toBe('90');
+
+    const row = await dataSource.getRepository(Coupon).findOneByOrFail({
+      id: created.id as string,
+    });
+    expect(row.reservedCount).toBe(0);
+    expect(row.redeemedCount).toBe(0);
+    expect(
+      await dataSource.getRepository(CouponRedemption).count({
+        where: { couponId: created.id as string },
+      }),
+    ).toBe(0);
+  });
+
+  it('rejects invalid and rider-only codes on driver validate', async () => {
+    const driver = await fundedDriver();
+    await ensureAdmin(driver.login.user.id);
+    const riders = await createDriverCoupon(driver.login.user.id, {
+      applicableTo: CouponApplicableTo.RIDERS_ONLY,
+    });
+    const body = {
+      vehicleId: driver.vehicle.id,
+      totalSeats: 4,
+      pricePerSeat: 500,
+    };
+
+    const missing = await request(app.getHttpServer())
+      .post('/coupons/driver/validate')
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .send({ code: 'NOPE1234', ...body })
+      .expect(404);
+    expect(missing.body.code).toBe('COUPON_NOT_FOUND');
+
+    const riderOnly = await request(app.getHttpServer())
+      .post('/coupons/driver/validate')
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .send({ code: riders.code, ...body })
+      .expect(422);
+    expect(riderOnly.body.code).toBe('COUPON_RIDERS_ONLY');
+  });
+
   it('redeems a driver coupon atomically with the Assured deposit hold', async () => {
     const driver = await fundedDriver();
     await ensureAdmin(driver.login.user.id);

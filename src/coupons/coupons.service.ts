@@ -38,6 +38,7 @@ import {
 } from './errors/coupon.errors';
 import {
   CouponActorContext,
+  CouponApplicableTo,
   CouponAudience,
   CouponChargeScope,
   CouponRideTypeScope,
@@ -501,9 +502,15 @@ export class CouponsService {
     qb.andWhere(
       '(c.applicable_to IS NULL OR c.applicable_to IN (:...driverApplicableTo))',
       { driverApplicableTo: DRIVER_LISTING_APPLICABLE_TO },
-    ).andWhere('c.charge_scope = :driverDepositCharge', {
-      driverDepositCharge: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
-    });
+    ).andWhere(
+      // DRIVERS_ONLY always surfaces in driver listing. ALL coupons appear
+      // when they target the driver Assured deposit (or audience is missing).
+      '(c.applicable_to = :driversOnly OR c.charge_scope = :driverDepositCharge)',
+      {
+        driversOnly: CouponApplicableTo.DRIVERS_ONLY,
+        driverDepositCharge: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
+      },
+    );
   }
 
   private async paginateOffers(

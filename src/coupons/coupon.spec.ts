@@ -1330,6 +1330,86 @@ describe('Coupon catalog (integration)', () => {
       expect(driverIds).not.toContain(riderOnly.created.id);
     });
 
+    it('excludes inactive and expired coupons from rider and driver listings', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const token = await login(user.userId);
+      const inactive = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.ALL,
+        { chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT },
+      );
+      await request(app.getHttpServer())
+        .patch(`/admin/coupons/${inactive.created.id as string}/status`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ isActive: false })
+        .expect(200);
+
+      const expired = await couponsService.createAdmin(user.userId, {
+        code: `EXP${Date.now().toString(36).toUpperCase()}`,
+        title: 'Expired driver',
+        benefitType: CouponBenefitType.FIXED_DISCOUNT,
+        benefitValue: '10',
+        rideTypeScope: CouponRideTypeScope.ALL,
+        chargeScope: CouponChargeScope.DRIVER_ASSURED_DEPOSIT,
+        audience: CouponAudience.PUBLIC,
+        applicableTo: CouponApplicableTo.DRIVERS_ONLY,
+        startsAt: new Date(Date.now() - 7 * 24 * 3600_000).toISOString(),
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+      couponIds.push(expired.id as string);
+
+      const driverList = await request(app.getHttpServer())
+        .get('/coupons/driver/public')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const driverIds = driverList.body.items.map((c: { id: string }) => c.id);
+      expect(driverIds).not.toContain(inactive.created.id);
+      expect(driverIds).not.toContain(expired.id);
+
+      const riderInactive = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.RIDERS_ONLY,
+      );
+      await request(app.getHttpServer())
+        .patch(`/admin/coupons/${riderInactive.created.id as string}/status`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ isActive: false })
+        .expect(200);
+      const riderList = await request(app.getHttpServer())
+        .get('/coupons/public')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      expect(
+        riderList.body.items.map((c: { id: string }) => c.id),
+      ).not.toContain(riderInactive.created.id);
+    });
+
+    it('lists a DRIVERS_ONLY coupon even when chargeScope is not the new driver deposit value', async () => {
+      const user = await trackUser();
+      await ensureAdmin(user.userId);
+      const token = await login(user.userId);
+      const legacy = await createAudienceCoupon(
+        user.userId,
+        CouponApplicableTo.DRIVERS_ONLY,
+        { chargeScope: CouponChargeScope.RIDE_FARE },
+      );
+      const driverList = await request(app.getHttpServer())
+        .get('/coupons/driver/public')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      expect(driverList.body.items.map((c: { id: string }) => c.id)).toContain(
+        legacy.created.id,
+      );
+      const riderList = await request(app.getHttpServer())
+        .get('/coupons/public')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      expect(riderList.body.items.map((c: { id: string }) => c.id)).not.toContain(
+        legacy.created.id,
+      );
+    });
+
     it('rejects driver-deposit coupons on rider booking context', async () => {
       const user = await trackUser();
       await ensureAdmin(user.userId);
