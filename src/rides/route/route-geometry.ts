@@ -25,6 +25,8 @@ const PROJECTION_DEDUPE_METERS = 75;
 /** Configurable geographic flexibility allowances. */
 export const DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM = 30;
 export const DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM = 50;
+export const MAX_BACKWARD_PICKUP_ALLOWANCE_KM = 100;
+export const MAX_DESTINATION_EXTENSION_ALLOWANCE_KM = 150;
 export const BACKWARD_PICKUP_ALLOWANCE_METERS =
   DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM * 1_000;
 export const DESTINATION_EXTENSION_ALLOWANCE_METERS =
@@ -49,6 +51,9 @@ export interface RouteMatchResult {
   requiresIndependentPickupTravel: boolean;
   requiresIndependentDestinationTravel: boolean;
   score: number;
+  distanceCalculationMethod?: 'ROAD_NETWORK' | 'GEODESIC';
+  roadDistanceVerified?: boolean;
+  routingProvider?: string | null;
 }
 
 export interface LatLng {
@@ -693,12 +698,31 @@ function evaluateBackwardPickupCandidate(params: {
   source: LatLng;
   route: LatLng[];
   backwardPickupAllowanceMeters: number;
+  verifiedRoadDistanceMeters?: number | null;
 }): { distanceMeters: number; startPoint: LatLng } | null {
-  const { pickup, dropoff, source, route, backwardPickupAllowanceMeters } =
-    params;
+  const {
+    pickup,
+    dropoff,
+    source,
+    route,
+    backwardPickupAllowanceMeters,
+    verifiedRoadDistanceMeters,
+  } = params;
+
+  // Stage 1 straight-line lower-bound check: if straight-line exceeds allowance, road distance definitely exceeds it
   const distToStart = haversineMeters(pickup, source);
   if (distToStart > backwardPickupAllowanceMeters) {
     return null;
+  }
+
+  // If verified road distance is provided: validate road distance <= allowance
+  if (verifiedRoadDistanceMeters !== undefined) {
+    if (
+      verifiedRoadDistanceMeters === null ||
+      verifiedRoadDistanceMeters > backwardPickupAllowanceMeters
+    ) {
+      return null;
+    }
   }
 
   if (!isPointBehindRouteSource(pickup, route)) {
@@ -740,7 +764,7 @@ function evaluateBackwardPickupCandidate(params: {
   }
 
   return {
-    distanceMeters: distToStart,
+    distanceMeters: verifiedRoadDistanceMeters ?? distToStart,
     startPoint: source,
   };
 }
@@ -751,6 +775,7 @@ function evaluateExtendedDestinationCandidate(params: {
   destination: LatLng;
   route: LatLng[];
   destinationExtensionAllowanceMeters: number;
+  verifiedRoadDistanceMeters?: number | null;
 }): { distanceMeters: number; endPoint: LatLng } | null {
   const {
     pickup,
@@ -758,10 +783,23 @@ function evaluateExtendedDestinationCandidate(params: {
     destination,
     route,
     destinationExtensionAllowanceMeters,
+    verifiedRoadDistanceMeters,
   } = params;
+
+  // Stage 1 straight-line lower-bound check: if straight-line exceeds allowance, road distance definitely exceeds it
   const distToEnd = haversineMeters(dropoff, destination);
   if (distToEnd > destinationExtensionAllowanceMeters) {
     return null;
+  }
+
+  // If verified road distance is provided: validate road distance <= allowance
+  if (verifiedRoadDistanceMeters !== undefined) {
+    if (
+      verifiedRoadDistanceMeters === null ||
+      verifiedRoadDistanceMeters > destinationExtensionAllowanceMeters
+    ) {
+      return null;
+    }
   }
 
   if (distToEnd <= ROUTE_ENDPOINT_TOLERANCE_METERS) {
@@ -816,7 +854,7 @@ function evaluateExtendedDestinationCandidate(params: {
   }
 
   return {
-    distanceMeters: distToEnd,
+    distanceMeters: verifiedRoadDistanceMeters ?? distToEnd,
     endPoint: destination,
   };
 }
@@ -834,6 +872,10 @@ export function evaluateFlexibleDriverRouteMatch(params: {
   minProgressMeters?: number;
   backwardPickupAllowanceMeters?: number;
   destinationExtensionAllowanceMeters?: number;
+  verifiedBackwardPickupRoadDistanceMeters?: number | null;
+  verifiedDestinationExtensionRoadDistanceMeters?: number | null;
+  distanceCalculationMethod?: 'ROAD_NETWORK' | 'GEODESIC';
+  routingProvider?: string | null;
 }): RouteMatchResult | null {
   const route = params.routePoints;
   if (
@@ -882,6 +924,9 @@ export function evaluateFlexibleDriverRouteMatch(params: {
       requiresIndependentPickupTravel: false,
       requiresIndependentDestinationTravel: false,
       score: forwardMatch.score,
+      distanceCalculationMethod: 'GEODESIC',
+      roadDistanceVerified: false,
+      routingProvider: null,
     };
   }
 
@@ -941,6 +986,7 @@ export function evaluateFlexibleDriverRouteMatch(params: {
     source,
     route,
     backwardPickupAllowanceMeters: backwardPickupLimit,
+    verifiedRoadDistanceMeters: params.verifiedBackwardPickupRoadDistanceMeters,
   });
 
   const extendedDestination = evaluateExtendedDestinationCandidate({
@@ -949,7 +995,17 @@ export function evaluateFlexibleDriverRouteMatch(params: {
     destination,
     route,
     destinationExtensionAllowanceMeters: destinationExtensionLimit,
+    verifiedRoadDistanceMeters:
+      params.verifiedDestinationExtensionRoadDistanceMeters,
   });
+
+  const isBackwardRoadVerified =
+    params.verifiedBackwardPickupRoadDistanceMeters !== undefined &&
+    params.verifiedBackwardPickupRoadDistanceMeters !== null;
+
+  const isExtendedRoadVerified =
+    params.verifiedDestinationExtensionRoadDistanceMeters !== undefined &&
+    params.verifiedDestinationExtensionRoadDistanceMeters !== null;
 
   // 2. BACKWARD_PICKUP_MATCH: backward pickup + eligible route dropoff
   if (backwardPickup && eligibleDropoffs.length > 0) {
@@ -977,6 +1033,13 @@ export function evaluateFlexibleDriverRouteMatch(params: {
         requiresIndependentDestinationTravel: false,
         score:
           backwardPickup.distanceMeters + bestDropoff.distanceFromRouteMeters,
+        distanceCalculationMethod:
+          params.distanceCalculationMethod ??
+          (isBackwardRoadVerified ? 'ROAD_NETWORK' : 'GEODESIC'),
+        roadDistanceVerified: isBackwardRoadVerified,
+        routingProvider: isBackwardRoadVerified
+          ? (params.routingProvider ?? 'google')
+          : null,
       };
     }
   }
@@ -1008,6 +1071,13 @@ export function evaluateFlexibleDriverRouteMatch(params: {
         score:
           bestPickup.distanceFromRouteMeters +
           extendedDestination.distanceMeters,
+        distanceCalculationMethod:
+          params.distanceCalculationMethod ??
+          (isExtendedRoadVerified ? 'ROAD_NETWORK' : 'GEODESIC'),
+        roadDistanceVerified: isExtendedRoadVerified,
+        routingProvider: isExtendedRoadVerified
+          ? (params.routingProvider ?? 'google')
+          : null,
       };
     }
   }
@@ -1015,6 +1085,8 @@ export function evaluateFlexibleDriverRouteMatch(params: {
   // 4. FLEXIBLE_PICKUP_AND_DESTINATION_MATCH: both backward pickup and extended destination
   if (backwardPickup && extendedDestination) {
     if (routeLength >= minProgress) {
+      const isBothRoadVerified =
+        isBackwardRoadVerified && isExtendedRoadVerified;
       return {
         category: RideMatchCategory.FLEXIBLE_PICKUP_AND_DESTINATION_MATCH,
         isFlexible: true,
@@ -1030,6 +1102,13 @@ export function evaluateFlexibleDriverRouteMatch(params: {
         requiresIndependentDestinationTravel: true,
         score:
           backwardPickup.distanceMeters + extendedDestination.distanceMeters,
+        distanceCalculationMethod:
+          params.distanceCalculationMethod ??
+          (isBothRoadVerified ? 'ROAD_NETWORK' : 'GEODESIC'),
+        roadDistanceVerified: isBothRoadVerified,
+        routingProvider: isBothRoadVerified
+          ? (params.routingProvider ?? 'google')
+          : null,
       };
     }
   }

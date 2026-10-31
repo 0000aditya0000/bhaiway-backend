@@ -32,17 +32,13 @@ import {
 import { Ride } from './entities/ride.entity';
 import { RideType } from './enums/ride.enums';
 import { RidesModule } from './rides.module';
+import { RoadDistanceStatus } from './route/road-routing.interface';
+import { RoadRoutingService } from './route/road-routing.service';
 import { RideMatchCategory } from './route/route-geometry';
 import { withSelectedRoute } from './test/selected-route-test.helpers';
 
 const NOIDA = { latitude: 28.5355, longitude: 77.391 };
 const DEHRADUN = { latitude: 30.3165, longitude: 78.0322 };
-
-// Points along the Noida -> Dehradun vector:
-const PICKUP_15KM_BEHIND = { latitude: 28.4087, longitude: 77.3391 };
-const PICKUP_35KM_BEHIND = { latitude: 28.2397, longitude: 77.2699 };
-const DEST_25KM_BEYOND = { latitude: 30.5278, longitude: 78.1202 };
-const DEST_55KM_BEYOND = { latitude: 30.7813, longitude: 78.2258 };
 
 interface SearchItemResponse {
   id: string;
@@ -62,6 +58,9 @@ interface SearchItemResponse {
     longitude: number;
     name?: string;
   } | null;
+  distanceCalculationMethod?: 'ROAD_NETWORK' | 'GEODESIC';
+  roadDistanceVerified?: boolean;
+  routingProvider?: string | null;
 }
 
 interface SearchResponsePayload {
@@ -71,6 +70,16 @@ interface SearchResponsePayload {
   total: number;
   totalPages: number;
 }
+
+// Points along the Noida -> Dehradun vector:
+const PICKUP_15KM_BEHIND = { latitude: 28.4087, longitude: 77.3391 };
+// 26km straight line behind (road distance ~ 31.2km > 30km allowance)
+const PICKUP_26KM_BEHIND = { latitude: 28.3157, longitude: 77.301 };
+const PICKUP_35KM_BEHIND = { latitude: 28.2397, longitude: 77.2699 };
+const DEST_25KM_BEYOND = { latitude: 30.5278, longitude: 78.1202 };
+// 43km straight line beyond (road distance ~ 51.6km > 50km allowance)
+const DEST_43KM_BEYOND = { latitude: 30.6799, longitude: 78.1836 };
+const DEST_55KM_BEYOND = { latitude: 30.7813, longitude: 78.2258 };
 
 describe('Flexible Route Search (GET /rides/search integration)', () => {
   let app: INestApplication;
@@ -279,7 +288,7 @@ describe('Flexible Route Search (GET /rides/search integration)', () => {
     return res.body as SearchResponsePayload;
   }
 
-  it('Backward pickup (15 km behind source): discovers ride with BACKWARD_PICKUP_MATCH metadata', async () => {
+  it('Backward pickup (15 km behind source): discovers ride with BACKWARD_PICKUP_MATCH metadata and road network distance', async () => {
     const { ride } = await publishRide();
 
     const body = await searchRides(passengerAccessToken, {
@@ -298,8 +307,12 @@ describe('Flexible Route Search (GET /rides/search integration)', () => {
     expect(hit?.isFlexibleMatch).toBe(true);
     expect(hit?.requiresIndependentPickupTravel).toBe(true);
     expect(hit?.requiresIndependentDestinationTravel).toBe(false);
-    expect(hit?.pickupFlexibilityDistanceKm).toBeCloseTo(15.0, 0);
+    // Road distance is ~1.2x straight line distance (18 km road distance vs 15 km straight-line)
+    expect(hit?.pickupFlexibilityDistanceKm).toBeCloseTo(18.0, 0);
     expect(hit?.destinationExtensionDistanceKm).toBeNull();
+    expect(hit?.distanceCalculationMethod).toBe('ROAD_NETWORK');
+    expect(hit?.roadDistanceVerified).toBe(true);
+    expect(hit?.routingProvider).toBeDefined();
     expect(hit?.actualDriverPickupLocation).toEqual({
       latitude: NOIDA.latitude,
       longitude: NOIDA.longitude,
@@ -310,6 +323,23 @@ describe('Flexible Route Search (GET /rides/search integration)', () => {
       longitude: DEHRADUN.longitude,
       name: 'Dehradun',
     });
+  });
+
+  it('Backward pickup where straight-line distance is <= 30 km (26 km) but road distance exceeds 30 km (31.2 km): rejects ride', async () => {
+    const { ride } = await publishRide();
+
+    const body = await searchRides(passengerAccessToken, {
+      source: 'Behind Noida',
+      destination: 'Dehradun',
+      date: departureDate,
+      pickupLatitude: PICKUP_26KM_BEHIND.latitude,
+      pickupLongitude: PICKUP_26KM_BEHIND.longitude,
+      dropoffLatitude: DEHRADUN.latitude,
+      dropoffLongitude: DEHRADUN.longitude,
+    });
+
+    const hit = body.items.find((item) => item.id === ride.id);
+    expect(hit).toBeUndefined();
   });
 
   it('Backward pickup (> 30 km behind source): rejects and does not discover ride', async () => {
@@ -329,7 +359,7 @@ describe('Flexible Route Search (GET /rides/search integration)', () => {
     expect(hit).toBeUndefined();
   });
 
-  it('Destination extension (25 km beyond destination): discovers ride with EXTENDED_DESTINATION_MATCH metadata', async () => {
+  it('Destination extension (25 km beyond destination): discovers ride with EXTENDED_DESTINATION_MATCH metadata and road network distance', async () => {
     const { ride } = await publishRide();
 
     const body = await searchRides(passengerAccessToken, {
@@ -349,7 +379,28 @@ describe('Flexible Route Search (GET /rides/search integration)', () => {
     expect(hit?.requiresIndependentPickupTravel).toBe(false);
     expect(hit?.requiresIndependentDestinationTravel).toBe(true);
     expect(hit?.pickupFlexibilityDistanceKm).toBeNull();
-    expect(hit?.destinationExtensionDistanceKm).toBeCloseTo(25.0, 0);
+    // Road distance is ~1.2x straight line distance (30 km road distance vs 25 km straight-line)
+    expect(hit?.destinationExtensionDistanceKm).toBeCloseTo(30.0, 0);
+    expect(hit?.distanceCalculationMethod).toBe('ROAD_NETWORK');
+    expect(hit?.roadDistanceVerified).toBe(true);
+    expect(hit?.routingProvider).toBeDefined();
+  });
+
+  it('Destination extension where straight-line distance is <= 50 km (43 km) but road distance exceeds 50 km (51.6 km): rejects ride', async () => {
+    const { ride } = await publishRide();
+
+    const body = await searchRides(passengerAccessToken, {
+      source: 'Noida',
+      destination: 'Beyond Dehradun',
+      date: departureDate,
+      pickupLatitude: NOIDA.latitude,
+      pickupLongitude: NOIDA.longitude,
+      dropoffLatitude: DEST_43KM_BEYOND.latitude,
+      dropoffLongitude: DEST_43KM_BEYOND.longitude,
+    });
+
+    const hit = body.items.find((item) => item.id === ride.id);
+    expect(hit).toBeUndefined();
   });
 
   it('Destination extension (> 50 km beyond destination): rejects and does not discover ride', async () => {
@@ -390,8 +441,11 @@ describe('Flexible Route Search (GET /rides/search integration)', () => {
     expect(hit?.isFlexibleMatch).toBe(true);
     expect(hit?.requiresIndependentPickupTravel).toBe(true);
     expect(hit?.requiresIndependentDestinationTravel).toBe(true);
-    expect(hit?.pickupFlexibilityDistanceKm).toBeCloseTo(15.0, 0);
-    expect(hit?.destinationExtensionDistanceKm).toBeCloseTo(25.0, 0);
+    expect(hit?.pickupFlexibilityDistanceKm).toBeCloseTo(18.0, 0);
+    expect(hit?.destinationExtensionDistanceKm).toBeCloseTo(30.0, 0);
+    expect(hit?.distanceCalculationMethod).toBe('ROAD_NETWORK');
+    expect(hit?.roadDistanceVerified).toBe(true);
+    expect(hit?.routingProvider).toBeDefined();
   });
 
   it('Ranking priority: Normal forward match strictly outranks backward pickup match', async () => {
@@ -435,6 +489,76 @@ describe('Flexible Route Search (GET /rides/search integration)', () => {
     expect(body.items[indexB].matchType).toBe(
       RideMatchCategory.BACKWARD_PICKUP_MATCH,
     );
+  });
+
+  it('Routing provider failure/timeout: preserves normal forward matches and gracefully rejects unverified flexible matches', async () => {
+    // 1. Publish normal forward ride (Noida -> Dehradun)
+    const forwardRide = await publishRide({
+      source: 'Noida Forward',
+      sourceLatitude: NOIDA.latitude,
+      sourceLongitude: NOIDA.longitude,
+      destinationLatitude: DEHRADUN.latitude,
+      destinationLongitude: DEHRADUN.longitude,
+      departureTime: '11:00',
+    });
+
+    const roadRoutingService = moduleRef.get(RoadRoutingService);
+    // Mock getDrivingDistances to simulate provider failure / timeout
+    const spy = jest
+      .spyOn(roadRoutingService, 'getDrivingDistances')
+      .mockResolvedValue(
+        new Map([
+          [
+            `${PICKUP_15KM_BEHIND.latitude.toFixed(4)},${PICKUP_15KM_BEHIND.longitude.toFixed(4)}->${NOIDA.latitude.toFixed(4)},${NOIDA.longitude.toFixed(4)}`,
+            {
+              distanceMeters: null,
+              durationSeconds: null,
+              status: RoadDistanceStatus.PROVIDER_ERROR,
+              source: 'mock',
+              provider: 'mock',
+            },
+          ],
+        ]),
+      );
+
+    try {
+      // Search from PICKUP_15KM_BEHIND: flexible match requires road verification, which failed
+      const body = await searchRides(passengerAccessToken, {
+        source: 'Pickup Behind',
+        destination: 'Dehradun',
+        date: departureDate,
+        pickupLatitude: PICKUP_15KM_BEHIND.latitude,
+        pickupLongitude: PICKUP_15KM_BEHIND.longitude,
+        dropoffLatitude: DEHRADUN.latitude,
+        dropoffLongitude: DEHRADUN.longitude,
+      });
+
+      // Flexible candidate is safely rejected because road routing returned PROVIDER_ERROR / null distance
+      const flexibleHit = body.items.find(
+        (item) => item.id === forwardRide.ride.id,
+      );
+      expect(flexibleHit).toBeUndefined();
+
+      // Normal forward match (Noida -> Dehradun) is completely unaffected
+      const forwardBody = await searchRides(passengerAccessToken, {
+        source: 'Noida',
+        destination: 'Dehradun',
+        date: departureDate,
+        pickupLatitude: NOIDA.latitude,
+        pickupLongitude: NOIDA.longitude,
+        dropoffLatitude: DEHRADUN.latitude,
+        dropoffLongitude: DEHRADUN.longitude,
+      });
+
+      const forwardHit = forwardBody.items.find(
+        (item) => item.id === forwardRide.ride.id,
+      );
+      expect(forwardHit).toBeDefined();
+      expect(forwardHit?.matchType).toBe(RideMatchCategory.FORWARD_ROUTE_MATCH);
+      expect(forwardHit?.roadDistanceVerified).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('Preserves exact place-name text search with backward compatibility (no coordinates)', async () => {

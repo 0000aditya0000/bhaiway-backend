@@ -245,7 +245,7 @@ export class RideSearchItemDto {
   @ApiPropertyOptional({
     nullable: true,
     description:
-      'Independent travel distance in km from rider pickup to driver starting point (BACKWARD_PICKUP_MATCH / FLEXIBLE_PICKUP_AND_DESTINATION_MATCH only). Null otherwise.',
+      'Approximate independent geodesic travel distance in km (straight-line Haversine distance) from rider pickup to driver starting point (BACKWARD_PICKUP_MATCH / FLEXIBLE_PICKUP_AND_DESTINATION_MATCH only). Null otherwise.',
     example: 12.5,
   })
   pickupFlexibilityDistanceKm?: number | null;
@@ -253,7 +253,7 @@ export class RideSearchItemDto {
   @ApiPropertyOptional({
     nullable: true,
     description:
-      'Independent travel distance in km from driver dropoff to rider destination (EXTENDED_DESTINATION_MATCH / FLEXIBLE_PICKUP_AND_DESTINATION_MATCH only). Null otherwise.',
+      'Approximate independent geodesic travel distance in km (straight-line Haversine distance) from driver dropoff to rider destination (EXTENDED_DESTINATION_MATCH / FLEXIBLE_PICKUP_AND_DESTINATION_MATCH only). Null otherwise.',
     example: 24.3,
   })
   destinationExtensionDistanceKm?: number | null;
@@ -287,6 +287,29 @@ export class RideSearchItemDto {
     example: false,
   })
   requiresIndependentDestinationTravel?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Method used for independent travel distance calculation: ROAD_NETWORK or GEODESIC.',
+    example: 'ROAD_NETWORK',
+    nullable: true,
+  })
+  distanceCalculationMethod?: 'ROAD_NETWORK' | 'GEODESIC' | null;
+
+  @ApiPropertyOptional({
+    description:
+      'True when the flexible independent driving distance was verified via the road routing provider',
+    example: true,
+  })
+  roadDistanceVerified?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Name of routing provider that verified road distance (e.g. google, osrm, mock). Null for normal forward matches.',
+    example: 'google',
+    nullable: true,
+  })
+  routingProvider?: string | null;
 }
 
 export class RideSearchPageDto {

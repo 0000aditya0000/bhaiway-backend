@@ -158,11 +158,18 @@ import { supportsTripLifecycle } from './ride-trip-lifecycle';
 import { computeCommuteRiderPricePerSeat } from './commute-fare.math';
 import { computeCommuteRouteMatchPercentage } from './commute-route-match.math';
 import { RideDirectionsService } from './route/ride-directions.service';
+import {
+  coordinatePairKey,
+  RoadRoutingService,
+} from './route/road-routing.service';
+import type { CoordinatePair } from './route/road-routing.interface';
 import { RouteSelectionService } from './route/route-selection.service';
 import {
   decodePolyline,
   DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM,
   DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM,
+  MAX_BACKWARD_PICKUP_ALLOWANCE_KM,
+  MAX_DESTINATION_EXTENSION_ALLOWANCE_KM,
   evaluateFlexibleDriverRouteMatch,
   isValidLatLng,
   LatLng,
@@ -227,40 +234,46 @@ export class RidesService {
     private readonly commuteRideSeriesService: CommuteRideSeriesService,
     @Optional()
     private readonly configService?: ConfigService,
+    @Optional()
+    private readonly roadRoutingService?: RoadRoutingService,
   ) {}
 
   private getBackwardPickupAllowanceMeters(): number {
     const raw: unknown =
       this.configService?.get('BACKWARD_PICKUP_ALLOWANCE_KM') ??
       process.env.BACKWARD_PICKUP_ALLOWANCE_KM;
-    const km =
-      typeof raw === 'number'
-        ? raw
-        : typeof raw === 'string' && raw.trim().length > 0
-          ? Number(raw)
-          : DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM;
-    return (
-      (Number.isFinite(km) && km > 0
-        ? km
-        : DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM) * 1_000
-    );
+    if (
+      raw === undefined ||
+      raw === null ||
+      (typeof raw === 'string' && raw.trim().length === 0)
+    ) {
+      return DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM * 1_000;
+    }
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num < 0) {
+      return DEFAULT_BACKWARD_PICKUP_ALLOWANCE_KM * 1_000;
+    }
+    const clampedKm = Math.min(num, MAX_BACKWARD_PICKUP_ALLOWANCE_KM);
+    return clampedKm * 1_000;
   }
 
   private getDestinationExtensionAllowanceMeters(): number {
     const raw: unknown =
       this.configService?.get('DESTINATION_EXTENSION_ALLOWANCE_KM') ??
       process.env.DESTINATION_EXTENSION_ALLOWANCE_KM;
-    const km =
-      typeof raw === 'number'
-        ? raw
-        : typeof raw === 'string' && raw.trim().length > 0
-          ? Number(raw)
-          : DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM;
-    return (
-      (Number.isFinite(km) && km > 0
-        ? km
-        : DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM) * 1_000
-    );
+    if (
+      raw === undefined ||
+      raw === null ||
+      (typeof raw === 'string' && raw.trim().length === 0)
+    ) {
+      return DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM * 1_000;
+    }
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num < 0) {
+      return DEFAULT_DESTINATION_EXTENSION_ALLOWANCE_KM * 1_000;
+    }
+    const clampedKm = Math.min(num, MAX_DESTINATION_EXTENSION_ALLOWANCE_KM);
+    return clampedKm * 1_000;
   }
 
   async cancelByDriver(
@@ -1656,6 +1669,12 @@ export class RidesService {
       match: RouteMatchResult;
     };
     const matched: MatchedEntry[] = [];
+    type Stage1Candidate = {
+      ride: Ride;
+      stage1Match: RouteMatchResult;
+    };
+    const stage1FlexibleCandidates: Stage1Candidate[] = [];
+
     const batchSize = 200;
     let offset = 0;
     for (;;) {
@@ -1672,12 +1691,100 @@ export class RidesService {
           destinationExtensionAllowanceMeters,
         );
         if (match) {
-          matched.push({ ride, match });
+          if (match.category === RideMatchCategory.FORWARD_ROUTE_MATCH) {
+            matched.push({ ride, match });
+          } else {
+            stage1FlexibleCandidates.push({ ride, stage1Match: match });
+          }
         }
       }
       offset += batch.length;
       if (batch.length < batchSize) {
         break;
+      }
+    }
+
+    // Stage 2: Road-network driving distance verification for flexible candidates
+    if (stage1FlexibleCandidates.length > 0) {
+      if (this.roadRoutingService) {
+        const pairsToVerify: CoordinatePair[] = [];
+        for (const candidate of stage1FlexibleCandidates) {
+          const m = candidate.stage1Match;
+          if (m.requiresIndependentPickupTravel) {
+            pairsToVerify.push({
+              origin: pickup,
+              destination: m.actualDriverPickupLocation,
+            });
+          }
+          if (m.requiresIndependentDestinationTravel) {
+            pairsToVerify.push({
+              origin: m.actualDriverDropLocation,
+              destination: dropoff,
+            });
+          }
+        }
+
+        const roadResults =
+          await this.roadRoutingService.getDrivingDistances(pairsToVerify);
+
+        for (const candidate of stage1FlexibleCandidates) {
+          const m = candidate.stage1Match;
+          let verifiedPickupRoadMeters: number | null | undefined = undefined;
+          let verifiedDropoffRoadMeters: number | null | undefined = undefined;
+          let failed = false;
+          let providerUsed: string | null = null;
+
+          if (m.requiresIndependentPickupTravel) {
+            const key = coordinatePairKey(pickup, m.actualDriverPickupLocation);
+            const roadRes = roadResults.get(key);
+            if (
+              !roadRes ||
+              roadRes.status !== 'OK' ||
+              roadRes.distanceMeters == null
+            ) {
+              failed = true;
+            } else {
+              verifiedPickupRoadMeters = roadRes.distanceMeters;
+              providerUsed = roadRes.provider;
+            }
+          }
+
+          if (m.requiresIndependentDestinationTravel) {
+            const key = coordinatePairKey(m.actualDriverDropLocation, dropoff);
+            const roadRes = roadResults.get(key);
+            if (
+              !roadRes ||
+              roadRes.status !== 'OK' ||
+              roadRes.distanceMeters == null
+            ) {
+              failed = true;
+            } else {
+              verifiedDropoffRoadMeters = roadRes.distanceMeters;
+              providerUsed = roadRes.provider;
+            }
+          }
+
+          if (!failed) {
+            const verifiedMatch = this.evaluateRideRouteMatch(
+              candidate.ride,
+              pickup,
+              dropoff,
+              backwardPickupAllowanceMeters,
+              destinationExtensionAllowanceMeters,
+              verifiedPickupRoadMeters,
+              verifiedDropoffRoadMeters,
+              'ROAD_NETWORK',
+              providerUsed,
+            );
+            if (verifiedMatch) {
+              matched.push({ ride: candidate.ride, match: verifiedMatch });
+            }
+          }
+        }
+      } else {
+        for (const candidate of stage1FlexibleCandidates) {
+          matched.push({ ride: candidate.ride, match: candidate.stage1Match });
+        }
       }
     }
 
@@ -2313,6 +2420,10 @@ export class RidesService {
     dropoff: LatLng,
     backwardPickupAllowanceMeters?: number,
     destinationExtensionAllowanceMeters?: number,
+    verifiedBackwardPickupRoadDistanceMeters?: number | null,
+    verifiedDestinationExtensionRoadDistanceMeters?: number | null,
+    distanceCalculationMethod?: 'ROAD_NETWORK' | 'GEODESIC',
+    routingProvider?: string | null,
   ): RouteMatchResult | null {
     if (!ride.routePolyline) {
       this.logger.warn(
@@ -2348,6 +2459,10 @@ export class RidesService {
             : routePoints[routePoints.length - 1],
         backwardPickupAllowanceMeters,
         destinationExtensionAllowanceMeters,
+        verifiedBackwardPickupRoadDistanceMeters,
+        verifiedDestinationExtensionRoadDistanceMeters,
+        distanceCalculationMethod,
+        routingProvider,
       });
     } catch (error) {
       this.logger.warn(
@@ -3227,6 +3342,9 @@ export class RidesService {
         requiresIndependentDestinationTravel: match
           ? match.requiresIndependentDestinationTravel
           : false,
+        distanceCalculationMethod: match?.distanceCalculationMethod ?? null,
+        roadDistanceVerified: match?.roadDistanceVerified ?? false,
+        routingProvider: match?.routingProvider ?? null,
         driver: {
           id: ride.driverId,
           displayName: profile?.displayName ?? profile?.firstName ?? null,

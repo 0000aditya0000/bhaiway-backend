@@ -30,6 +30,7 @@ import { RegularCancellationModule } from './regular-cancellation.module';
 import { RidesController } from './rides.controller';
 import { RidesService } from './rides.service';
 import { RideDirectionsService } from './route/ride-directions.service';
+import { RoadRoutingService } from './route/road-routing.service';
 import { RouteSelectionService } from './route/route-selection.service';
 
 @Module({
@@ -67,8 +68,9 @@ import { RouteSelectionService } from './route/route-selection.service';
     RidesService,
     CommuteRideSeriesService,
     RideDirectionsService,
+    RoadRoutingService,
     RouteSelectionService,
   ],
-  exports: [TypeOrmModule, RidesService],
+  exports: [TypeOrmModule, RidesService, RoadRoutingService],
 })
 export class RidesModule {}
