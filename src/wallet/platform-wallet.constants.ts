@@ -1,6 +1,7 @@
 /** Fixed system identities for BhaiWay platform funds (not a normal user). */
 export const PLATFORM_USER_ID = '00000000-0000-4000-8000-000000000001';
 export const PLATFORM_WALLET_ID = '00000000-0000-4000-8000-000000000002';
+export const PLATFORM_BALANCE_ID = '00000000-0000-4000-8000-000000000003';
 /** Seeded platform account phone — must never authenticate. */
 export const PLATFORM_PHONE = '+10000000000';
 

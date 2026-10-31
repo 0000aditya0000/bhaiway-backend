@@ -19,6 +19,7 @@ import {
 } from '../coupons/entities/user-coupon.entity';
 import { calculateAssuredHalfTime } from '../assured/assured-timing';
 import { SettingsModule } from '../settings/settings.module';
+import { User } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { UserVerification } from '../verification/entities/user-verification.entity';
 import {
@@ -38,7 +39,10 @@ import {
   WalletHoldStatus,
   WalletHoldType,
 } from '../wallet/entities/wallet-hold.entity';
-import { WalletPointSource } from '../wallet/entities/wallet-point-lot.entity';
+import {
+  WalletPointLot,
+  WalletPointSource,
+} from '../wallet/entities/wallet-point-lot.entity';
 import {
   WalletTransaction,
   WalletTransactionType,
@@ -61,6 +65,8 @@ import {
   uniqueIdempotencyKey,
 } from '../wallet/test/wallet-test.helpers';
 import { WalletModule } from '../wallet/wallet.module';
+import { PlatformWalletService } from '../wallet/platform-wallet.service';
+import { getExpectedBalanceBucketsFromLots } from '../wallet/wallet-lot-balance.math';
 import { WalletService } from '../wallet/wallet.service';
 import { Ride } from '../rides/entities/ride.entity';
 import { RideStatus, RideType } from '../rides/enums/ride.enums';
@@ -261,6 +267,105 @@ describe('Financial audit hardening', () => {
 
   it('H2: platform wallet balance reconciles with lots', async () => {
     await assertWalletBalanceMatchesLots(dataSource, PLATFORM_WALLET_ID);
+  });
+
+  it('repairs a missing platform wallet_balances row from existing lots', async () => {
+    const platformWalletService = moduleRef.get(PlatformWalletService);
+    const balanceRepo = dataSource.getRepository(WalletBalance);
+    const lotRepo = dataSource.getRepository(WalletPointLot);
+    const expired = await lotRepo.save(
+      lotRepo.create({
+        walletId: PLATFORM_WALLET_ID,
+        sourceType: WalletPointSource.PURCHASED,
+        originalAmount: '40',
+        availableAmount: '40',
+        heldAmount: '0',
+        expiresAt: new Date(Date.now() - 60_000),
+        referenceType: 'TEST_EXPIRED_LOT',
+        referenceId: uniqueIdempotencyKey('plat-expired'),
+      }),
+    );
+
+    try {
+      const lots = await lotRepo.find({
+        where: { walletId: PLATFORM_WALLET_ID },
+      });
+      const expected = getExpectedBalanceBucketsFromLots(lots, new Date());
+      await balanceRepo.delete({ walletId: PLATFORM_WALLET_ID });
+      expect(
+        await balanceRepo.findOneBy({ walletId: PLATFORM_WALLET_ID }),
+      ).toBeNull();
+
+      await platformWalletService.ensureInitialized();
+
+      const repaired = await balanceRepo.findOneByOrFail({
+        walletId: PLATFORM_WALLET_ID,
+      });
+      expect(repaired.purchasedAvailable).toBe(
+        expected.PURCHASED_AVAILABLE.toString(),
+      );
+      expect(repaired.purchasedHeld).toBe(expected.PURCHASED_HELD.toString());
+      expect(repaired.promotionalHeld).toBe(
+        expected.PROMOTIONAL_HELD.toString(),
+      );
+      await assertWalletBalanceMatchesLots(dataSource, PLATFORM_WALLET_ID);
+    } finally {
+      await lotRepo.delete({ id: expired.id });
+    }
+  });
+
+  it('does not overwrite an existing platform balance or re-seed opening float', async () => {
+    const platformWalletService = moduleRef.get(PlatformWalletService);
+    const balanceRepo = dataSource.getRepository(WalletBalance);
+    const lotRepo = dataSource.getRepository(WalletPointLot);
+    const txRepo = dataSource.getRepository(WalletTransaction);
+    const before = await balanceRepo.findOneByOrFail({
+      walletId: PLATFORM_WALLET_ID,
+    });
+    const lotCountBefore = await lotRepo.count({
+      where: { walletId: PLATFORM_WALLET_ID },
+    });
+    const seedCountBefore = await txRepo.count({
+      where: { idempotencyKey: PLATFORM_SEED_IDEMPOTENCY_KEY },
+    });
+
+    await platformWalletService.ensureInitialized();
+    await platformWalletService.ensureInitialized();
+
+    const after = await balanceRepo.findOneByOrFail({
+      walletId: PLATFORM_WALLET_ID,
+    });
+    expect(after.id).toBe(before.id);
+    expect(after.purchasedAvailable).toBe(before.purchasedAvailable);
+    expect(after.purchasedHeld).toBe(before.purchasedHeld);
+    expect(
+      await lotRepo.count({ where: { walletId: PLATFORM_WALLET_ID } }),
+    ).toBe(lotCountBefore);
+    expect(
+      await txRepo.count({
+        where: { idempotencyKey: PLATFORM_SEED_IDEMPOTENCY_KEY },
+      }),
+    ).toBe(seedCountBefore);
+  });
+
+  it('serializes concurrent ensureInitialized without duplicate platform rows', async () => {
+    const platformWalletService = moduleRef.get(PlatformWalletService);
+    await Promise.all(
+      Array.from({ length: 8 }, () => platformWalletService.ensureInitialized()),
+    );
+
+    const wallets = await dataSource.getRepository(Wallet).count({
+      where: { id: PLATFORM_WALLET_ID },
+    });
+    const balances = await dataSource.getRepository(WalletBalance).count({
+      where: { walletId: PLATFORM_WALLET_ID },
+    });
+    const users = await dataSource.getRepository(User).count({
+      where: { id: PLATFORM_USER_ID },
+    });
+    expect(wallets).toBe(1);
+    expect(balances).toBe(1);
+    expect(users).toBe(1);
   });
 
   it('H3: Assured half-time is stable across process TZ changes', () => {

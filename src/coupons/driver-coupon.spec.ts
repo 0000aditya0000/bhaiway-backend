@@ -27,9 +27,17 @@ import { VehicleType } from '../vehicles/enums/vehicle-type.enum';
 import { VehiclesModule } from '../vehicles/vehicles.module';
 import { VehiclesService } from '../vehicles/vehicles.service';
 import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
-import { WalletHold } from '../wallet/entities/wallet-hold.entity';
+import {
+  WalletHold,
+  WalletHoldStatus,
+} from '../wallet/entities/wallet-hold.entity';
 import { WalletPointSource } from '../wallet/entities/wallet-point-lot.entity';
+import {
+  WalletTransaction,
+  WalletTransactionType,
+} from '../wallet/entities/wallet-transaction.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
+import { PLATFORM_WALLET_ID } from '../wallet/platform-wallet.constants';
 import {
   assertSafeTestDatabaseUrl,
   cleanupTestWallet,
@@ -39,7 +47,7 @@ import {
 import { WalletModule } from '../wallet/wallet.module';
 import { WalletService } from '../wallet/wallet.service';
 import { Ride } from '../rides/entities/ride.entity';
-import { RideType } from '../rides/enums/ride.enums';
+import { RideStatus, RideType } from '../rides/enums/ride.enums';
 import { RidesModule } from '../rides/rides.module';
 import {
   withAssuredPublishHeaders,
@@ -170,11 +178,26 @@ describe('Driver Assured deposit coupons (integration)', () => {
           where: { driverId: ctx.userId },
         });
         for (const ride of rides) {
+          await dataSource.query(
+            `DELETE FROM assured_lifecycle_events WHERE ride_id = $1`,
+            [ride.id],
+          );
           await dataSource.getRepository(Booking).delete({ rideId: ride.id });
           await dataSource.getRepository(CouponRedemption).delete({
             rideId: ride.id,
           });
         }
+        await dataSource.query(
+          `DELETE FROM notification_email_deliveries
+           WHERE notification_id IN (
+             SELECT id FROM notifications WHERE recipient_user_id = $1
+           )`,
+          [ctx.userId],
+        );
+        await dataSource.query(
+          `DELETE FROM notifications WHERE recipient_user_id = $1`,
+          [ctx.userId],
+        );
         await dataSource.getRepository(Ride).delete({ driverId: ctx.userId });
         await dataSource.getRepository(Vehicle).delete({ userId: ctx.userId });
         await dataSource.getRepository(UserVerification).delete({
@@ -684,5 +707,227 @@ describe('Driver Assured deposit coupons (integration)', () => {
         originalAmount: '1',
       })
       .expect(400);
+  });
+
+  it('cancels an Assured ride without a coupon and forfeits the held deposit', async () => {
+    const driver = await fundedDriver();
+    const published = await publishAssured(
+      driver.login.accessToken,
+      driver.vehicle.id,
+    );
+    expect(published.body.assuredDepositAmount).toBe('100');
+
+    const cancelled = await request(app.getHttpServer())
+      .post(`/rides/${published.body.id}/cancel`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+    expect(cancelled.body.status).toBe(RideStatus.CANCELLED);
+    expect(cancelled.body.driverDepositForfeited).toBe('100');
+    expect(cancelled.body.platformForfeiture).toBe('100');
+
+    const ride = await dataSource.getRepository(Ride).findOneByOrFail({
+      id: published.body.id,
+    });
+    const hold = await dataSource.getRepository(WalletHold).findOneByOrFail({
+      id: ride.driverDepositHoldId!,
+    });
+    expect(hold.status).toBe(WalletHoldStatus.CONSUMED);
+
+    const retry = await request(app.getHttpServer())
+      .post(`/rides/${published.body.id}/cancel`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+    expect(retry.body.alreadyApplied).toBe(true);
+  });
+
+  it('cancels coupon-discounted Assured deposits using the held amount', async () => {
+    const driver = await fundedDriver();
+    await ensureAdmin(driver.login.user.id);
+    const fixed = await createDriverCoupon(driver.login.user.id, {
+      benefitValue: '10',
+    });
+    const pctDriver = await fundedDriver();
+    await ensureAdmin(pctDriver.login.user.id);
+    const pct = await createDriverCoupon(pctDriver.login.user.id, {
+      benefitType: CouponBenefitType.PERCENTAGE_DISCOUNT,
+      benefitValue: '20',
+      maxDiscountAmount: '15',
+    });
+
+    const fixedRide = await publishAssured(
+      driver.login.accessToken,
+      driver.vehicle.id,
+      { couponCode: fixed.code },
+    );
+    expect(fixedRide.body.assuredDepositAmount).toBe('90');
+    const fixedCancel = await request(app.getHttpServer())
+      .post(`/rides/${fixedRide.body.id}/cancel`)
+      .set('Authorization', `Bearer ${driver.login.accessToken}`)
+      .expect(200);
+    expect(fixedCancel.body.driverDepositForfeited).toBe('90');
+    expect(fixedCancel.body.platformForfeiture).toBe('90');
+
+    const pctRide = await publishAssured(
+      pctDriver.login.accessToken,
+      pctDriver.vehicle.id,
+      { couponCode: pct.code, departureTime: '11:00' },
+    );
+    expect(pctRide.body.assuredDepositAmount).toBe('85');
+    const pctCancel = await request(app.getHttpServer())
+      .post(`/rides/${pctRide.body.id}/cancel`)
+      .set('Authorization', `Bearer ${pctDriver.login.accessToken}`)
+      .expect(200);
+    expect(pctCancel.body.driverDepositForfeited).toBe('85');
+
+    const platformTx = await dataSource.getRepository(WalletTransaction).findOne({
+      where: {
+        walletId: PLATFORM_WALLET_ID,
+        transactionType: WalletTransactionType.ASSURED_PLATFORM_FORFEITURE,
+        referenceId: fixedRide.body.id,
+      },
+    });
+    expect(platformTx?.amount).toBe('90');
+
+    const redemption = await dataSource
+      .getRepository(CouponRedemption)
+      .findOneByOrFail({ id: fixedRide.body.couponRedemptionId });
+    expect(redemption.status).toBe(CouponRedemptionStatus.REDEEMED);
+  });
+
+  it('cancels an Assured ride after repairing a missing platform wallet balance', async () => {
+    const driver = await fundedDriver();
+    const published = await publishAssured(
+      driver.login.accessToken,
+      driver.vehicle.id,
+      { departureTime: '12:00' },
+    );
+    const balanceRepo = dataSource.getRepository(WalletBalance);
+    const before = await balanceRepo.findOneByOrFail({
+      walletId: PLATFORM_WALLET_ID,
+    });
+    await balanceRepo.delete({ walletId: PLATFORM_WALLET_ID });
+
+    try {
+      const cancelled = await request(app.getHttpServer())
+        .post(`/rides/${published.body.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .expect(200);
+      expect(cancelled.body.status).toBe(RideStatus.CANCELLED);
+      expect(cancelled.body.platformForfeiture).toBe('100');
+    } finally {
+      const repaired = await balanceRepo.findOneBy({
+        walletId: PLATFORM_WALLET_ID,
+      });
+      if (!repaired) {
+        await balanceRepo.save(
+          balanceRepo.create({
+            id: before.id,
+            walletId: PLATFORM_WALLET_ID,
+            purchasedAvailable: before.purchasedAvailable,
+            promotionalAvailable: before.promotionalAvailable,
+            driverEarnedAvailable: before.driverEarnedAvailable,
+            purchasedHeld: before.purchasedHeld,
+            promotionalHeld: before.promotionalHeld,
+            driverEarnedHeld: before.driverEarnedHeld,
+          }),
+        );
+      }
+    }
+  });
+
+  it('cancels two Assured rides concurrently without duplicate platform credits', async () => {
+    const driverA = await fundedDriver();
+    const driverB = await fundedDriver();
+    const rideA = await publishAssured(
+      driverA.login.accessToken,
+      driverA.vehicle.id,
+      {
+        departureTime: '14:00',
+        sourceLatitude: 28.5355,
+        sourceLongitude: 77.391,
+        destinationLatitude: 28.6139,
+        destinationLongitude: 77.209,
+      },
+    );
+    const rideB = await publishAssured(
+      driverB.login.accessToken,
+      driverB.vehicle.id,
+      {
+        departureTime: '14:30',
+        sourceLatitude: 19.076,
+        sourceLongitude: 72.8777,
+        destinationLatitude: 18.5204,
+        destinationLongitude: 73.8567,
+      },
+    );
+
+    const [cancelA, cancelB] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/rides/${rideA.body.id}/cancel`)
+        .set('Authorization', `Bearer ${driverA.login.accessToken}`),
+      request(app.getHttpServer())
+        .post(`/rides/${rideB.body.id}/cancel`)
+        .set('Authorization', `Bearer ${driverB.login.accessToken}`),
+    ]);
+    expect(cancelA.status).toBe(200);
+    expect(cancelB.status).toBe(200);
+    expect(cancelA.body.platformForfeiture).toBe('100');
+    expect(cancelB.body.platformForfeiture).toBe('100');
+
+    const platformCredits = await dataSource.getRepository(WalletTransaction).find({
+      where: {
+        walletId: PLATFORM_WALLET_ID,
+        transactionType: WalletTransactionType.ASSURED_PLATFORM_FORFEITURE,
+      },
+    });
+    const forTheseRides = platformCredits.filter(
+      (tx) => tx.referenceId === rideA.body.id || tx.referenceId === rideB.body.id,
+    );
+    expect(forTheseRides).toHaveLength(2);
+    expect(forTheseRides.map((tx) => tx.amount).sort()).toEqual(['100', '100']);
+  });
+
+  it('does not cancel when the driver wallet balance is missing', async () => {
+    const driver = await fundedDriver();
+    const published = await publishAssured(
+      driver.login.accessToken,
+      driver.vehicle.id,
+      { departureTime: '13:00' },
+    );
+    const balanceRepo = dataSource.getRepository(WalletBalance);
+    const snap = await balanceRepo.findOneByOrFail({
+      walletId: driver.wallet.id,
+    });
+    await balanceRepo.delete({ walletId: driver.wallet.id });
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post(`/rides/${published.body.id}/cancel`)
+        .set('Authorization', `Bearer ${driver.login.accessToken}`)
+        .expect(404);
+      expect(String(res.body.message)).toContain('Wallet balance not found');
+      const ride = await dataSource.getRepository(Ride).findOneByOrFail({
+        id: published.body.id,
+      });
+      expect(ride.status).toBe(RideStatus.ASSURANCE_ACTIVE);
+    } finally {
+      const exists = await balanceRepo.findOneBy({
+        walletId: driver.wallet.id,
+      });
+      if (!exists) {
+        await balanceRepo.save(
+          balanceRepo.create({
+            id: snap.id,
+            walletId: snap.walletId,
+            purchasedAvailable: snap.purchasedAvailable,
+            promotionalAvailable: snap.promotionalAvailable,
+            driverEarnedAvailable: snap.driverEarnedAvailable,
+            purchasedHeld: snap.purchasedHeld,
+            promotionalHeld: snap.promotionalHeld,
+            driverEarnedHeld: snap.driverEarnedHeld,
+          }),
+        );
+      }
+    }
   });
 });

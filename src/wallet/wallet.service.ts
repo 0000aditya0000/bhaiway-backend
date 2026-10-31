@@ -48,6 +48,7 @@ import {
   isPlatformUserId,
   isPlatformWalletId,
 } from './platform-wallet.constants';
+import { PlatformWalletService } from './platform-wallet.service';
 
 const CONSUMPTION_SOURCE_ORDER: WalletPointSource[] = [
   WalletPointSource.PROMOTIONAL,
@@ -86,6 +87,8 @@ export class WalletService {
     private readonly walletTransactionRepository: Repository<WalletTransaction>,
     @Optional()
     private readonly notificationsService?: NotificationsService,
+    @Optional()
+    private readonly platformWalletService?: PlatformWalletService,
   ) {}
 
   async creditPoints(input: CreditPointsInput): Promise<WalletOperationResult> {
@@ -124,6 +127,7 @@ export class WalletService {
   ): Promise<WalletOperationResult> {
     this.assertPositiveAmount(input.amount);
     this.assertPlatformWalletAccess(input.walletId, input.userId, input);
+    await this.ensurePlatformWalletBalance(manager, input);
 
     const existingBeforeLock = await this.findTransactionByIdempotencyKey(
       manager,
@@ -230,6 +234,7 @@ export class WalletService {
   ): Promise<WalletOperationResult> {
     this.assertPositiveAmount(input.amount);
     this.assertPlatformWalletAccess(input.walletId, input.userId, input);
+    await this.ensurePlatformWalletBalance(manager, input);
 
     const existingBeforeLock = await this.findTransactionByIdempotencyKey(
       manager,
@@ -880,6 +885,30 @@ export class WalletService {
         'Platform user cannot perform normal wallet operations',
       );
     }
+  }
+
+  /**
+   * Assured forfeiture/partial-fill credits the reserved platform wallet.
+   * If Phase 4 seed is missing a wallet_balances row, recreate only that
+   * canonical account — never a user wallet.
+   */
+  private async ensurePlatformWalletBalance(
+    manager: EntityManager,
+    input: { walletId: string; allowPlatformOperations?: boolean },
+  ): Promise<void> {
+    if (
+      input.allowPlatformOperations !== true ||
+      !isPlatformWalletId(input.walletId)
+    ) {
+      return;
+    }
+    const existing = await manager.getRepository(WalletBalance).findOne({
+      where: { walletId: input.walletId },
+    });
+    if (existing) {
+      return;
+    }
+    await this.platformWalletService?.ensureInitializedInTransaction(manager);
   }
 
   private toAmountString(amount: bigint): string {

@@ -29,6 +29,7 @@ import { WalletHistoryService } from './wallet-history.service';
 import { WalletLotExpiryService } from './wallet-lot-expiry.service';
 import { WalletQueryService } from './wallet-query.service';
 import { WalletReconciliationService } from './wallet-reconciliation.service';
+import { PlatformWalletService } from './platform-wallet.service';
 import { WalletService } from './wallet.service';
 
 @Module({
@@ -61,6 +62,7 @@ import { WalletService } from './wallet.service';
     PaymentWebhookController,
   ],
   providers: [
+    PlatformWalletService,
     WalletService,
     PaymentMethodService,
     WithdrawalService,
@@ -72,6 +74,7 @@ import { WalletService } from './wallet.service';
   ],
   exports: [
     TypeOrmModule,
+    PlatformWalletService,
     WalletService,
     PaymentMethodService,
     WithdrawalService,
