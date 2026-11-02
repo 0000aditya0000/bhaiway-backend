@@ -13,11 +13,23 @@ export enum UserStatus {
   ACTIVE = 'ACTIVE',
   SUSPENDED = 'SUSPENDED',
   DEACTIVATED = 'DEACTIVATED',
+  DELETION_REQUESTED = 'DELETION_REQUESTED',
+  DELETION_ACTION_REQUIRED = 'DELETION_ACTION_REQUIRED',
+  DELETION_APPROVED = 'DELETION_APPROVED',
+  DELETED = 'DELETED',
 }
 
 @Entity('users')
 @Index('IDX_users_status', ['status'])
 @Index('IDX_users_created_at', ['createdAt'])
+@Index('UQ_users_phone_active', ['phone'], {
+  unique: true,
+  where: `"status" != 'DELETED'`,
+})
+@Index('UQ_users_email_active', ['email'], {
+  unique: true,
+  where: `"status" != 'DELETED' AND "email" IS NOT NULL`,
+})
 export class User {
   @PrimaryColumn('uuid')
   id!: string;
@@ -25,7 +37,6 @@ export class User {
   @Column({
     type: 'varchar',
     length: 20,
-    unique: true,
   })
   phone!: string;
 
@@ -40,7 +51,6 @@ export class User {
     type: 'varchar',
     length: 255,
     nullable: true,
-    unique: true,
   })
   email!: string | null;
 

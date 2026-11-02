@@ -12,6 +12,12 @@ import { Repository } from 'typeorm';
 import { AuthenticatedUser } from '../../auth/strategies/jwt.strategy';
 import { AdminUser } from '../entities/admin-user.entity';
 import { ADMIN_PERMISSIONS_KEY } from '../decorators/require-admin-permission.decorator';
+import {
+  ADMIN_PERMISSION_ACCOUNT_DELETIONS_MANAGE,
+  ADMIN_PERMISSION_ACCOUNT_DELETIONS_VIEW,
+  ADMIN_PERMISSION_USERS_MANAGE,
+  ADMIN_PERMISSION_USERS_VIEW,
+} from '../admin.constants';
 
 @Injectable()
 export class AdminPermissionGuard implements CanActivate {
@@ -50,7 +56,21 @@ export class AdminPermissionGuard implements CanActivate {
 
     if (required.length > 0) {
       const granted = new Set(admin.permissions ?? []);
-      const missing = required.filter((p) => !granted.has(p));
+
+      const hasPermission = (perm: string): boolean => {
+        if (granted.has(perm)) {
+          return true;
+        }
+        if (
+          perm === ADMIN_PERMISSION_ACCOUNT_DELETIONS_VIEW &&
+          granted.has(ADMIN_PERMISSION_USERS_VIEW)
+        ) {
+          return true;
+        }
+        return false;
+      };
+
+      const missing = required.filter((p) => !hasPermission(p));
       if (missing.length > 0) {
         throw new ForbiddenException({
           statusCode: 403,

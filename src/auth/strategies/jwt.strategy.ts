@@ -12,10 +12,14 @@ export interface JwtPayload {
   sub: string;
   /** Token version — must match `users.token_version`. Absent ⇒ treated as 0. */
   tv?: number;
+  /** Optional token scope, e.g. 'restricted_deletion' */
+  scope?: string;
 }
 
 export interface AuthenticatedUser {
   userId: string;
+  scope?: string;
+  status?: UserStatus;
 }
 
 @Injectable()
@@ -72,6 +76,15 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       });
     }
 
+    if (user.status === UserStatus.DELETED) {
+      throw new UnauthorizedException({
+        statusCode: 401,
+        code: 'USER_DELETED',
+        message: 'Account has been deleted',
+        error: 'Unauthorized',
+      });
+    }
+
     const tokenVersion = payload.tv ?? 0;
     if (tokenVersion !== user.tokenVersion) {
       throw new UnauthorizedException({
@@ -82,8 +95,22 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       });
     }
 
-    return {
+    const result: AuthenticatedUser = {
       userId: user.id,
     };
+
+    if (payload.scope) {
+      result.scope = payload.scope;
+    }
+
+    if (
+      user.status === UserStatus.DELETION_REQUESTED ||
+      user.status === UserStatus.DELETION_ACTION_REQUIRED ||
+      user.status === UserStatus.DELETION_APPROVED
+    ) {
+      result.status = user.status;
+    }
+
+    return result;
   }
 }

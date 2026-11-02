@@ -11,7 +11,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, Not, QueryFailedError, Repository } from 'typeorm';
 
 import { SelfReferralNotAllowedError } from '../referrals/errors/referral.errors';
 import { ReferralService } from '../referrals/referral.service';
@@ -40,7 +40,9 @@ export interface AuthLoginResult {
     phone: string;
     phoneVerified: boolean;
     profileCompleted: boolean;
+    status?: UserStatus;
   };
+  deletionPending?: boolean;
 }
 
 export interface SendOtpResult {
@@ -139,6 +141,7 @@ export class AuthService {
    *
    * Never returns the OTP value.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async sendMsg91Otp(phoneRaw: string): Promise<SendOtpResult> {
     if (!phoneRaw?.trim()) {
       throw new BadRequestException('Phone is required');
@@ -212,7 +215,12 @@ export class AuthService {
     this.assertNotPlatformIdentity(phone);
     const referralCode = normalizeReferralCode(identity.referralCode);
 
-    let user = await this.userRepository.findOne({ where: { phone } });
+    let user = await this.userRepository.findOne({
+      where: {
+        phone,
+        status: Not(UserStatus.DELETED),
+      },
+    });
 
     if (!user) {
       try {
@@ -225,7 +233,12 @@ export class AuthService {
         // Concurrent first login: unique phone constraint → reuse winner.
         // Winner already owns any referral; loser must not create another.
         if (this.isUniquePhoneViolation(error)) {
-          user = await this.userRepository.findOne({ where: { phone } });
+          user = await this.userRepository.findOne({
+            where: {
+              phone,
+              status: Not(UserStatus.DELETED),
+            },
+          });
           if (!user) {
             throw error;
           }
@@ -254,6 +267,14 @@ export class AuthService {
         error: 'Forbidden',
       });
     }
+    if (user.status === UserStatus.DELETED) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'USER_DELETED',
+        message: 'Account has been deleted',
+        error: 'Forbidden',
+      });
+    }
 
     user.phoneVerified = true;
     user.lastLoginAt = new Date();
@@ -266,6 +287,29 @@ export class AuthService {
       where: { userId: user.id },
     });
 
+    const isDeletionPending =
+      user.status === UserStatus.DELETION_REQUESTED ||
+      user.status === UserStatus.DELETION_ACTION_REQUIRED ||
+      user.status === UserStatus.DELETION_APPROVED;
+
+    if (isDeletionPending) {
+      const accessToken = await this.signAccessToken(user.id, {
+        scope: 'restricted_deletion',
+      });
+
+      return {
+        accessToken,
+        user: {
+          id: user.id,
+          phone: user.phone,
+          phoneVerified: user.phoneVerified,
+          profileCompleted: isProfileCompleted(profile),
+          status: user.status,
+        },
+        deletionPending: true,
+      };
+    }
+
     const accessToken = await this.signAccessToken(user.id);
 
     return {
@@ -275,11 +319,15 @@ export class AuthService {
         phone: user.phone,
         phoneVerified: user.phoneVerified,
         profileCompleted: isProfileCompleted(profile),
+        status: user.status,
       },
     };
   }
 
-  async signAccessToken(userId: string): Promise<string> {
+  async signAccessToken(
+    userId: string,
+    options?: { scope?: string },
+  ): Promise<string> {
     if (isPlatformUserId(userId)) {
       throw new ForbiddenException('Platform identity cannot authenticate');
     }
@@ -306,18 +354,30 @@ export class AuthService {
       });
     }
 
+    if (user.status === UserStatus.DELETED) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'USER_DELETED',
+        message: 'Account has been deleted',
+        error: 'Forbidden',
+      });
+    }
+
     const expiresIn = this.configService.get<string>(
       'JWT_ACCESS_EXPIRES_IN',
       '15m',
     );
 
-    return this.jwtService.signAsync(
-      { sub: userId, tv: user.tokenVersion },
-      {
-        secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
-        expiresIn: expiresIn as unknown as number,
-      },
-    );
+    const payload: { sub: string; tv: number; scope?: string } = {
+      sub: userId,
+      tv: user.tokenVersion,
+      ...(options?.scope ? { scope: options.scope } : {}),
+    };
+
+    return this.jwtService.signAsync(payload, {
+      secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
+      expiresIn: expiresIn as unknown as number,
+    });
   }
 
   normalizePhone(phone: string): string {

@@ -24,6 +24,7 @@ import { SettingsModule } from './settings/settings.module';
 import { SupportModule } from './support/support.module';
 import { TrackingModule } from './tracking/tracking.module';
 import { UsersModule } from './users/users.module';
+import { AccountDeletionModule } from './users/account-deletion/account-deletion.module';
 import { VehiclesModule } from './vehicles/vehicles.module';
 import { VerificationModule } from './verification/verification.module';
 import { WalletModule } from './wallet/wallet.module';
@@ -41,6 +42,7 @@ import { WalletModule } from './wallet/wallet.module';
     AuthModule,
     AdminModule,
     UsersModule,
+    AccountDeletionModule,
     EmailVerificationModule,
     CorporateIdentityModule,
     ReferralsModule,

@@ -47,6 +47,12 @@ export const ADMIN_PERMISSION_SOS_MANAGE = 'ADMIN_SOS_MANAGE';
 export const ADMIN_PERMISSION_INCIDENTS_VIEW = 'ADMIN_INCIDENTS_VIEW';
 /** Assign, escalate, resolve, and note safety incidents. */
 export const ADMIN_PERMISSION_INCIDENTS_MANAGE = 'ADMIN_INCIDENTS_MANAGE';
+/** View account deletion requests directory and detail. */
+export const ADMIN_PERMISSION_ACCOUNT_DELETIONS_VIEW =
+  'ADMIN_ACCOUNT_DELETIONS_VIEW';
+/** Review, request user action, approve, and complete permanent deletion. */
+export const ADMIN_PERMISSION_ACCOUNT_DELETIONS_MANAGE =
+  'ADMIN_ACCOUNT_DELETIONS_MANAGE';
 
 /** Reserved backing user for the bootstrap dashboard admin (not the platform wallet user). */
 export const ADMIN_BOOTSTRAP_USER_ID = '00000000-0000-4000-8000-000000000099';

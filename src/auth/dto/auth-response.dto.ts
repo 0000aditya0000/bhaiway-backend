@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class AuthUserResponseDto {
   @ApiProperty({ format: 'uuid' })
@@ -15,6 +15,12 @@ export class AuthUserResponseDto {
     example: false,
   })
   profileCompleted!: boolean;
+
+  @ApiPropertyOptional({
+    description: 'User account status',
+    example: 'ACTIVE',
+  })
+  status?: string;
 }
 
 export class AuthLoginResponseDto {
@@ -26,4 +32,11 @@ export class AuthLoginResponseDto {
 
   @ApiProperty({ type: AuthUserResponseDto })
   user!: AuthUserResponseDto;
+
+  @ApiPropertyOptional({
+    description:
+      'True when account deletion has been requested and normal access is restricted',
+    example: false,
+  })
+  deletionPending?: boolean;
 }
