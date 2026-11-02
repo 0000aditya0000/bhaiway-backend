@@ -97,6 +97,12 @@ export class AccountDeletionWorkflow1786650000000 implements MigrationInterface 
       END $$
     `);
 
+    // PostgreSQL restriction (code 55P04): Newly added enum values (e.g. 'DELETED')
+    // cannot be used in expressions or index predicates within the same transaction block.
+    // Commit the enum additions and start a new transaction so PostgreSQL allows 'DELETED' in index predicates.
+    await queryRunner.commitTransaction();
+    await queryRunner.startTransaction();
+
     // 5. Create account_deletion_requests table
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS "account_deletion_requests" (
@@ -180,6 +186,12 @@ export class AccountDeletionWorkflow1786650000000 implements MigrationInterface 
     `);
     await queryRunner.query(`
       ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "UQ_97672ac88f789774dd47f7c8be3"
+    `);
+    await queryRunner.query(`
+      ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "users_phone_key"
+    `);
+    await queryRunner.query(`
+      ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "users_email_key"
     `);
     await queryRunner.query(`
       ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "UQ_users_phone"

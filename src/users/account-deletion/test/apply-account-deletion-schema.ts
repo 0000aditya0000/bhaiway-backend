@@ -183,6 +183,12 @@ export async function applyAccountDeletionSchema(
     ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "UQ_97672ac88f789774dd47f7c8be3"
   `);
   await dataSource.query(`
+    ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "users_phone_key"
+  `);
+  await dataSource.query(`
+    ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "users_email_key"
+  `);
+  await dataSource.query(`
     ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "UQ_users_phone"
   `);
   await dataSource.query(`
