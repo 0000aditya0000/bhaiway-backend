@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class SendMsg91OtpDto {
   @ApiProperty({
@@ -10,6 +10,24 @@ export class SendMsg91OtpDto {
   @IsString()
   @IsNotEmpty()
   phone!: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional flow mode. Set to "register" or "REGISTRATION" when initiating sign-up. If phone belongs to an active account, returns 409 PHONE_ALREADY_REGISTERED.',
+    example: 'register',
+  })
+  @IsOptional()
+  @IsString()
+  mode?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional flag indicating registration intent. If true and phone belongs to an active account, returns 409 PHONE_ALREADY_REGISTERED.',
+    example: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  isRegistration?: boolean;
 }
 
 export class SendMsg91OtpResponseDto {

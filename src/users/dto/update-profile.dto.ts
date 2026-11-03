@@ -9,6 +9,8 @@ import {
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 import { Gender } from '../entities/user-profile.entity';
+import { IsCloudinaryUrl } from '../validators/is-cloudinary-url.validator';
+import { IsNotLocalFileUri } from '../validators/is-not-local-file-uri.validator';
 
 export class UpdateProfileDto {
   @ApiPropertyOptional({ maxLength: 100, minLength: 1 })
@@ -63,8 +65,14 @@ export class UpdateProfileDto {
   @IsDateString()
   dateOfBirth?: string | null;
 
-  @ApiPropertyOptional({ nullable: true })
+  @ApiPropertyOptional({
+    example:
+      'https://res.cloudinary.com/bhaiway/image/upload/v1234/profile.jpg',
+    nullable: true,
+  })
   @IsOptional()
   @IsString()
+  @IsCloudinaryUrl()
+  @IsNotLocalFileUri()
   profilePhoto?: string | null;
 }
