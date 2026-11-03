@@ -11,7 +11,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Not, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, In, Not, QueryFailedError, Repository } from 'typeorm';
 
 import { SelfReferralNotAllowedError } from '../referrals/errors/referral.errors';
 import { ReferralService } from '../referrals/referral.service';
@@ -27,6 +27,7 @@ import {
   PLATFORM_PHONE,
 } from '../wallet/platform-wallet.constants';
 import { Msg91InvalidAccessTokenError } from './errors/msg91.errors';
+import { PhoneAlreadyRegisteredError } from './errors/phone-already-registered.error';
 import { OTP_PROVIDER } from './providers/otp-provider.interface';
 import type {
   OtpProvider,
@@ -39,8 +40,14 @@ export interface AuthLoginResult {
     id: string;
     phone: string;
     phoneVerified: boolean;
+    email?: string | null;
+    emailVerified?: boolean;
     profileCompleted: boolean;
     status?: UserStatus;
+    profilePhoto?: string | null;
+    name?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
   };
   deletionPending?: boolean;
 }
@@ -85,6 +92,14 @@ export class AuthService {
   async verifyMsg91AccessToken(
     accessToken: string,
     referralCode?: string | null,
+    clientEmail?: string,
+    options?: {
+      isRegistration?: boolean;
+      name?: string;
+      firstName?: string;
+      lastName?: string;
+      profilePhoto?: string;
+    },
   ): Promise<AuthLoginResult> {
     if (!accessToken?.trim()) {
       throw new Msg91InvalidAccessTokenError();
@@ -93,8 +108,9 @@ export class AuthService {
     const verified = await this.otpProvider.verifyAccessToken(accessToken);
     return this.authenticateVerifiedPhone(
       verified.phone,
-      verified.email,
+      verified.email ?? clientEmail,
       referralCode,
+      options,
     );
   }
 
@@ -104,27 +120,60 @@ export class AuthService {
    * - accessToken → normal MSG91 widget path (unchanged)
    * - phone + otp → Play Store review path only when all three env conditions match
    * - referralCode → applied only when creating a NEW user
+   * - email → optional email saved on registration/login if not already set
+   * - mode / isRegistration → rejects existing active accounts with 409 PHONE_ALREADY_REGISTERED
    */
   async verifyMsg91(input: {
     accessToken?: string;
     phone?: string;
     otp?: string;
     referralCode?: string | null;
+    email?: string;
+    mode?: string;
+    isRegistration?: boolean;
+    name?: string;
+    firstName?: string;
+    lastName?: string;
+    profilePhoto?: string;
   }): Promise<AuthLoginResult> {
     const accessToken = input.accessToken?.trim();
     const phone = input.phone?.trim();
     const otp = input.otp?.trim();
     const referralCode = normalizeReferralCode(input.referralCode);
+    const email = input.email?.trim()
+      ? input.email.trim().toLowerCase()
+      : undefined;
+    const isRegistration =
+      input.isRegistration === true ||
+      input.mode?.trim().toLowerCase() === 'register';
+    const profileOptions = {
+      isRegistration,
+      name: input.name?.trim(),
+      firstName: input.firstName?.trim(),
+      lastName: input.lastName?.trim(),
+      profilePhoto: input.profilePhoto?.trim(),
+    };
 
     const hasPhoneOtp = Boolean(phone && otp);
     const hasAccessToken = Boolean(accessToken);
 
     if (hasPhoneOtp) {
-      return this.verifyPlayReviewCredentials(phone!, otp!, referralCode);
+      return this.verifyPlayReviewCredentials(
+        phone!,
+        otp!,
+        referralCode,
+        email,
+        profileOptions,
+      );
     }
 
     if (hasAccessToken) {
-      return this.verifyMsg91AccessToken(accessToken!, referralCode);
+      return this.verifyMsg91AccessToken(
+        accessToken!,
+        referralCode,
+        email,
+        profileOptions,
+      );
     }
 
     throw new Msg91InvalidAccessTokenError(
@@ -141,8 +190,11 @@ export class AuthService {
    *
    * Never returns the OTP value.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async sendMsg91Otp(phoneRaw: string): Promise<SendOtpResult> {
+
+  async sendMsg91Otp(
+    phoneRaw: string,
+    options?: { mode?: string; isRegistration?: boolean },
+  ): Promise<SendOtpResult> {
     if (!phoneRaw?.trim()) {
       throw new BadRequestException('Phone is required');
     }
@@ -150,6 +202,17 @@ export class AuthService {
     const phone = this.normalizePhone(phoneRaw);
     this.assertNotPlatformIdentity(phone);
     this.assertReviewRateLimit(phone);
+
+    const isRegistration =
+      options?.isRegistration === true ||
+      options?.mode?.trim().toLowerCase() === 'register';
+
+    if (isRegistration) {
+      const existing = await this.findActiveUserByPhone(phone);
+      if (existing) {
+        throw new PhoneAlreadyRegisteredError();
+      }
+    }
 
     const configuredReviewPhone = this.getConfiguredReviewPhone();
     if (
@@ -174,13 +237,27 @@ export class AuthService {
     phone: string,
     email?: string,
     referralCode?: string | null,
+    options?: {
+      isRegistration?: boolean;
+      name?: string;
+      firstName?: string;
+      lastName?: string;
+      profilePhoto?: string;
+    },
   ): Promise<AuthLoginResult> {
-    return this.loginOrRegisterWithVerifiedIdentity({
-      phone,
-      email,
-      verified: true,
-      referralCode,
-    });
+    return this.loginOrRegisterWithVerifiedIdentity(
+      {
+        phone,
+        email,
+        verified: true,
+        referralCode,
+        name: options?.name,
+        firstName: options?.firstName,
+        lastName: options?.lastName,
+        profilePhoto: options?.profilePhoto,
+      },
+      options,
+    );
   }
 
   /**
@@ -203,7 +280,22 @@ export class AuthService {
    * Completes BhaiWay login/signup once a verified phone is available.
    */
   async loginOrRegisterWithVerifiedIdentity(
-    identity: VerifiedOtpUser & { referralCode?: string | null },
+    identity: VerifiedOtpUser & {
+      referralCode?: string | null;
+      isRegistration?: boolean;
+      mode?: string;
+      name?: string;
+      firstName?: string;
+      lastName?: string;
+      profilePhoto?: string;
+    },
+    options?: {
+      isRegistration?: boolean;
+      name?: string;
+      firstName?: string;
+      lastName?: string;
+      profilePhoto?: string;
+    },
   ): Promise<AuthLoginResult> {
     if (!identity.verified || !identity.phone?.trim()) {
       throw new Msg91InvalidAccessTokenError(
@@ -214,28 +306,50 @@ export class AuthService {
     const phone = this.normalizePhone(identity.phone);
     this.assertNotPlatformIdentity(phone);
     const referralCode = normalizeReferralCode(identity.referralCode);
+    const isRegistration =
+      options?.isRegistration === true ||
+      identity.isRegistration === true ||
+      identity.mode?.trim().toLowerCase() === 'register';
+
+    const normalizedEmail = identity.email?.trim()
+      ? identity.email.trim().toLowerCase()
+      : undefined;
+
+    const profileInput = {
+      name: identity.name ?? options?.name,
+      firstName: identity.firstName ?? options?.firstName,
+      lastName: identity.lastName ?? options?.lastName,
+      profilePhoto: identity.profilePhoto ?? options?.profilePhoto,
+    };
 
     let user = await this.userRepository.findOne({
       where: {
-        phone,
+        phone: In(this.getPhoneVariations(phone)),
         status: Not(UserStatus.DELETED),
       },
     });
+
+    if (isRegistration && user) {
+      throw new PhoneAlreadyRegisteredError();
+    }
 
     if (!user) {
       try {
         user = await this.createUserWithWallet(
           phone,
-          identity.email,
+          normalizedEmail,
           referralCode,
+          profileInput,
         );
       } catch (error) {
-        // Concurrent first login: unique phone constraint → reuse winner.
-        // Winner already owns any referral; loser must not create another.
+        // Concurrent first registration/login: unique phone constraint
         if (this.isUniquePhoneViolation(error)) {
+          if (isRegistration) {
+            throw new PhoneAlreadyRegisteredError();
+          }
           user = await this.userRepository.findOne({
             where: {
-              phone,
+              phone: In(this.getPhoneVariations(phone)),
               status: Not(UserStatus.DELETED),
             },
           });
@@ -278,8 +392,8 @@ export class AuthService {
 
     user.phoneVerified = true;
     user.lastLoginAt = new Date();
-    if (identity.email && !user.email) {
-      user.email = identity.email;
+    if (normalizedEmail && !user.email) {
+      user.email = normalizedEmail;
     }
     user = await this.userRepository.save(user);
 
@@ -303,8 +417,14 @@ export class AuthService {
           id: user.id,
           phone: user.phone,
           phoneVerified: user.phoneVerified,
+          email: user.email,
+          emailVerified: user.emailVerified,
           profileCompleted: isProfileCompleted(profile),
           status: user.status,
+          profilePhoto: profile?.profilePhoto ?? null,
+          name: profile?.displayName ?? null,
+          firstName: profile?.firstName ?? null,
+          lastName: profile?.lastName ?? null,
         },
         deletionPending: true,
       };
@@ -318,8 +438,14 @@ export class AuthService {
         id: user.id,
         phone: user.phone,
         phoneVerified: user.phoneVerified,
+        email: user.email,
+        emailVerified: user.emailVerified,
         profileCompleted: isProfileCompleted(profile),
         status: user.status,
+        profilePhoto: profile?.profilePhoto ?? null,
+        name: profile?.displayName ?? null,
+        firstName: profile?.firstName ?? null,
+        lastName: profile?.lastName ?? null,
       },
     };
   }
@@ -381,7 +507,39 @@ export class AuthService {
   }
 
   normalizePhone(phone: string): string {
-    return phone.replace(/\s+/g, '').trim();
+    return phone.replace(/[\s\-()]/g, '').trim();
+  }
+
+  getPhoneVariations(phoneRaw: string): string[] {
+    const cleaned = this.normalizePhone(phoneRaw);
+    const variations = new Set<string>();
+    if (!cleaned) return [];
+    variations.add(cleaned);
+
+    if (cleaned.startsWith('+91') && cleaned.length === 13) {
+      const tenDigits = cleaned.slice(3);
+      variations.add(tenDigits);
+      variations.add(`91${tenDigits}`);
+    } else if (cleaned.startsWith('91') && cleaned.length === 12) {
+      const tenDigits = cleaned.slice(2);
+      variations.add(tenDigits);
+      variations.add(`+91${tenDigits}`);
+    } else if (/^\d{10}$/.test(cleaned)) {
+      variations.add(`+91${cleaned}`);
+      variations.add(`91${cleaned}`);
+    }
+    return Array.from(variations);
+  }
+
+  async findActiveUserByPhone(phoneRaw: string): Promise<User | null> {
+    const variations = this.getPhoneVariations(phoneRaw);
+    if (variations.length === 0) return null;
+    return this.userRepository.findOne({
+      where: {
+        phone: In(variations),
+        status: Not(UserStatus.DELETED),
+      },
+    });
   }
 
   isPlayReviewLoginEnabled(): boolean {
@@ -406,6 +564,14 @@ export class AuthService {
     phoneRaw: string,
     otpRaw: string,
     referralCode?: string | null,
+    email?: string,
+    options?: {
+      isRegistration?: boolean;
+      name?: string;
+      firstName?: string;
+      lastName?: string;
+      profilePhoto?: string;
+    },
   ): Promise<AuthLoginResult> {
     const phone = this.normalizePhone(phoneRaw);
     const otp = otpRaw.trim();
@@ -439,8 +605,9 @@ export class AuthService {
 
     return this.authenticateVerifiedPhone(
       configuredPhone,
-      undefined,
+      email,
       referralCode,
+      options,
     );
   }
 
@@ -455,7 +622,9 @@ export class AuthService {
   }
 
   private phonesMatch(submitted: string, configured: string): boolean {
-    return this.normalizePhone(submitted) === this.normalizePhone(configured);
+    const subVars = this.getPhoneVariations(submitted);
+    const confVars = this.getPhoneVariations(configured);
+    return subVars.some((v) => confVars.includes(v));
   }
 
   private assertReviewRateLimit(phone: string): void {
@@ -533,6 +702,12 @@ export class AuthService {
     phone: string,
     email?: string,
     referralCode?: string | null,
+    profileInput?: {
+      name?: string;
+      firstName?: string;
+      lastName?: string;
+      profilePhoto?: string;
+    },
   ): Promise<User> {
     return this.dataSource.transaction(async (manager) => {
       // Validate referral BEFORE creating the user so invalid codes never leave a partial account.
@@ -544,10 +719,12 @@ export class AuthService {
       const ownCode =
         await this.referralService.allocateUniqueReferralCode(manager);
 
+      const normalizedEmail = email?.trim() ? email.trim().toLowerCase() : null;
+
       const user = manager.create(User, {
         phone,
         phoneVerified: true,
-        email: email ?? null,
+        email: normalizedEmail,
         emailVerified: false,
         referralCode: ownCode,
         status: UserStatus.ACTIVE,
@@ -571,6 +748,35 @@ export class AuthService {
         driverEarnedHeld: '0',
       });
       await manager.save(WalletBalance, balance);
+
+      const trimmedPhoto = profileInput?.profilePhoto?.trim() || null;
+      const trimmedName = profileInput?.name?.trim();
+      const nameParts = trimmedName ? trimmedName.split(/\s+/) : [];
+      const resolvedFirstName =
+        profileInput?.firstName?.trim() ||
+        (nameParts.length > 0 ? nameParts[0] : null);
+      const resolvedLastName =
+        profileInput?.lastName?.trim() !== undefined
+          ? profileInput?.lastName?.trim()
+          : nameParts.length > 1
+            ? nameParts.slice(1).join(' ')
+            : null;
+      const resolvedDisplayName =
+        trimmedName ||
+        (resolvedFirstName
+          ? [resolvedFirstName, resolvedLastName].filter(Boolean).join(' ')
+          : null);
+
+      if (resolvedFirstName || trimmedPhoto) {
+        const profile = manager.create(UserProfile, {
+          userId: savedUser.id,
+          firstName: resolvedFirstName ?? '',
+          lastName: resolvedLastName ?? null,
+          displayName: resolvedDisplayName ?? null,
+          profilePhoto: trimmedPhoto,
+        });
+        await manager.save(UserProfile, profile);
+      }
 
       if (referrer) {
         if (referrer.id === savedUser.id) {

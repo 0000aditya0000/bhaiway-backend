@@ -80,7 +80,11 @@ export class UserSummaryDto {
   @ApiProperty({ example: false })
   emailVerified!: boolean;
 
-  @ApiProperty({ enum: UserStatus, enumName: 'UserStatus', example: UserStatus.ACTIVE })
+  @ApiProperty({
+    enum: UserStatus,
+    enumName: 'UserStatus',
+    example: UserStatus.ACTIVE,
+  })
   status!: UserStatus;
 }
 
@@ -111,6 +115,19 @@ export class ProfileResponseDto {
 
   @ApiPropertyOptional({ nullable: true })
   profilePhoto!: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Saved contact email',
+    example: 'aditya@example.com',
+    nullable: true,
+  })
+  email?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Email verification status',
+    example: false,
+  })
+  emailVerified?: boolean;
 }
 
 export class GetMeResponseDto {

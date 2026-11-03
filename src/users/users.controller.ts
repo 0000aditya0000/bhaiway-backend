@@ -55,6 +55,14 @@ export class UsersController {
     return this.usersService.getMe(currentUser.userId);
   }
 
+  @Get(['profile', 'me/profile'])
+  @ApiOperation({ summary: 'Get authenticated user profile' })
+  @ApiOkResponse({ type: ProfileResponseDto })
+  @ApiNotFoundResponse({ description: 'User or profile not found' })
+  getProfile(@CurrentUser() currentUser: AuthenticatedUser) {
+    return this.usersService.getProfile(currentUser.userId);
+  }
+
   @Post('profile')
   @ApiOperation({ summary: 'Create user profile' })
   @ApiCreatedResponse({ type: ProfileResponseDto })
