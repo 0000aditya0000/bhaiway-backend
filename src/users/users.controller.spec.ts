@@ -180,7 +180,8 @@ describe('UsersController (integration)', () => {
         lastName: 'Gangwar',
         displayName: 'Aditya',
         dateOfBirth: '2000-01-01',
-        profilePhoto: 'https://cdn.example.com/a.jpg',
+        profilePhoto:
+          'https://res.cloudinary.com/bhaiway/image/upload/v1700000000/profiles/a.jpg',
       })
       .expect(201);
 
@@ -190,7 +191,8 @@ describe('UsersController (integration)', () => {
       displayName: 'Aditya',
       gender: null,
       dateOfBirth: '2000-01-01',
-      profilePhoto: 'https://cdn.example.com/a.jpg',
+      profilePhoto:
+        'https://res.cloudinary.com/bhaiway/image/upload/v1700000000/profiles/a.jpg',
     });
     expect(created.body.id).toBeTruthy();
   });
@@ -500,7 +502,10 @@ describe('UsersController (integration)', () => {
     await request(app.getHttpServer())
       .post('/users/profile')
       .set('Authorization', `Bearer ${login.accessToken}`)
-      .send({ firstName: 'Ada', walletId: '00000000-0000-0000-0000-000000000001' })
+      .send({
+        firstName: 'Ada',
+        walletId: '00000000-0000-0000-0000-000000000001',
+      })
       .expect(400);
 
     await request(app.getHttpServer())
@@ -672,7 +677,8 @@ describe('UsersController (integration)', () => {
       lastName: 'Gangwar',
       gender: null,
     });
-    expect(created.body).not.toHaveProperty('email');
+    expect(created.body.email).toBe('aditya@example.com');
+    expect(created.body.emailVerified).toBe(false);
     expect(created.body).not.toHaveProperty('walletId');
 
     const user = await dataSource.getRepository(User).findOneByOrFail({
@@ -697,7 +703,9 @@ describe('UsersController (integration)', () => {
     const txCountAfter = await dataSource
       .getRepository(WalletTransaction)
       .count({ where: { userId: login.user.id } });
-    expect(balanceAfter.purchasedAvailable).toBe(balanceBefore.purchasedAvailable);
+    expect(balanceAfter.purchasedAvailable).toBe(
+      balanceBefore.purchasedAvailable,
+    );
     expect(txCountAfter).toBe(txCountBefore);
   });
 
@@ -778,10 +786,12 @@ describe('UsersController (integration)', () => {
 
   it('same user may create profile using their existing email', async () => {
     const login = await createAuthenticatedUser();
-    await dataSource.getRepository(User).update(
-      { id: login.user.id },
-      { email: 'already@example.com', emailVerified: false },
-    );
+    await dataSource
+      .getRepository(User)
+      .update(
+        { id: login.user.id },
+        { email: 'already@example.com', emailVerified: false },
+      );
 
     await request(app.getHttpServer())
       .post('/users/profile')
@@ -827,10 +837,7 @@ describe('UsersController (integration)', () => {
 
   it('JWT payload used by guard contains only sub as identity claim', async () => {
     const login = await createAuthenticatedUser();
-    const payload = jwtService.decode(login.accessToken) as Record<
-      string,
-      unknown
-    >;
+    const payload = jwtService.decode(login.accessToken);
     expect(Object.keys(payload).sort()).toEqual(
       expect.arrayContaining(['sub', 'iat', 'exp']),
     );

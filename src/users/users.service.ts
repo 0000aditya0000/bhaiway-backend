@@ -1,15 +1,16 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { Not, QueryFailedError, Repository } from 'typeorm';
 
 import { CreateProfileDto } from './dto/create-profile.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UserProfile } from './entities/user-profile.entity';
-import { User } from './entities/user.entity';
+import { User, UserStatus } from './entities/user.entity';
 import { GenderLockedError } from './errors/gender.errors';
 import { isProfileCompleted } from './profile-completion';
 import { PassengerAssuredDepositPenaltyService } from '../assured/passenger-assured-deposit-penalty.service';
@@ -53,7 +54,7 @@ export class UsersService {
         emailVerified: user.emailVerified,
         status: user.status,
       },
-      profile: profile ? this.toProfileResponse(profile) : null,
+      profile: profile ? this.toProfileResponse(profile, user) : null,
       profileCompleted: isProfileCompleted(profile),
       assuredDepositPenalty: depositQuote.elevated
         ? {
@@ -68,11 +69,15 @@ export class UsersService {
   }
 
   async getProfile(userId: string) {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
     const profile = await this.getProfileEntity(userId);
     if (!profile) {
       throw new NotFoundException('User profile not found');
     }
-    return this.toProfileResponse(profile);
+    return this.toProfileResponse(profile, user);
   }
 
   async createProfile(userId: string, dto: CreateProfileDto) {
@@ -90,25 +95,55 @@ export class UsersService {
           throw new NotFoundException('User not found');
         }
 
-        const existing = await profileRepo.findOne({ where: { userId } });
-        if (existing) {
+        let profile = await profileRepo.findOne({ where: { userId } });
+        if (
+          profile &&
+          profile.firstName &&
+          profile.firstName.trim().length > 0
+        ) {
           throw new ConflictException('User profile already exists');
         }
 
         await this.applyOptionalEmail(userRepo, user, dto.email);
 
-        const profile = profileRepo.create({
-          userId,
-          firstName: dto.firstName.trim(),
-          lastName: dto.lastName ?? null,
-          displayName: dto.displayName ?? null,
-          gender: null,
-          dateOfBirth: dto.dateOfBirth ?? null,
-          profilePhoto: dto.profilePhoto ?? null,
-        });
+        const nameParts = dto.name?.trim() ? dto.name.trim().split(/\s+/) : [];
+        const resolvedFirstName =
+          dto.firstName?.trim() ||
+          (nameParts.length > 0 ? nameParts[0] : null) ||
+          '';
+        const resolvedLastName =
+          dto.lastName !== undefined
+            ? dto.lastName
+            : nameParts.length > 1
+              ? nameParts.slice(1).join(' ')
+              : null;
+        const resolvedDisplayName =
+          dto.displayName !== undefined
+            ? dto.displayName
+            : dto.name?.trim() || null;
+
+        if (!profile) {
+          profile = profileRepo.create({
+            userId,
+            firstName: resolvedFirstName,
+            lastName: resolvedLastName,
+            displayName: resolvedDisplayName,
+            gender: null,
+            dateOfBirth: dto.dateOfBirth ?? null,
+            profilePhoto: dto.profilePhoto ?? null,
+          });
+        } else {
+          profile.firstName = resolvedFirstName;
+          profile.lastName = resolvedLastName;
+          profile.displayName = resolvedDisplayName;
+          if (dto.dateOfBirth !== undefined)
+            profile.dateOfBirth = dto.dateOfBirth;
+          if (dto.profilePhoto !== undefined)
+            profile.profilePhoto = dto.profilePhoto;
+        }
 
         const saved = await profileRepo.save(profile);
-        return this.toProfileResponse(saved);
+        return this.toProfileResponse(saved, user);
       });
     } catch (error) {
       this.rethrowDuplicateEmail(error);
@@ -121,13 +156,17 @@ export class UsersService {
       throw new GenderLockedError();
     }
 
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
     const profile = await this.getProfileEntity(userId);
     if (!profile) {
       throw new NotFoundException('User profile not found');
     }
 
-    const trimmedName =
-      dto.name !== undefined ? dto.name.trim() : undefined;
+    const trimmedName = dto.name !== undefined ? dto.name.trim() : undefined;
     const nameParts =
       trimmedName && trimmedName.length > 0
         ? trimmedName.split(/\s+/).filter((part) => part.length > 0)
@@ -165,7 +204,7 @@ export class UsersService {
     }
 
     const saved = await this.userProfileRepository.save(profile);
-    return this.toProfileResponse(saved);
+    return this.toProfileResponse(saved, user);
   }
 
   private async applyOptionalEmail(
@@ -178,9 +217,21 @@ export class UsersService {
     }
 
     const normalized = email.trim().toLowerCase();
-    const owner = await userRepo.findOne({ where: { email: normalized } });
+    const owner = await userRepo.findOne({
+      where: { email: normalized, status: Not(UserStatus.DELETED) },
+    });
     if (owner && owner.id !== user.id) {
       throw new ConflictException('Email is already in use');
+    }
+
+    // Do not overwrite an existing verified email without verification flow
+    if (user.emailVerified && user.email) {
+      if (user.email === normalized) {
+        return;
+      }
+      throw new ConflictException(
+        'User already has a verified email. Use email change flow.',
+      );
     }
 
     if (user.email === normalized) {
@@ -211,9 +262,7 @@ export class UsersService {
     }
   }
 
-  private async getProfileEntity(
-    userId: string,
-  ): Promise<UserProfile | null> {
+  private async getProfileEntity(userId: string): Promise<UserProfile | null> {
     return this.userProfileRepository.findOne({ where: { userId } });
   }
 
@@ -227,7 +276,7 @@ export class UsersService {
     return combined.length > 0 ? combined.join(' ') : null;
   }
 
-  private toProfileResponse(profile: UserProfile) {
+  private toProfileResponse(profile: UserProfile, user?: User | null) {
     return {
       id: profile.id,
       firstName: profile.firstName,
@@ -236,6 +285,8 @@ export class UsersService {
       gender: profile.gender,
       dateOfBirth: profile.dateOfBirth,
       profilePhoto: profile.profilePhoto,
+      email: user?.email ?? null,
+      emailVerified: user?.emailVerified ?? false,
     };
   }
 }

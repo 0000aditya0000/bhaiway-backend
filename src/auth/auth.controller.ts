@@ -1,5 +1,6 @@
 import {
   ApiBadRequestResponse,
+  ApiConflictResponse,
   ApiForbiddenResponse,
   ApiOkResponse,
   ApiOperation,
@@ -33,7 +34,8 @@ export class AuthController {
   @Post('msg91/verify')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Verify MSG91 access token (or Play review credentials) and issue BhaiWay JWT',
+    summary:
+      'Verify MSG91 access token (or Play review credentials) and issue BhaiWay JWT',
     description:
       'Normal path: validates the MSG91 Widget access-token server-side. Verified phone is taken only from the MSG91 provider response. ' +
       'Play Store review path (env-gated): accepts phone + OTP only when PLAY_REVIEW_LOGIN_ENABLED=true and both match server configuration. ' +
@@ -47,7 +49,12 @@ export class AuthController {
     description: 'Missing/invalid access token or MSG91 verification failure',
   })
   @ApiUnauthorizedResponse({
-    description: 'MSG91 rejected the access token or review credentials are invalid',
+    description:
+      'MSG91 rejected the access token or review credentials are invalid',
+  })
+  @ApiConflictResponse({
+    description:
+      'Phone already registered to an active account (registration flow)',
   })
   async verifyMsg91(@Body() body: VerifyMsg91Dto) {
     const accessToken =
@@ -56,6 +63,18 @@ export class AuthController {
     const otp = typeof body?.otp === 'string' ? body.otp : undefined;
     const referralCode =
       typeof body?.referralCode === 'string' ? body.referralCode : undefined;
+    const email = typeof body?.email === 'string' ? body.email : undefined;
+    const mode = typeof body?.mode === 'string' ? body.mode : undefined;
+    const isRegistration =
+      body?.isRegistration === true ||
+      mode?.trim().toLowerCase() === 'register';
+    const name = typeof body?.name === 'string' ? body.name : undefined;
+    const firstName =
+      typeof body?.firstName === 'string' ? body.firstName : undefined;
+    const lastName =
+      typeof body?.lastName === 'string' ? body.lastName : undefined;
+    const profilePhoto =
+      typeof body?.profilePhoto === 'string' ? body.profilePhoto : undefined;
 
     if (!accessToken?.trim() && !(phone?.trim() && otp?.trim())) {
       throw new Msg91InvalidAccessTokenError();
@@ -66,6 +85,39 @@ export class AuthController {
       phone,
       otp,
       referralCode,
+      email,
+      mode,
+      isRegistration,
+      name,
+      firstName,
+      lastName,
+      profilePhoto,
+    });
+  }
+
+  /**
+   * Explicit registration endpoint that rejects duplicate active phones.
+   */
+  @Post(['register', 'msg91/register'])
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Register new user account (rejects duplicate active phone with 409)',
+    description:
+      'Validates credentials and registers a new account. If the phone is already associated with an active account, returns 409 PHONE_ALREADY_REGISTERED.',
+  })
+  @ApiOkResponse({
+    description: 'Registration successful',
+    type: AuthLoginResponseDto,
+  })
+  @ApiConflictResponse({
+    description: 'Number already registered. Please login.',
+  })
+  async register(@Body() body: VerifyMsg91Dto) {
+    return this.verifyMsg91({
+      ...body,
+      mode: 'register',
+      isRegistration: true,
     });
   }
 
@@ -84,8 +136,14 @@ export class AuthController {
   })
   @ApiOkResponse({ type: SendMsg91OtpResponseDto })
   @ApiBadRequestResponse({ description: 'Missing phone' })
+  @ApiConflictResponse({
+    description: 'Number already registered. Please login.',
+  })
   async sendMsg91Otp(@Body() body: SendMsg91OtpDto) {
-    return this.authService.sendMsg91Otp(body.phone);
+    return this.authService.sendMsg91Otp(body.phone, {
+      mode: body.mode,
+      isRegistration: body.isRegistration,
+    });
   }
 
   /**
@@ -108,6 +166,7 @@ export class AuthController {
     description: 'Dev auth disabled or running in production',
   })
   async devLogin(@Body() _body: DevLoginDto) {
+    void _body;
     return this.authService.devLogin();
   }
 }
