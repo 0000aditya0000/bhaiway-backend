@@ -7,17 +7,32 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  ValidateIf,
 } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 
 import { Gender } from '../entities/user-profile.entity';
+import { IsCloudinaryUrl } from '../validators/is-cloudinary-url.validator';
+import { IsNotLocalFileUri } from '../validators/is-not-local-file-uri.validator';
 
 export class CreateProfileDto {
-  @ApiProperty({ maxLength: 100, example: 'Aditya' })
+  @ApiPropertyOptional({
+    maxLength: 150,
+    description:
+      'Full name. If provided and firstName is omitted, automatically populates firstName and lastName.',
+    example: 'Aditya Gangwar',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  name?: string;
+
+  @ApiPropertyOptional({ maxLength: 100, example: 'Aditya' })
+  @ValidateIf((o: CreateProfileDto) => !o.name)
   @IsString()
   @IsNotEmpty()
   @MaxLength(100)
-  firstName!: string;
+  firstName?: string;
 
   @ApiPropertyOptional({ maxLength: 100, example: 'Gangwar', nullable: true })
   @IsOptional()
@@ -53,11 +68,13 @@ export class CreateProfileDto {
   dateOfBirth?: string | null;
 
   @ApiPropertyOptional({
-    example: 'https://cdn.example.com/photo.jpg',
+    example: 'https://res.cloudinary.com/bhaiway/image/upload/v1234/photo.jpg',
     nullable: true,
   })
   @IsOptional()
   @IsString()
+  @IsCloudinaryUrl()
+  @IsNotLocalFileUri()
   profilePhoto?: string | null;
 
   @ApiPropertyOptional({
@@ -67,8 +84,8 @@ export class CreateProfileDto {
     maxLength: 255,
   })
   @IsOptional()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.trim() : value,
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : (value as string),
   )
   @IsEmail()
   @MaxLength(255)

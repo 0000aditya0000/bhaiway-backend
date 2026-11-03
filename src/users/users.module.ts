@@ -36,7 +36,15 @@ import { UsersService } from './users.service';
     EmailVerificationModule,
   ],
   controllers: [UsersController],
-  providers: [UsersService, UserDriverEarningsService, EmailChangeService],
-  exports: [TypeOrmModule, UsersService, EmailChangeService],
+  providers: [
+    UsersService,
+    UserDriverEarningsService,
+    EmailChangeService,
+  ],
+  exports: [
+    TypeOrmModule,
+    UsersService,
+    EmailChangeService,
+  ],
 })
 export class UsersModule {}

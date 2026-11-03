@@ -10,6 +10,48 @@ export class AuthUserResponseDto {
   @ApiProperty({ example: true })
   phoneVerified!: boolean;
 
+  @ApiPropertyOptional({
+    description: 'Saved contact email',
+    example: 'user@example.com',
+    nullable: true,
+  })
+  email?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Email verification status',
+    example: false,
+  })
+  emailVerified?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Profile photo Cloudinary secure_url',
+    example:
+      'https://res.cloudinary.com/bhaiway/image/upload/v1234/profile.jpg',
+    nullable: true,
+  })
+  profilePhoto?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'User display name or full name',
+    example: 'Aditya Gangwar',
+    nullable: true,
+  })
+  name?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'User first name',
+    example: 'Aditya',
+    nullable: true,
+  })
+  firstName?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'User last name',
+    example: 'Gangwar',
+    nullable: true,
+  })
+  lastName?: string | null;
+
   @ApiProperty({
     description: 'True when the user has completed the required profile fields',
     example: false,
